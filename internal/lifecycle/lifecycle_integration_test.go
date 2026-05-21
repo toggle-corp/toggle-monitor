@@ -74,6 +74,10 @@ ui:
   maxPerPage: 200
 theme: { defaultGroupColor: "#64748b" }
 httpClient: { userAgent: "toggle-monitor/it" }
+slack:
+  bodyMaxChars: 200
+  channels:
+    - { slug: ops-alerts, channelId: C0123ABCD, tokenEnv: TOGGLE_SLACK_TOKEN }
 groups:
   - { slug: kube-discovered, friendlyName: Kube Discovered }
   - { slug: prod, friendlyName: Prod }
@@ -90,6 +94,7 @@ monitors:
     retryBackoff: 1s
     followRedirects: false
     reminderInterval: 3d
+    slack: ops-alerts
 `,
 		dbCfg.Host, dbCfg.Port, dbCfg.User, dbCfg.Name, dbCfg.SSLMode,
 		upstream.URL,
@@ -100,6 +105,16 @@ monitors:
 		t.Fatalf("config.Load: %v", err)
 	}
 
+	// Issue 3 wires Slack into serve; this test isn't about Slack
+	// behavior but the YAML still requires a slack: block, so point
+	// it at an always-OK fake server and set a stub token.
+	slackSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"ok": true, "team_id": "T1", "ts": "1.0", "channel": "C0"}`))
+	}))
+	t.Cleanup(slackSrv.Close)
+	t.Setenv("TOGGLE_SLACK_TOKEN", "xoxb-test")
+
 	// Listen on :0 so the test grabs a free port; capture the bound
 	// address via the OnReady callback.
 	addrCh := make(chan net.Addr, 1)
@@ -109,10 +124,11 @@ monitors:
 	serveDone := make(chan error, 1)
 	go func() {
 		serveDone <- lifecycle.RunServe(ctx, lifecycle.ServeOptions{
-			Config:     cfg,
-			DBConfig:   dbCfg,
-			ListenAddr: "127.0.0.1:0",
-			OnReady:    func(a net.Addr) { addrCh <- a },
+			Config:       cfg,
+			DBConfig:     dbCfg,
+			ListenAddr:   "127.0.0.1:0",
+			SlackBaseURL: slackSrv.URL,
+			OnReady:      func(a net.Addr) { addrCh <- a },
 		})
 	}()
 

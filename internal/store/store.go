@@ -51,14 +51,17 @@ type MonitorSpec struct {
 // MonitorRow is the full row as the UI sees it.
 type MonitorRow struct {
 	MonitorSpec
-	Status         alert.Status
-	OpenedAt       *time.Time
-	LastCheckedAt  *time.Time
-	LastStatusCode *int
-	LastError      *string
-	Archived       bool
-	ArchivedAt     *time.Time
-	ArchiveReason  *string
+	Status              alert.Status
+	OpenedAt            *time.Time
+	LastReminderAt      *time.Time
+	LastCheckedAt       *time.Time
+	LastStatusCode      *int
+	LastError           *string
+	Archived            bool
+	ArchivedAt          *time.Time
+	ArchiveReason       *string
+	UptimeThreadChannel *string
+	UptimeThreadTS      *string
 }
 
 // State returns the alert.State that the state machine would consume.
@@ -66,6 +69,9 @@ func (r MonitorRow) State() alert.State {
 	s := alert.State{Status: r.Status}
 	if r.OpenedAt != nil {
 		s.OpenedAt = *r.OpenedAt
+	}
+	if r.LastReminderAt != nil {
+		s.LastReminderAt = *r.LastReminderAt
 	}
 	return s
 }
@@ -162,10 +168,13 @@ func (r *Repo) HomepageStats(ctx context.Context) (HomepageStats, error) {
 }
 
 // ApplyCheck records the result of one check tick. If event is non-nil
-// (a state-changing transition), the monitor row is updated AND an
-// alert_event row is appended, atomically. If event is nil, only the
-// last_* columns move. Either way, last_checked_at and the optional
-// status code / error are updated.
+// (a state-changing transition or a reminder), the monitor row is
+// updated AND an alert_event row is appended, atomically. If event is
+// nil, only the last_* columns move. Either way, last_checked_at and
+// the optional status code / error are updated.
+//
+// On a resolve event, the uptime thread refs are cleared as well so a
+// subsequent open begins a fresh thread.
 func (r *Repo) ApplyCheck(
 	ctx context.Context,
 	slug string,
@@ -185,6 +194,10 @@ func (r *Repo) ApplyCheck(
 	if !next.OpenedAt.IsZero() {
 		openedAt = next.OpenedAt
 	}
+	var lastReminderAt any
+	if !next.LastReminderAt.IsZero() {
+		lastReminderAt = next.LastReminderAt
+	}
 	var sc any
 	if statusCode != 0 {
 		sc = statusCode
@@ -194,16 +207,36 @@ func (r *Repo) ApplyCheck(
 		msg = checkErr
 	}
 
-	_, err = tx.Exec(ctx, `
-		UPDATE monitors
-		SET status = $1,
-			opened_at = $2,
-			last_checked_at = $3,
-			last_status_code = $4,
-			last_error = $5,
-			updated_at = now()
-		WHERE slug = $6
-	`, string(next.Status), openedAt, at, sc, msg, slug)
+	// On resolve, also clear the thread refs.
+	clearThread := event != nil && event.Type == alert.EventResolve
+
+	if clearThread {
+		_, err = tx.Exec(ctx, `
+			UPDATE monitors
+			SET status = $1,
+				opened_at = $2,
+				last_reminder_at = $3,
+				last_checked_at = $4,
+				last_status_code = $5,
+				last_error = $6,
+				uptime_thread_channel = NULL,
+				uptime_thread_ts = NULL,
+				updated_at = now()
+			WHERE slug = $7
+		`, string(next.Status), openedAt, lastReminderAt, at, sc, msg, slug)
+	} else {
+		_, err = tx.Exec(ctx, `
+			UPDATE monitors
+			SET status = $1,
+				opened_at = $2,
+				last_reminder_at = $3,
+				last_checked_at = $4,
+				last_status_code = $5,
+				last_error = $6,
+				updated_at = now()
+			WHERE slug = $7
+		`, string(next.Status), openedAt, lastReminderAt, at, sc, msg, slug)
+	}
 	if err != nil {
 		return fmt.Errorf("update monitor row: %w", err)
 	}
@@ -224,6 +257,23 @@ func (r *Repo) ApplyCheck(
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
+// SetUptimeThread persists the Slack thread ref for the currently-open
+// uptime incident on this monitor. Called by the notifier after
+// successfully posting the parent down message.
+func (r *Repo) SetUptimeThread(ctx context.Context, slug, channel, ts string) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE monitors
+		SET uptime_thread_channel = $1,
+			uptime_thread_ts = $2,
+			updated_at = now()
+		WHERE slug = $3
+	`, channel, ts, slug)
+	if err != nil {
+		return fmt.Errorf("set uptime thread for %q: %w", slug, err)
 	}
 	return nil
 }
@@ -294,8 +344,9 @@ func (r *Repo) ListLatestAlerts(ctx context.Context, limit int) ([]AlertEventRow
 
 const selectMonitor = `
 	SELECT slug, friendly_name, url, group_slug, source,
-	       status, opened_at, last_checked_at, last_status_code, last_error,
-	       archived, archived_at, archive_reason
+	       status, opened_at, last_reminder_at, last_checked_at, last_status_code, last_error,
+	       archived, archived_at, archive_reason,
+	       uptime_thread_channel, uptime_thread_ts
 	FROM monitors`
 
 // rowScanner abstracts pgx.Row and pgx.Rows for scanMonitor.
@@ -308,8 +359,9 @@ func scanMonitor(row rowScanner) (MonitorRow, error) {
 	var src, status string
 	err := row.Scan(
 		&m.Slug, &m.FriendlyName, &m.URL, &m.GroupSlug, &src,
-		&status, &m.OpenedAt, &m.LastCheckedAt, &m.LastStatusCode, &m.LastError,
+		&status, &m.OpenedAt, &m.LastReminderAt, &m.LastCheckedAt, &m.LastStatusCode, &m.LastError,
 		&m.Archived, &m.ArchivedAt, &m.ArchiveReason,
+		&m.UptimeThreadChannel, &m.UptimeThreadTS,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

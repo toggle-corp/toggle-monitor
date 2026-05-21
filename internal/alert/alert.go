@@ -25,27 +25,34 @@ const (
 )
 
 // Check is the input to the state machine: the result of a single tick.
+// ReminderInterval is the monitor-config-derived cadence at which a
+// reminder event should be emitted while the monitor is down.
 type Check struct {
-	Outcome    Outcome
-	At         time.Time
-	StatusCode int    // 0 if not applicable (e.g., transport error / timeout)
-	Error      string // human-readable summary; empty when OutcomeOK
+	Outcome          Outcome
+	At               time.Time
+	StatusCode       int    // 0 if not applicable (e.g., transport error / timeout)
+	Error            string // human-readable summary; empty when OutcomeOK
+	ReminderInterval time.Duration
 }
 
 // State carries everything the SM needs to know about a monitor between
-// ticks. OpenedAt is the moment the current `down` incident began
-// (zero when StatusUp).
+// ticks. OpenedAt is the moment the current `down` incident began (zero
+// when StatusUp). LastReminderAt is the time of the most recent
+// reminder event emitted for this incident (initialized to OpenedAt
+// on Open so the first reminder fires one ReminderInterval later).
 type State struct {
-	Status   Status
-	OpenedAt time.Time
+	Status         Status
+	OpenedAt       time.Time
+	LastReminderAt time.Time
 }
 
 // EventType classifies an alert event for persistence.
 type EventType string
 
 const (
-	EventOpen    EventType = "open"    // transition up → down
-	EventResolve EventType = "resolve" // transition down → up
+	EventOpen     EventType = "open"     // transition up → down
+	EventResolve  EventType = "resolve"  // transition down → up
+	EventReminder EventType = "reminder" // periodic while still down
 )
 
 // Event is appended to alert_events on every state-changing tick.
@@ -65,17 +72,32 @@ type Event struct {
 func Apply(prev State, c Check) (State, *Event) {
 	switch {
 	case prev.Status == StatusUp && c.Outcome == OutcomeFail:
-		return State{Status: StatusDown, OpenedAt: c.At}, &Event{
-			Type:       EventOpen,
-			At:         c.At,
-			StatusCode: c.StatusCode,
-			Error:      c.Error,
-		}
+		return State{
+				Status:         StatusDown,
+				OpenedAt:       c.At,
+				LastReminderAt: c.At, // first reminder fires one interval later
+			}, &Event{
+				Type:       EventOpen,
+				At:         c.At,
+				StatusCode: c.StatusCode,
+				Error:      c.Error,
+			}
 	case prev.Status == StatusDown && c.Outcome == OutcomeOK:
 		return State{Status: StatusUp}, &Event{
 			Type:     EventResolve,
 			At:       c.At,
 			Downtime: c.At.Sub(prev.OpenedAt),
+		}
+	case prev.Status == StatusDown && c.Outcome == OutcomeFail:
+		if c.ReminderInterval > 0 && c.At.Sub(prev.LastReminderAt) >= c.ReminderInterval {
+			next := prev
+			next.LastReminderAt = c.At
+			return next, &Event{
+				Type:       EventReminder,
+				At:         c.At,
+				StatusCode: c.StatusCode,
+				Error:      c.Error,
+			}
 		}
 	}
 	return prev, nil

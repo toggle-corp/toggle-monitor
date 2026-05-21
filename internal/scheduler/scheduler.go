@@ -32,16 +32,27 @@ type Plan struct {
 	RetryBackoff        time.Duration
 	FollowRedirects     bool
 	UserAgent           string
+	ReminderInterval    time.Duration
+	ChannelSlug         string   // slack destination slug; empty disables Slack output
+	Mentions            []string // pre-resolved raw Slack markup (parent-only)
 }
 
 // CheckFunc is the seam used to run a probe; production wires
 // httpcheck.Check, tests wire a fake.
 type CheckFunc func(ctx context.Context, cfg httpcheck.Config) httpcheck.Result
 
+// EventSink is the seam the scheduler uses to dispatch alert events
+// (open / reminder / resolve). Production wires
+// slack.Notifier.Notify; tests can pass nil to disable. The monitor
+// row is the snapshot read BEFORE ApplyCheck so callers see thread
+// refs that are about to be cleared on resolve.
+type EventSink func(ctx context.Context, m store.MonitorRow, channelSlug string, mentions []string, event *alert.Event) error
+
 // Scheduler drives the configured set of monitors.
 type Scheduler struct {
 	repo  *store.Repo
 	check CheckFunc
+	sink  EventSink
 	log   *slog.Logger
 	now   func() time.Time
 }
@@ -58,6 +69,10 @@ func WithNow(f func() time.Time) Option { return func(s *Scheduler) { s.now = f 
 
 // WithLogger overrides the logger (defaults to slog.Default()).
 func WithLogger(l *slog.Logger) Option { return func(s *Scheduler) { s.log = l } }
+
+// WithEventSink wires the Slack notifier (or any other consumer of
+// alert events). Defaults to a no-op.
+func WithEventSink(sink EventSink) Option { return func(s *Scheduler) { s.sink = sink } }
 
 // New constructs a Scheduler with sensible defaults.
 func New(repo *store.Repo, opts ...Option) *Scheduler {
@@ -152,13 +167,29 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 	}
 	now := s.now()
 	check := alert.Check{
-		Outcome:    outcome,
-		At:         now,
-		StatusCode: res.StatusCode,
-		Error:      res.Error,
+		Outcome:          outcome,
+		At:               now,
+		StatusCode:       res.StatusCode,
+		Error:            res.Error,
+		ReminderInterval: p.ReminderInterval,
 	}
 	nextState, event := alert.Apply(row.State(), check)
-	return s.repo.ApplyCheck(ctx, p.Slug, nextState, now, res.StatusCode, res.Error, event)
+	if err := s.repo.ApplyCheck(ctx, p.Slug, nextState, now, res.StatusCode, res.Error, event); err != nil {
+		return err
+	}
+
+	// Dispatch to the event sink AFTER the DB transaction has
+	// committed. We pass the *pre*-update row so the resolve handler
+	// still sees the uptime thread refs that ApplyCheck just cleared.
+	if event != nil && s.sink != nil && p.ChannelSlug != "" {
+		if err := s.sink(ctx, row, p.ChannelSlug, p.Mentions, event); err != nil {
+			s.log.Error("event sink", "monitor", p.Slug, "event", event.Type, "error", err)
+			// Don't propagate: the DB transition is committed; the
+			// Slack post can be retried on a later tick. Issue 16
+			// owns the full retry policy.
+		}
+	}
+	return nil
 }
 
 // sleep returns false if ctx was cancelled before the duration elapsed.

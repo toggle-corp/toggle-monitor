@@ -47,6 +47,65 @@ func TestApply_downAndOk_transitionsToUpWithResolveEvent(t *testing.T) {
 	}
 }
 
+func TestApply_downAndFail_emitsReminderAfterInterval(t *testing.T) {
+	prev := alert.State{Status: alert.StatusDown, OpenedAt: t0, LastReminderAt: t0}
+	tickAt := t0.Add(3*24*time.Hour + time.Second)
+
+	next, ev := alert.Apply(prev, alert.Check{
+		Outcome:          alert.OutcomeFail,
+		At:               tickAt,
+		StatusCode:       503,
+		Error:            "still down",
+		ReminderInterval: 3 * 24 * time.Hour,
+	})
+
+	if next.Status != alert.StatusDown {
+		t.Errorf("status: got %q, want %q", next.Status, alert.StatusDown)
+	}
+	if !next.OpenedAt.Equal(t0) {
+		t.Errorf("OpenedAt: got %v, want unchanged %v", next.OpenedAt, t0)
+	}
+	if !next.LastReminderAt.Equal(tickAt) {
+		t.Errorf("LastReminderAt: got %v, want %v", next.LastReminderAt, tickAt)
+	}
+	if ev == nil {
+		t.Fatal("expected a reminder event, got nil")
+	}
+	if ev.Type != alert.EventReminder {
+		t.Errorf("event type: got %q, want %q", ev.Type, alert.EventReminder)
+	}
+}
+
+func TestApply_downAndFail_noReminderBeforeInterval(t *testing.T) {
+	prev := alert.State{Status: alert.StatusDown, OpenedAt: t0, LastReminderAt: t0}
+	tickAt := t0.Add(2 * 24 * time.Hour) // one day shy of 3d
+
+	next, ev := alert.Apply(prev, alert.Check{
+		Outcome:          alert.OutcomeFail,
+		At:               tickAt,
+		ReminderInterval: 3 * 24 * time.Hour,
+	})
+
+	if ev != nil {
+		t.Errorf("expected no event before reminder interval, got %+v", ev)
+	}
+	if !next.LastReminderAt.Equal(t0) {
+		t.Errorf("LastReminderAt: got %v, want unchanged %v", next.LastReminderAt, t0)
+	}
+}
+
+func TestApply_upAndFail_initializesLastReminderAt(t *testing.T) {
+	prev := alert.State{Status: alert.StatusUp}
+	next, _ := alert.Apply(prev, alert.Check{
+		Outcome:          alert.OutcomeFail,
+		At:               t0,
+		ReminderInterval: 3 * 24 * time.Hour,
+	})
+	if !next.LastReminderAt.Equal(t0) {
+		t.Errorf("LastReminderAt: got %v, want %v (initialized to OpenedAt)", next.LastReminderAt, t0)
+	}
+}
+
 func TestApply_downAndFail_staysDownNoEvent(t *testing.T) {
 	prev := alert.State{Status: alert.StatusDown, OpenedAt: t0}
 	later := t0.Add(2 * time.Minute)

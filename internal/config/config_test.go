@@ -8,9 +8,9 @@ import (
 )
 
 // validMinimal is the smallest YAML payload that should pass the
-// Issue-2 validator: every required top-level field is set, the
-// `kube-discovered` group is declared, and one static monitor
-// references a real group.
+// Issue-3 validator: every required top-level field is set, the
+// `kube-discovered` group is declared, a slack channel is declared,
+// and one static monitor references a real group + slack channel.
 const validMinimal = `
 displayTimezone: Asia/Kathmandu
 dbBodyMaxChars: 4000
@@ -32,6 +32,12 @@ theme:
   defaultGroupColor: "#64748b"
 httpClient:
   userAgent: "toggle-monitor/test"
+slack:
+  bodyMaxChars: 200
+  channels:
+    - slug: ops-alerts
+      channelId: C0123ABCD
+      tokenEnv: SLACK_BOT_TOKEN
 groups:
   - slug: kube-discovered
     friendlyName: Kube Discovered
@@ -50,6 +56,7 @@ monitors:
     retryBackoff: 5s
     followRedirects: false
     reminderInterval: 3d
+    slack: ops-alerts
 `
 
 func TestLoad_validMinimal_succeeds(t *testing.T) {
@@ -138,6 +145,59 @@ func TestLoad_rejectsDuplicateMonitorSlugs(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "duplicate") {
 		t.Errorf("error should mention duplicate, got: %v", err)
+	}
+}
+
+func TestLoad_rejectsDMChannelID(t *testing.T) {
+	data := withReplaced(t, "channelId: C0123ABCD", "channelId: D0123ABCD")
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected DM channel to be rejected")
+	}
+	if !strings.Contains(err.Error(), "DM") {
+		t.Errorf("error should mention DM, got: %v", err)
+	}
+}
+
+func TestLoad_rejectsMalformedChannelID(t *testing.T) {
+	data := withReplaced(t, "channelId: C0123ABCD", "channelId: not-a-channel")
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected malformed channel id to be rejected")
+	}
+}
+
+func TestLoad_rejectsMonitorReferencingUnknownSlackChannel(t *testing.T) {
+	data := withReplaced(t, "slack: ops-alerts", "slack: nope")
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected unknown slack channel to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unknown channel slug") {
+		t.Errorf("error should mention unknown channel slug, got: %v", err)
+	}
+}
+
+func TestLoad_rejectsNotifyEntriesThatAreNotRawMarkup(t *testing.T) {
+	data := []byte(validMinimal + "    notify: [alice]\n")
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected non-markup notify entry to be rejected (userMapping lands in Issue 13)")
+	}
+}
+
+func TestLoad_acceptsNotifyEntriesThatAreRawMarkup(t *testing.T) {
+	data := []byte(validMinimal + "    notify: [\"<!here>\", \"<@U0123ABC>\", \"<!subteam^S0456DEF>\"]\n")
+	if _, err := config.Load(data); err != nil {
+		t.Fatalf("expected raw markup to pass: %v", err)
+	}
+}
+
+func TestLoad_rejectsDBBodyMaxCharsSmallerThanSlackBodyMaxChars(t *testing.T) {
+	data := withReplaced(t, "dbBodyMaxChars: 4000", "dbBodyMaxChars: 100")
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected validation error for dbBodyMaxChars < slack.bodyMaxChars")
 	}
 }
 
