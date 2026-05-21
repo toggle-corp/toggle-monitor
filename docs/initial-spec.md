@@ -1,0 +1,90 @@
+Need to setup a tool
+- runs inside a k8s cluster
+- Configs
+    - Group
+        - Friendly Name
+        - logo URL
+        - slug (used for url, auto-generated from name if not provided, needs to be unique)
+        - description
+    - Monitor
+        - Friendly Name
+        - slug (used for url, auto-generated from name if not provided, needs to be unique)
+        - URL
+        - Interval
+        - Retries
+        - Request timeout
+        - SSL certificate expire notification
+        - SSL certificate expire notification days threshold
+        - Show HTTP error message in notification
+        - HTTP Method
+        - Accepted HTTP Status Codes
+        - Grouping
+        - tags
+        - Slack destination (can have multiple)
+- support config as yaml - configmap
+    - support anchor for DRY
+- Simple UI (No mutations)
+    - Homepage
+        - stats
+            - up
+            - down
+            - SSL about to expire
+        - latest historical alerts (pagination)
+    - Listing (pagination)
+        - Search
+        - Filters
+    - Listing by Group (/group/group-slug)
+        - Search
+        - Filters
+    - Detail page for each monitor (/monitor/monitor-slug)
+        - current status
+        - config
+        - historical alerts (pagination)
+    - k8s Auto-discovery display
+        - stats
+            - total
+            - added
+            - skipped
+        - filters
+            - list monitors auto added
+            - list monitors not added
+    - k8s Auto-discovery details
+        - config
+        - show why if not added
+            - This will be helpful for debugging
+- monitors
+    - uptime
+        - up/down
+        - support custom path
+    - SSL expiration
+- notification
+    - slack
+        - use thread for updates
+            - provide updates (recurring reminder after N days)
+            - resolve (update parent message to provide resolved as well)
+- k8s
+    - Auto-discovery for ingress
+        - auto monitor
+            - preset only defined in the main config
+                - Domain from ingress
+                - annotation/label `toggle-monitor.preset=xyz`
+                - path will be provided in preset, use that to create url
+            - additional raw config (rare)
+                - annotation/label `toggle-monitor.path=/health-check`
+                - use the path provided here instead from preset
+        - send slack notification if ingress removed (not alert but more like a warning log)
+    - Preset configs
+        - provide default configs
+        - can be overriden from annotations/labels
+
+- Which language to use for this
+    - needs to memory officiant
+    - Needs to hit performance to support > 100 monitors
+        - Monitor interval will be every 5-10 min
+
+## Future
+- Assigns user using slack user ids
+    - At group level (**IMPORTANT**)
+    - At monitor level
+- Global maintenance mode
+    - Don't monitor any thing - PAUSE
