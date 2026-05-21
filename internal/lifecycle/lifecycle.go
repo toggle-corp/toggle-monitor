@@ -66,6 +66,9 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	if err != nil {
 		return fmt.Errorf("connect to database: %w", err)
 	}
+	// pool is closed explicitly during the shutdown sequence below so
+	// the ordering matches docs/design-decisions.md §Resilience &
+	// lifecycle. A defer also fires on the error-return paths above.
 	defer pool.Close()
 
 	if err := migrate.Check(opts.DBConfig.DSN()); err != nil {
@@ -197,18 +200,28 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	<-ctx.Done()
 	log.Info("shutdown signal received")
 
-	// Issue-2/15 shutdown: stop accepting HTTP, then wait for goroutines,
-	// then emit a final shutdown heartbeat. Full SIGTERM ordering (cancel
-	// watcher, flush DB, etc.) lands in Issue 16.
+	// Graceful shutdown ordering per docs/design-decisions.md §Resilience
+	// & lifecycle:
+	//   1. Stop accepting new HTTP requests.
+	//   2. Cancel in-flight checks via ctx (already done — ctx is the
+	//      parent of every per-monitor goroutine).
+	//   3. Cancel the ingress informer (Issue 8 onwards; same ctx).
+	//   4. Wait for in-flight goroutines (scheduler, workspace watcher,
+	//      heartbeat) to drain.
+	//   5. Flush pending DB writes / close pool.
+	//   6. Emit the final shutdown heartbeat.
+	//   7. Return 0.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Warn("http shutdown", "error", err)
 	}
 	wg.Wait()
+	pool.Close()
 	if hb != nil {
 		hb.SendShutdown(shutdownCtx)
 	}
+	log.Info("shutdown complete")
 	return nil
 }
 
