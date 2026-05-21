@@ -457,6 +457,44 @@ func (r *Repo) ApplyCheck(
 	return nil
 }
 
+// ListActiveBySource returns every non-archived monitor with the
+// given source. Used by the startup reconcile pass to diff
+// YAML-declared static monitors against the DB.
+func (r *Repo) ListActiveBySource(ctx context.Context, src MonitorSource) ([]MonitorRow, error) {
+	rows, err := r.pool.Query(ctx, selectMonitor+` WHERE archived = FALSE AND source = $1`, string(src))
+	if err != nil {
+		return nil, fmt.Errorf("list active by source: %w", err)
+	}
+	defer rows.Close()
+	var out []MonitorRow
+	for rows.Next() {
+		m, err := scanMonitor(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// SoftDeleteMonitor flips a monitor to archived with the given reason
+// timestamped now(). History is preserved; slug reuse on a future
+// reconcile resurrects the row (ReconcileMonitor clears archived).
+func (r *Repo) SoftDeleteMonitor(ctx context.Context, slug, reason string) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE monitors
+		SET archived       = TRUE,
+		    archived_at    = now(),
+		    archive_reason = $1,
+		    updated_at     = now()
+		WHERE slug = $2
+	`, reason, slug)
+	if err != nil {
+		return fmt.Errorf("soft-delete %q: %w", slug, err)
+	}
+	return nil
+}
+
 // MarkTemporaryPaused sets a monitor's status to 'temporary-paused'
 // without touching last_* fields or appending an alert_event. Called
 // by the scheduler when at least one dependsOn parent is currently

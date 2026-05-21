@@ -137,17 +137,19 @@ func (s *Server) handleHomepage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	page, perPage := s.pagination(r, s.pageSizes.MonitorListing)
+	includeArchived := r.URL.Query().Get("archived") == "true"
 	filter := templates.MonitorsFilter{
 		Search: r.URL.Query().Get("q"),
 		Status: r.URL.Query().Get("status"),
 		Group:  r.URL.Query().Get("group"),
 	}
 	listing, err := s.repo.ListMonitors(ctx, store.ListMonitorsOpts{
-		Search:    filter.Search,
-		Status:    filter.Status,
-		GroupSlug: filter.Group,
-		Limit:     perPage,
-		Offset:    (page - 1) * perPage,
+		Search:          filter.Search,
+		Status:          filter.Status,
+		GroupSlug:       filter.Group,
+		IncludeArchived: includeArchived,
+		Limit:           perPage,
+		Offset:          (page - 1) * perPage,
 	})
 	if err != nil {
 		s.renderDBUnavailable(ctx, w, err)

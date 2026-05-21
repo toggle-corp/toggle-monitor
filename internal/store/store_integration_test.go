@@ -252,6 +252,83 @@ func TestListActiveMonitors_ordersByStatusGroupName(t *testing.T) {
 	}
 }
 
+func TestSoftDeleteMonitor_archivesAndPreservesHistory(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+	if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
+		Slug: "api", FriendlyName: "API", URL: "http://api", GroupSlug: "g", Source: store.SourceStatic,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+	_ = repo.ApplyCheck(ctx, "api",
+		alert.State{Status: alert.StatusDown, OpenedAt: t0},
+		t0, 503, "x",
+		&alert.Event{Type: alert.EventOpen, At: t0, StatusCode: 503, Error: "x"},
+	)
+
+	if err := repo.SoftDeleteMonitor(ctx, "api", "removed from config"); err != nil {
+		t.Fatalf("soft-delete: %v", err)
+	}
+	got, err := repo.GetMonitor(ctx, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Archived {
+		t.Error("expected archived=true")
+	}
+	if got.ArchiveReason == nil || *got.ArchiveReason != "removed from config" {
+		t.Errorf("archive_reason: got %v, want 'removed from config'", got.ArchiveReason)
+	}
+	events, _ := repo.ListAlertsForMonitor(ctx, "api", 10)
+	if len(events) != 1 {
+		t.Errorf("history should be preserved across soft-delete, got %d events", len(events))
+	}
+
+	// Listing with IncludeArchived=false should hide it.
+	listing, _ := repo.ListMonitors(ctx, store.ListMonitorsOpts{})
+	for _, r := range listing.Items {
+		if r.Slug == "api" {
+			t.Error("archived monitor should be hidden from default listing")
+		}
+	}
+	// IncludeArchived=true should surface it.
+	listing, _ = repo.ListMonitors(ctx, store.ListMonitorsOpts{IncludeArchived: true})
+	found := false
+	for _, r := range listing.Items {
+		if r.Slug == "api" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("archived monitor should appear with IncludeArchived=true")
+	}
+}
+
+func TestListActiveBySource_filtersAndExcludesArchived(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+	specs := []store.MonitorSpec{
+		{Slug: "s1", FriendlyName: "S1", URL: "http://x", GroupSlug: "g", Source: store.SourceStatic},
+		{Slug: "s2", FriendlyName: "S2", URL: "http://x", GroupSlug: "g", Source: store.SourceStatic},
+		{Slug: "k1", FriendlyName: "K1", URL: "http://x", GroupSlug: "g", Source: store.SourceKube},
+	}
+	for _, s := range specs {
+		if err := repo.ReconcileMonitor(ctx, s); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+	}
+	_ = repo.SoftDeleteMonitor(ctx, "s2", "removed")
+
+	out, err := repo.ListActiveBySource(ctx, store.SourceStatic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].Slug != "s1" {
+		t.Errorf("expected only s1, got %+v", out)
+	}
+}
+
 func TestHomepageStats_countsByStatus(t *testing.T) {
 	repo := newRepo(t)
 	ctx := context.Background()

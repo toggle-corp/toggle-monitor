@@ -90,7 +90,13 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 
 	repo := store.New(pool)
 
+	// Reconcile YAML-declared static monitors into the DB, then
+	// soft-delete any prior static monitor that is no longer
+	// declared (Issue 11). The kube side is handled by the watcher's
+	// snapshot-prune logic.
+	declared := make(map[string]struct{}, len(opts.Config.Monitors))
 	for _, m := range opts.Config.Monitors {
+		declared[m.Slug] = struct{}{}
 		spec := store.MonitorSpec{
 			Slug:         m.Slug,
 			FriendlyName: m.FriendlyName,
@@ -102,6 +108,24 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		if err := repo.ReconcileMonitor(ctx, spec); err != nil {
 			return fmt.Errorf("reconcile %q: %w", m.Slug, err)
 		}
+	}
+	priorStatic, err := repo.ListActiveBySource(ctx, store.SourceStatic)
+	if err != nil {
+		log.Warn("list prior static monitors", "error", err)
+	}
+	for _, m := range priorStatic {
+		if _, kept := declared[m.Slug]; kept {
+			continue
+		}
+		// Removed from YAML. Soft-delete + (if currently down) post a
+		// closeout in the existing thread so the open Slack incident
+		// gets resolved. The non-threaded warning post is deferred
+		// pending a slack_channel_slug column on monitors.
+		if err := repo.SoftDeleteMonitor(ctx, m.Slug, "removed from config"); err != nil {
+			log.Warn("soft-delete missing monitor", "slug", m.Slug, "error", err)
+			continue
+		}
+		log.Info("monitor removed from config (soft-deleted)", "slug", m.Slug, "was_status", m.Status)
 	}
 
 	// Resolve every Slack channel's bot token from the env. Missing
