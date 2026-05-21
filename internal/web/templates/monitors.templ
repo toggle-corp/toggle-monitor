@@ -1,0 +1,134 @@
+package templates
+
+import (
+	"fmt"
+	"net/url"
+
+	"github.com/toggle-corp/toggle-monitor/internal/store"
+)
+
+// MonitorsFilter is the slim shape the listing handler passes to the
+// template for repopulating the filter form.
+type MonitorsFilter struct {
+	Search string
+	Status string
+	Group  string
+}
+
+// Paginator renders prev/next controls plus a "page X of Y" indicator.
+// extraParams are URL-encoded query-string entries to keep on every
+// link (filters, search, etc.).
+templ Paginator(basePath string, page, perPage, total int, extraParams url.Values) {
+	if total <= perPage && page == 1 {
+		// Nothing to paginate.
+	} else {
+		<div class="mt-3 flex items-center gap-3 text-sm">
+			<span class="text-slate-500">Page { fmt.Sprint(page) } of { fmt.Sprint(pageCount(total, perPage)) } · { fmt.Sprint(total) } total</span>
+			if page > 1 {
+				<a class="text-blue-700 hover:underline" href={ paginatorLink(basePath, extraParams, page-1) }>← Prev</a>
+			}
+			if page*perPage < total {
+				<a class="text-blue-700 hover:underline" href={ paginatorLink(basePath, extraParams, page+1) }>Next →</a>
+			}
+		</div>
+	}
+}
+
+templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, groups []store.MonitorRow, knownGroups []string, page, perPage int) {
+	@Layout("Monitors") {
+		<h1 class="text-xl font-semibold mb-3">Monitors</h1>
+		<form
+			hx-get="/monitors"
+			hx-target="body"
+			hx-push-url="true"
+			method="get"
+			action="/monitors"
+			class="flex flex-wrap items-end gap-3 mb-4 bg-white rounded border border-slate-200 p-3"
+		>
+			<div>
+				<label class="block text-xs text-slate-500 mb-1" for="q">Search</label>
+				<input id="q" name="q" value={ filter.Search } class="border border-slate-300 rounded px-2 py-1 text-sm" placeholder="name or slug"/>
+			</div>
+			<div>
+				<label class="block text-xs text-slate-500 mb-1" for="status">Status</label>
+				<select id="status" name="status" class="border border-slate-300 rounded px-2 py-1 text-sm">
+					<option value="" selected?={ filter.Status == "" }>(any)</option>
+					<option value="up" selected?={ filter.Status == "up" }>up</option>
+					<option value="down" selected?={ filter.Status == "down" }>down</option>
+					<option value="temporary-paused" selected?={ filter.Status == "temporary-paused" }>temporary-paused</option>
+				</select>
+			</div>
+			<div>
+				<label class="block text-xs text-slate-500 mb-1" for="group">Group</label>
+				<select id="group" name="group" class="border border-slate-300 rounded px-2 py-1 text-sm">
+					<option value="" selected?={ filter.Group == "" }>(any)</option>
+					for _, g := range knownGroups {
+						<option value={ g } selected?={ filter.Group == g }>{ g }</option>
+					}
+				</select>
+			</div>
+			<button class="bg-slate-900 text-white text-sm px-3 py-1.5 rounded">Apply</button>
+			if filter.Search != "" || filter.Status != "" || filter.Group != "" {
+				<a class="text-sm text-slate-500 hover:text-slate-900" href="/monitors">Clear filters</a>
+			}
+		</form>
+
+		if len(listing.Items) == 0 {
+			<div class="bg-white rounded border border-slate-200 p-6 text-center text-sm text-slate-500">
+				<p>No monitors match your filters.</p>
+				<a class="text-blue-700 hover:underline" href="/monitors">Clear filters</a>
+			</div>
+		} else {
+			<table class="w-full bg-white rounded border border-slate-200 overflow-hidden">
+				<thead>
+					<tr class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+						<th class="py-2 px-3">Name</th>
+						<th class="py-2 px-3">Group</th>
+						<th class="py-2 px-3">Status</th>
+						<th class="py-2 px-3">URL</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, m := range listing.Items {
+						@MonitorRow(m)
+					}
+				</tbody>
+			</table>
+			@Paginator("/monitors", page, perPage, listing.Total, paramsFromFilter(filter))
+		}
+	}
+}
+
+templ GroupPage(slug string, listing store.MonitorListing, page, perPage int) {
+	@Layout("Group: "+slug) {
+		<div class="flex items-center gap-3 mb-3">
+			<h1 class="text-xl font-semibold">Group: { slug }</h1>
+			<a class="text-sm text-slate-500 hover:text-slate-900" href="/monitors">All monitors →</a>
+		</div>
+		if len(listing.Items) == 0 {
+			<div class="bg-white rounded border border-slate-200 p-6 text-center text-sm text-slate-500">
+				<p>No monitors in this group.</p>
+			</div>
+		} else {
+			<table class="w-full bg-white rounded border border-slate-200 overflow-hidden">
+				<thead>
+					<tr class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+						<th class="py-2 px-3">Name</th>
+						<th class="py-2 px-3">Status</th>
+						<th class="py-2 px-3">URL</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, m := range listing.Items {
+						<tr class="border-b border-slate-100">
+							<td class="py-2 px-3"><a class="text-blue-700 hover:underline" href={ templ.URL("/monitor/" + m.Slug) }>{ m.FriendlyName }</a></td>
+							<td class="py-2 px-3">@StatusBadge(string(m.Status))</td>
+							<td class="py-2 px-3 text-sm text-slate-500">{ m.URL }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+			@Paginator("/group/"+slug, page, perPage, listing.Total, nil)
+		}
+	}
+}

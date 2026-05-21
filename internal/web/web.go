@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -23,14 +24,45 @@ import (
 //go:embed all:static
 var StaticAssets embed.FS
 
+// PageSizes carries the per-listing default + the per_page cap.
+// Production wires these from config.UI; tests pass small defaults.
+type PageSizes struct {
+	HomepageAlerts   int
+	MonitorListing   int
+	MonitorHistory   int
+	DiscoveryListing int
+	MaxPerPage       int
+}
+
+// DefaultPageSizes is used when a Server is constructed without an
+// explicit PageSizes (tests, mostly). Mirrors the schema's
+// suggested values.
+var DefaultPageSizes = PageSizes{
+	HomepageAlerts:   20,
+	MonitorListing:   50,
+	MonitorHistory:   50,
+	DiscoveryListing: 50,
+	MaxPerPage:       200,
+}
+
 // Server wires the HTTP surface for the read-only UI plus the
 // k8s probe endpoints.
 type Server struct {
-	repo    *store.Repo
-	log     *slog.Logger
-	metrics http.Handler // /metrics handler; nil → endpoint is omitted
-	ready   atomic.Bool
+	repo        *store.Repo
+	log         *slog.Logger
+	metrics     http.Handler // /metrics handler; nil → endpoint is omitted
+	pageSizes   PageSizes
+	knownGroups []string
+	ready       atomic.Bool
 }
+
+// SetPageSizes overrides the per-listing default page sizes (called
+// by lifecycle after the config is loaded).
+func (s *Server) SetPageSizes(ps PageSizes) { s.pageSizes = ps }
+
+// SetKnownGroups wires the slugs that appear in the filter dropdown
+// on /monitors. Called by lifecycle after config load.
+func (s *Server) SetKnownGroups(g []string) { s.knownGroups = g }
 
 // New constructs a Server. Call MarkReady once the DB is connected and
 // the config has loaded so /readyz starts returning 200.
@@ -38,7 +70,7 @@ func New(repo *store.Repo, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{repo: repo, log: log}
+	return &Server{repo: repo, log: log, pageSizes: DefaultPageSizes}
 }
 
 // SetMetricsHandler wires the Prometheus exposition handler. When set,
@@ -76,7 +108,9 @@ func (s *Server) Routes() http.Handler {
 	}
 
 	mux.HandleFunc("GET /{$}", s.handleHomepage)
+	mux.HandleFunc("GET /monitors", s.handleMonitorsListing)
 	mux.HandleFunc("GET /monitor/{slug}", s.handleMonitorDetail)
+	mux.HandleFunc("GET /group/{slug}", s.handleGroupPage)
 
 	return mux
 }
@@ -88,13 +122,79 @@ func (s *Server) handleHomepage(w http.ResponseWriter, r *http.Request) {
 		s.renderDBUnavailable(ctx, w, err)
 		return
 	}
-	monitors, err := s.repo.ListActiveMonitors(ctx)
+	page, perPage := s.pagination(r, s.pageSizes.HomepageAlerts)
+	alerts, err := s.repo.ListLatestAlerts(ctx, perPage, (page-1)*perPage)
 	if err != nil {
 		s.renderDBUnavailable(ctx, w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.Homepage(stats, monitors).Render(ctx, w)
+	_ = templates.Homepage(stats, alerts, page, perPage).Render(ctx, w)
+}
+
+func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	page, perPage := s.pagination(r, s.pageSizes.MonitorListing)
+	filter := templates.MonitorsFilter{
+		Search: r.URL.Query().Get("q"),
+		Status: r.URL.Query().Get("status"),
+		Group:  r.URL.Query().Get("group"),
+	}
+	listing, err := s.repo.ListMonitors(ctx, store.ListMonitorsOpts{
+		Search:    filter.Search,
+		Status:    filter.Status,
+		GroupSlug: filter.Group,
+		Limit:     perPage,
+		Offset:    (page - 1) * perPage,
+	})
+	if err != nil {
+		s.renderDBUnavailable(ctx, w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = templates.MonitorsPage(listing, filter, nil, s.knownGroups, page, perPage).Render(ctx, w)
+}
+
+func (s *Server) handleGroupPage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	slug := r.PathValue("slug")
+	if !validSlugForURL(slug) {
+		http.NotFound(w, r)
+		return
+	}
+	page, perPage := s.pagination(r, s.pageSizes.MonitorListing)
+	listing, err := s.repo.ListMonitors(ctx, store.ListMonitorsOpts{
+		GroupSlug: slug,
+		Limit:     perPage,
+		Offset:    (page - 1) * perPage,
+	})
+	if err != nil {
+		s.renderDBUnavailable(ctx, w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = templates.GroupPage(slug, listing, page, perPage).Render(ctx, w)
+}
+
+// pagination resolves the requested page + per-page from the URL,
+// clamping per_page to [1, MaxPerPage].
+func (s *Server) pagination(r *http.Request, defPer int) (page, perPage int) {
+	page = 1
+	if v := r.URL.Query().Get("page"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			page = n
+		}
+	}
+	perPage = defPer
+	if v := r.URL.Query().Get("per_page"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			perPage = n
+		}
+	}
+	if max := s.pageSizes.MaxPerPage; max > 0 && perPage > max {
+		perPage = max
+	}
+	return page, perPage
 }
 
 func (s *Server) handleMonitorDetail(w http.ResponseWriter, r *http.Request) {

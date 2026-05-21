@@ -73,7 +73,7 @@ func TestReadyz_flipsAfterMarkReady(t *testing.T) {
 	}
 }
 
-func TestHomepage_rendersStatsAndListing(t *testing.T) {
+func TestHomepage_rendersStatsAndLatestAlerts(t *testing.T) {
 	srv, repo := newServer(t)
 	ctx := context.Background()
 
@@ -85,22 +85,61 @@ func TestHomepage_rendersStatsAndListing(t *testing.T) {
 			t.Fatalf("reconcile: %v", err)
 		}
 	}
-	// Knock api down so the listing has a non-up row to surface first.
 	t0 := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
 	_ = repo.ApplyCheck(ctx, "api",
 		alert.State{Status: alert.StatusDown, OpenedAt: t0},
-		t0, 503, "down",
-		&alert.Event{Type: alert.EventOpen, At: t0, StatusCode: 503, Error: "down"},
+		t0, 503, "Service Unavailable",
+		&alert.Event{Type: alert.EventOpen, At: t0, StatusCode: 503, Error: "Service Unavailable"},
 	)
 
 	resp, body := get(t, srv.Routes(), "/")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("homepage status: got %d, want 200", resp.StatusCode)
 	}
-	for _, want := range []string{"API", "Web", "DOWN", "UP", "Overview", "/monitor/api"} {
+	for _, want := range []string{"Overview", "Latest alerts", "open", "api"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("homepage body missing %q", want)
 		}
+	}
+}
+
+func TestMonitorsListing_rendersAndFilters(t *testing.T) {
+	srv, repo := newServer(t)
+	ctx := context.Background()
+
+	for _, s := range []store.MonitorSpec{
+		{Slug: "api", FriendlyName: "API", URL: "http://api", GroupSlug: "prod", Source: store.SourceStatic},
+		{Slug: "web", FriendlyName: "Web", URL: "http://web", GroupSlug: "prod", Source: store.SourceStatic},
+	} {
+		if err := repo.ReconcileMonitor(ctx, s); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+	}
+
+	// Unfiltered: both monitors visible.
+	resp, body := get(t, srv.Routes(), "/monitors")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("monitors status: got %d, want 200", resp.StatusCode)
+	}
+	for _, want := range []string{"API", "Web", "/monitor/api", "/monitor/web"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+
+	// Search filter narrows to one monitor.
+	resp, body = get(t, srv.Routes(), "/monitors?q=API")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("filtered status: got %d", resp.StatusCode)
+	}
+	if !strings.Contains(body, "API") || strings.Contains(body, "/monitor/web") {
+		t.Errorf("search 'API' should narrow to API only, got body:\n%s", firstN(body, 400))
+	}
+
+	// Empty result shows the clear-filters link.
+	_, body = get(t, srv.Routes(), "/monitors?q=ZZZ_NONE")
+	if !strings.Contains(body, "Clear filters") {
+		t.Errorf("empty result should show clear-filters; got:\n%s", firstN(body, 400))
 	}
 }
 

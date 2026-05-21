@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -145,32 +147,104 @@ func (r *Repo) GetMonitor(ctx context.Context, slug string) (MonitorRow, error) 
 // listing page (down → paused → ssl-expiring → up, then group, then
 // friendly name).
 func (r *Repo) ListActiveMonitors(ctx context.Context) ([]MonitorRow, error) {
-	rows, err := r.pool.Query(ctx, selectMonitor+`
-		WHERE archived = FALSE
+	listing, err := r.ListMonitors(ctx, ListMonitorsOpts{Limit: 0})
+	if err != nil {
+		return nil, err
+	}
+	return listing.Items, nil
+}
+
+// ListMonitorsOpts controls filtering + pagination of the listing.
+// All fields are optional: zero values mean "no filter", and Limit==0
+// means "no limit" (used by integrations that page in memory).
+type ListMonitorsOpts struct {
+	Search          string // substring match on friendly_name OR slug
+	Status          string // "" → no status filter
+	GroupSlug       string // "" → no group filter
+	IncludeArchived bool
+	Offset          int
+	Limit           int
+}
+
+// MonitorListing is the paginated result of ListMonitors.
+type MonitorListing struct {
+	Items []MonitorRow
+	Total int
+}
+
+// ListMonitors returns a filtered + paginated slice of monitors,
+// along with the total matching the filter (for pagination UI).
+// Sort order matches ListActiveMonitors.
+func (r *Repo) ListMonitors(ctx context.Context, opts ListMonitorsOpts) (MonitorListing, error) {
+	conds := []string{}
+	args := []any{}
+	add := func(cond string, val any) {
+		args = append(args, val)
+		conds = append(conds, fmt.Sprintf(cond, "$"+itoa(len(args))))
+	}
+	if !opts.IncludeArchived {
+		conds = append(conds, "archived = FALSE")
+	}
+	if opts.Status != "" {
+		add("status = %s", opts.Status)
+	}
+	if opts.GroupSlug != "" {
+		add("group_slug = %s", opts.GroupSlug)
+	}
+	if opts.Search != "" {
+		args = append(args, "%"+opts.Search+"%")
+		conds = append(conds, fmt.Sprintf("(friendly_name ILIKE $%d OR slug ILIKE $%d)", len(args), len(args)))
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
+	}
+	order := `
 		ORDER BY
 			CASE status
 				WHEN 'down' THEN 0
 				WHEN 'temporary-paused' THEN 1
 				WHEN 'kube-paused' THEN 2
-				WHEN 'ssl-expiring' THEN 3
 				WHEN 'up' THEN 4
 				ELSE 5
 			END,
 			group_slug,
-			friendly_name`)
+			friendly_name`
+
+	// total
+	var total int
+	countQ := "SELECT COUNT(*) FROM monitors" + where
+	if err := r.pool.QueryRow(ctx, countQ, args...).Scan(&total); err != nil {
+		return MonitorListing{}, fmt.Errorf("count monitors: %w", err)
+	}
+
+	// items
+	q := selectMonitor + where + order
+	if opts.Limit > 0 {
+		args = append(args, opts.Limit)
+		q += fmt.Sprintf(" LIMIT $%d", len(args))
+		args = append(args, opts.Offset)
+		q += fmt.Sprintf(" OFFSET $%d", len(args))
+	}
+	rows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list active monitors: %w", err)
+		return MonitorListing{}, fmt.Errorf("list monitors: %w", err)
 	}
 	defer rows.Close()
-	var out []MonitorRow
+	out := MonitorListing{Total: total}
 	for rows.Next() {
 		m, err := scanMonitor(rows)
 		if err != nil {
-			return nil, err
+			return MonitorListing{}, err
 		}
-		out = append(out, m)
+		out.Items = append(out.Items, m)
 	}
 	return out, rows.Err()
+}
+
+func itoa(n int) string {
+	// small-allocation friendly integer-to-decimal
+	return strconv.Itoa(n)
 }
 
 // HomepageStats returns the count of monitors in each status. Used by
@@ -486,28 +560,38 @@ func (r *Repo) ListAlertsForMonitor(ctx context.Context, slug string, limit int)
 	return out, rows.Err()
 }
 
+// LatestAlertsListing wraps the paginated latest-alerts query.
+type LatestAlertsListing struct {
+	Items []AlertEventRow
+	Total int
+}
+
 // ListLatestAlerts returns recent alert events across all monitors,
 // newest first. Powers the homepage latest-alerts list.
-func (r *Repo) ListLatestAlerts(ctx context.Context, limit int) ([]AlertEventRow, error) {
+func (r *Repo) ListLatestAlerts(ctx context.Context, limit, offset int) (LatestAlertsListing, error) {
+	var total int
+	if err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM alert_events`).Scan(&total); err != nil {
+		return LatestAlertsListing{}, fmt.Errorf("count latest alerts: %w", err)
+	}
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, monitor_slug, type, at, status_code, error, downtime_seconds
 		FROM alert_events
 		ORDER BY at DESC, id DESC
-		LIMIT $1
-	`, limit)
+		LIMIT $1 OFFSET $2
+	`, limit, offset)
 	if err != nil {
-		return nil, fmt.Errorf("list latest alerts: %w", err)
+		return LatestAlertsListing{}, fmt.Errorf("list latest alerts: %w", err)
 	}
 	defer rows.Close()
-	var out []AlertEventRow
+	out := LatestAlertsListing{Total: total}
 	for rows.Next() {
 		var ev AlertEventRow
 		var typ string
 		if err := rows.Scan(&ev.ID, &ev.MonitorSlug, &typ, &ev.At, &ev.StatusCode, &ev.Error, &ev.DowntimeSeconds); err != nil {
-			return nil, err
+			return LatestAlertsListing{}, err
 		}
 		ev.Type = alert.EventType(typ)
-		out = append(out, ev)
+		out.Items = append(out.Items, ev)
 	}
 	return out, rows.Err()
 }

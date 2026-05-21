@@ -133,6 +133,18 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 
 	srv := web.New(repo, log)
 	srv.SetMetricsHandler(metrics.Handler())
+	srv.SetPageSizes(web.PageSizes{
+		HomepageAlerts:   opts.Config.UI.PageSize.HomepageAlerts,
+		MonitorListing:   opts.Config.UI.PageSize.MonitorListing,
+		MonitorHistory:   opts.Config.UI.PageSize.MonitorHistory,
+		DiscoveryListing: opts.Config.UI.PageSize.DiscoveryListing,
+		MaxPerPage:       opts.Config.UI.MaxPerPage,
+	})
+	groupSlugs := make([]string, 0, len(opts.Config.Groups))
+	for _, g := range opts.Config.Groups {
+		groupSlugs = append(groupSlugs, g.Slug)
+	}
+	srv.SetKnownGroups(groupSlugs)
 	listener, err := net.Listen("tcp", opts.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("bind listen address %q: %w", opts.ListenAddr, err)

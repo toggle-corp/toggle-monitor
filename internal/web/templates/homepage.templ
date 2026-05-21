@@ -2,6 +2,7 @@ package templates
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/toggle-corp/toggle-monitor/internal/store"
 )
@@ -13,7 +14,7 @@ templ statTile(label string, count int, accent string) {
 	</div>
 }
 
-templ Homepage(stats store.HomepageStats, monitors []store.MonitorRow) {
+templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page, perPage int) {
 	@Layout("Home") {
 		<section class="mb-8">
 			<h1 class="text-xl font-semibold mb-3">Overview</h1>
@@ -24,28 +25,32 @@ templ Homepage(stats store.HomepageStats, monitors []store.MonitorRow) {
 				@statTile("SSL expiring", stats.SSLExpiring, "border-amber-200")
 				@statTile("SSL skipped", stats.SSLSkipped, "border-slate-200")
 			</div>
+			<div class="mt-3">
+				<a href="/monitors" class="text-sm text-blue-700 hover:underline">All monitors →</a>
+			</div>
 		</section>
 
 		<section>
-			<h2 class="text-lg font-semibold mb-2">Monitors</h2>
-			if len(monitors) == 0 {
-				<p class="text-sm text-slate-500">No monitors configured yet.</p>
+			<h2 class="text-lg font-semibold mb-2">Latest alerts</h2>
+			if len(alerts.Items) == 0 {
+				<p class="text-sm text-slate-500">No alerts yet.</p>
 			} else {
-				<table class="w-full bg-white rounded border border-slate-200 overflow-hidden">
-					<thead>
-						<tr class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-							<th class="py-2 px-3">Name</th>
-							<th class="py-2 px-3">Group</th>
-							<th class="py-2 px-3">Status</th>
-							<th class="py-2 px-3">URL</th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, m := range monitors {
-							@MonitorRow(m)
-						}
-					</tbody>
-				</table>
+				<ul class="bg-white rounded border border-slate-200 divide-y divide-slate-100">
+					for _, ev := range alerts.Items {
+						<li class="py-2 px-3 text-sm flex gap-3">
+							<span class="font-medium w-24">{ string(ev.Type) }</span>
+							<a class="text-blue-700 hover:underline w-40" href={ templ.URL("/monitor/" + ev.MonitorSlug) }>{ ev.MonitorSlug }</a>
+							<span class="text-slate-500">{ ev.At.UTC().Format(time.RFC3339) }</span>
+							if ev.StatusCode != nil {
+								<span class="text-slate-700">HTTP { fmt.Sprint(*ev.StatusCode) }</span>
+							}
+							if ev.Error != nil && *ev.Error != "" {
+								<span class="text-rose-700 truncate">{ *ev.Error }</span>
+							}
+						</li>
+					}
+				</ul>
+				@Paginator("/", page, perPage, alerts.Total, nil)
 			}
 		</section>
 	}
