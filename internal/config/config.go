@@ -7,7 +7,7 @@
 package config
 
 import (
-	"bytes"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -108,47 +108,133 @@ type Monitor struct {
 }
 
 // Load parses and validates the YAML config. Returns a populated
-// Config on success, or a descriptive error on the first violation.
-// (Multi-error reporting lands in Issue 5.)
+// Config on success, or a descriptive error on validation failure.
+//
+// Top-level keys whose names start with "x-" are silently ignored
+// (docker-compose convention for anchor-only hosts). All other
+// unrecognized top-level keys are a hard error.
 func Load(data []byte) (Config, error) {
-	var cfg Config
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true) // reject unknown top-level keys (Issue 5 will add x-* allow)
-	if err := dec.Decode(&cfg); err != nil {
+	expanded, err := interpolate(data)
+	if err != nil {
+		return Config{}, err
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(expanded, &root); err != nil {
 		return Config{}, fmt.Errorf("parse yaml: %w", err)
 	}
-	if err := validate(&cfg); err != nil {
+	if err := checkTopLevelKeys(&root); err != nil {
+		return Config{}, err
+	}
+
+	var cfg Config
+	if err := root.Decode(&cfg); err != nil {
+		return Config{}, fmt.Errorf("parse yaml: %w", err)
+	}
+	c := &checker{root: &root}
+	c.validate(&cfg)
+	if err := c.err(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
 }
 
-func validate(cfg *Config) error {
-	// Slack section first — monitors reference its channels.
+// knownTopLevelKeys is the schema's allowlist (see
+// docs/config-schema.md §6). Keys prefixed with "x-" are also
+// accepted, regardless of their value, for anchor-only hosts.
+var knownTopLevelKeys = map[string]struct{}{
+	"displayTimezone": {}, "publicBaseURL": {}, "dbBodyMaxChars": {},
+	"kube": {}, "ui": {}, "theme": {}, "httpClient": {}, "heartbeat": {}, "database": {},
+	"slack":  {},
+	"groups": {}, "monitors": {},
+}
+
+func checkTopLevelKeys(root *yaml.Node) error {
+	if root == nil || root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
+		return nil
+	}
+	top := root.Content[0]
+	if top.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(top.Content); i += 2 {
+		key := top.Content[i]
+		if key.Kind != yaml.ScalarNode {
+			continue
+		}
+		name := key.Value
+		if strings.HasPrefix(name, "x-") {
+			continue
+		}
+		if _, ok := knownTopLevelKeys[name]; !ok {
+			return fmt.Errorf("line %d: unknown top-level key %q (use an x-* prefix for anchor-only blocks)", key.Line, name)
+		}
+	}
+	return nil
+}
+
+// checker accumulates validation errors with line numbers resolved
+// against the original YAML node tree.
+type checker struct {
+	root *yaml.Node
+	errs []error
+}
+
+func (c *checker) errf(path []any, format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	line := 0
+	if n := nodeAt(c.root, path...); n != nil {
+		line = n.Line
+	}
+	p := pathStr(path)
+	if line > 0 {
+		c.errs = append(c.errs, fmt.Errorf("line %d: %s: %s", line, p, msg))
+	} else {
+		c.errs = append(c.errs, fmt.Errorf("%s: %s", p, msg))
+	}
+}
+
+func (c *checker) err() error {
+	if len(c.errs) == 0 {
+		return nil
+	}
+	return errors.Join(c.errs...)
+}
+
+// validate runs every cross-field check against cfg, accumulating
+// errors with line numbers from the underlying yaml.Node tree.
+func (c *checker) validate(cfg *Config) {
+	// Database password env var name must match the env var regex.
+	if !envVarNamePattern.MatchString(cfg.Database.PasswordEnv) {
+		c.errf([]any{"database", "passwordEnv"},
+			"%q must match ^[A-Z][A-Z0-9_]*$ (do not interpolate ${...} into this field)", cfg.Database.PasswordEnv)
+	}
+
 	if cfg.DBBodyMaxChars < cfg.Slack.BodyMaxChars {
-		return fmt.Errorf("dbBodyMaxChars (%d) must be >= slack.bodyMaxChars (%d)",
-			cfg.DBBodyMaxChars, cfg.Slack.BodyMaxChars)
+		c.errf([]any{"dbBodyMaxChars"},
+			"%d must be >= slack.bodyMaxChars (%d)", cfg.DBBodyMaxChars, cfg.Slack.BodyMaxChars)
 	}
-	if len(cfg.Slack.Channels) == 0 {
-		return fmt.Errorf("slack.channels: at least one channel is required")
-	}
+
 	seenSlackChannels := map[string]struct{}{}
+	if len(cfg.Slack.Channels) == 0 {
+		c.errf([]any{"slack", "channels"}, "at least one channel is required")
+	}
 	for i, ch := range cfg.Slack.Channels {
+		base := []any{"slack", "channels", i}
 		if err := slug.Validate(ch.Slug); err != nil {
-			return fmt.Errorf("slack.channels[%d].slug: %w", i, err)
+			c.errf(append(base, "slug"), "%v", err)
 		}
 		if _, dup := seenSlackChannels[ch.Slug]; dup {
-			return fmt.Errorf("slack.channels[%d].slug: duplicate slug %q", i, ch.Slug)
+			c.errf(append(base, "slug"), "duplicate slug %q", ch.Slug)
 		}
 		seenSlackChannels[ch.Slug] = struct{}{}
 		if strings.HasPrefix(ch.ChannelID, "D") {
-			return fmt.Errorf("slack.channels[%d].channelId: DMs (D...) are not allowed", i)
-		}
-		if !channelIDPattern.MatchString(ch.ChannelID) {
-			return fmt.Errorf("slack.channels[%d].channelId: %q does not match %s", i, ch.ChannelID, channelIDPattern.String())
+			c.errf(append(base, "channelId"), "DMs (D...) are not allowed")
+		} else if !channelIDPattern.MatchString(ch.ChannelID) {
+			c.errf(append(base, "channelId"), "%q does not match %s", ch.ChannelID, channelIDPattern.String())
 		}
 		if !envVarNamePattern.MatchString(ch.TokenEnv) {
-			return fmt.Errorf("slack.channels[%d].tokenEnv: %q must match ^[A-Z][A-Z0-9_]*$", i, ch.TokenEnv)
+			c.errf(append(base, "tokenEnv"),
+				"%q must match ^[A-Z][A-Z0-9_]*$ (do not interpolate ${...} into this field)", ch.TokenEnv)
 		}
 	}
 
@@ -156,11 +242,12 @@ func validate(cfg *Config) error {
 	seenGroups := map[string]struct{}{}
 	hasKubeDiscovered := false
 	for i, g := range cfg.Groups {
+		base := []any{"groups", i}
 		if err := slug.Validate(g.Slug); err != nil {
-			return fmt.Errorf("groups[%d].slug: %w", i, err)
+			c.errf(append(base, "slug"), "%v", err)
 		}
 		if _, dup := seenGroups[g.Slug]; dup {
-			return fmt.Errorf("groups[%d].slug: duplicate slug %q", i, g.Slug)
+			c.errf(append(base, "slug"), "duplicate slug %q", g.Slug)
 		}
 		seenGroups[g.Slug] = struct{}{}
 		if g.Slug == "kube-discovered" {
@@ -168,45 +255,106 @@ func validate(cfg *Config) error {
 		}
 	}
 	if !hasKubeDiscovered {
-		return fmt.Errorf("groups: a group with slug %q is required", "kube-discovered")
+		c.errf([]any{"groups"}, "a group with slug %q is required", "kube-discovered")
 	}
 
-	// Monitor validation: slug valid + unique, group resolves,
-	// cross-field timing rule, slack channel resolves, notify entries
-	// are raw Slack markup (userMapping slugs land in Issue 13).
+	// Monitor validation.
 	seenMonitors := map[string]struct{}{}
 	for i, m := range cfg.Monitors {
+		base := []any{"monitors", i}
 		if err := slug.Validate(m.Slug); err != nil {
-			return fmt.Errorf("monitors[%d].slug: %w", i, err)
+			c.errf(append(base, "slug"), "%v", err)
 		}
 		if _, dup := seenMonitors[m.Slug]; dup {
-			return fmt.Errorf("monitors[%d].slug: duplicate slug %q", i, m.Slug)
+			c.errf(append(base, "slug"), "duplicate slug %q", m.Slug)
 		}
 		seenMonitors[m.Slug] = struct{}{}
 		if _, ok := seenGroups[m.Group]; !ok {
-			return fmt.Errorf("monitors[%d].group: unknown group %q", i, m.Group)
+			c.errf(append(base, "group"), "unknown group %q", m.Group)
 		}
 		if _, ok := seenSlackChannels[m.Slack]; !ok {
-			return fmt.Errorf("monitors[%d].slack: unknown channel slug %q", i, m.Slack)
+			c.errf(append(base, "slack"), "unknown channel slug %q", m.Slack)
 		}
 		for j, n := range m.Notify {
 			if !isRawSlackMarkup(n) {
-				return fmt.Errorf("monitors[%d].notify[%d]: %q must be raw Slack markup wrapped in <…> (userMapping slugs land in a later release)", i, j, n)
+				c.errf(append(base, "notify", j),
+					"%q must be raw Slack markup wrapped in <…> (userMapping slugs land in a later release)", n)
 			}
 		}
 		interval := m.Interval.AsDuration()
 		timeout := m.Timeout.AsDuration()
 		backoff := m.RetryBackoff.AsDuration()
 		if timeout >= interval {
-			return fmt.Errorf("monitors[%d]: timeout (%s) must be less than interval (%s)", i, timeout, interval)
+			c.errf(base, "timeout (%s) must be less than interval (%s)", timeout, interval)
 		}
 		// retries × (timeout + retryBackoff) < interval
 		retryWindow := time.Duration(m.Retries) * (timeout + backoff)
 		if retryWindow >= interval {
-			return fmt.Errorf("monitors[%d]: retries × (timeout + retryBackoff) = %s must be less than interval (%s)", i, retryWindow, interval)
+			c.errf(base, "retries × (timeout + retryBackoff) = %s must be less than interval (%s)", retryWindow, interval)
+		}
+	}
+}
+
+// nodeAt walks the yaml.Node tree following a path of mapping keys
+// (string) and sequence indices (int). Returns the value node at the
+// given path, or nil if missing.
+func nodeAt(root *yaml.Node, path ...any) *yaml.Node {
+	if root == nil {
+		return nil
+	}
+	cur := root
+	if cur.Kind == yaml.DocumentNode && len(cur.Content) > 0 {
+		cur = cur.Content[0]
+	}
+	for _, p := range path {
+		if cur == nil {
+			return nil
+		}
+		switch v := p.(type) {
+		case string:
+			cur = mappingValue(cur, v)
+		case int:
+			cur = sequenceItem(cur, v)
+		default:
+			return nil
+		}
+	}
+	return cur
+}
+
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
 		}
 	}
 	return nil
+}
+
+func sequenceItem(node *yaml.Node, idx int) *yaml.Node {
+	if node.Kind != yaml.SequenceNode || idx < 0 || idx >= len(node.Content) {
+		return nil
+	}
+	return node.Content[idx]
+}
+
+func pathStr(path []any) string {
+	var b strings.Builder
+	for i, p := range path {
+		switch v := p.(type) {
+		case string:
+			if i > 0 {
+				b.WriteByte('.')
+			}
+			b.WriteString(v)
+		case int:
+			fmt.Fprintf(&b, "[%d]", v)
+		}
+	}
+	return b.String()
 }
 
 var envVarNamePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
