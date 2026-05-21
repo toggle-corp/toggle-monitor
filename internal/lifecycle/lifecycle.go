@@ -21,6 +21,7 @@ import (
 	"github.com/toggle-corp/toggle-monitor/internal/alert"
 	"github.com/toggle-corp/toggle-monitor/internal/config"
 	"github.com/toggle-corp/toggle-monitor/internal/db"
+	"github.com/toggle-corp/toggle-monitor/internal/heartbeat"
 	"github.com/toggle-corp/toggle-monitor/internal/migrate"
 	"github.com/toggle-corp/toggle-monitor/internal/observability"
 	"github.com/toggle-corp/toggle-monitor/internal/scheduler"
@@ -122,6 +123,10 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 
 	metrics := observability.New()
 
+	// Heartbeat source: pulls open-incidents from the store and the
+	// last-tick gauge from metrics.
+	hbSource := &heartbeatSource{repo: repo, metrics: metrics}
+
 	srv := web.New(repo, log)
 	srv.SetMetricsHandler(metrics.Handler())
 	listener, err := net.Listen("tcp", opts.ListenAddr)
@@ -171,18 +176,39 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		wsWatcher.Run(ctx, time.Hour)
 	}()
 
+	// Optional outbound heartbeat. When the YAML omits the block we
+	// skip starting the loop entirely.
+	var hb *heartbeat.Heartbeat
+	if hbCfg := opts.Config.Heartbeat; hbCfg != nil {
+		hb = heartbeat.New(heartbeat.Options{
+			URL:                 hbCfg.URL,
+			Interval:            hbCfg.Interval.AsDuration(),
+			FailOnStalledWorker: hbCfg.FailOnStalledWorker,
+			Source:              hbSource,
+			Logger:              log,
+		})
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			hb.Run(ctx)
+		}()
+	}
+
 	<-ctx.Done()
 	log.Info("shutdown signal received")
 
-	// Issue-2 shutdown: stop accepting HTTP, then wait for goroutines.
-	// Full graceful-shutdown ordering (cancel watcher, flush DB, final
-	// heartbeat) lands in Issue 16.
+	// Issue-2/15 shutdown: stop accepting HTTP, then wait for goroutines,
+	// then emit a final shutdown heartbeat. Full SIGTERM ordering (cancel
+	// watcher, flush DB, etc.) lands in Issue 16.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Warn("http shutdown", "error", err)
 	}
 	wg.Wait()
+	if hb != nil {
+		hb.SendShutdown(shutdownCtx)
+	}
 	return nil
 }
 
@@ -208,6 +234,20 @@ func buildPlans(cfg config.Config) []scheduler.Plan {
 		})
 	}
 	return out
+}
+
+// heartbeatSource adapts the store + observability to heartbeat.Source.
+type heartbeatSource struct {
+	repo    *store.Repo
+	metrics *observability.Metrics
+}
+
+func (h *heartbeatSource) LastTick() time.Time {
+	return h.metrics.LastTick()
+}
+
+func (h *heartbeatSource) OpenIncidents(ctx context.Context) (int, error) {
+	return h.repo.CountOpenIncidents(ctx)
 }
 
 // resolveSlackTokens reads each channel's tokenEnv from the process

@@ -33,9 +33,18 @@ type Config struct {
 	UI              UI         `yaml:"ui"`
 	Theme           Theme      `yaml:"theme"`
 	HTTPClient      HTTPClient `yaml:"httpClient"`
+	Heartbeat       *Heartbeat `yaml:"heartbeat,omitempty"` // optional; nil disables the deadman loop
 	Slack           Slack      `yaml:"slack"`
 	Groups          []Group    `yaml:"groups"`
 	Monitors        []Monitor  `yaml:"monitors"`
+}
+
+// Heartbeat is the outbound deadman heartbeat block. When nil, the
+// background loop is not started.
+type Heartbeat struct {
+	URL                 string   `yaml:"url"`
+	Interval            Duration `yaml:"interval"`
+	FailOnStalledWorker bool     `yaml:"failOnStalledWorker"`
 }
 
 // Slack is the consolidated Slack-related config block. v1 supports a
@@ -208,6 +217,15 @@ func (c *checker) validate(cfg *Config) {
 	if !envVarNamePattern.MatchString(cfg.Database.PasswordEnv) {
 		c.errf([]any{"database", "passwordEnv"},
 			"%q must match ^[A-Z][A-Z0-9_]*$ (do not interpolate ${...} into this field)", cfg.Database.PasswordEnv)
+	}
+
+	if cfg.Heartbeat != nil {
+		if cfg.Heartbeat.URL == "" {
+			c.errf([]any{"heartbeat", "url"}, "required when heartbeat block is set")
+		}
+		if cfg.Heartbeat.Interval.AsDuration() < 30*time.Second {
+			c.errf([]any{"heartbeat", "interval"}, "must be >= 30s, got %s", cfg.Heartbeat.Interval)
+		}
 	}
 
 	if cfg.DBBodyMaxChars < cfg.Slack.BodyMaxChars {

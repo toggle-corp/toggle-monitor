@@ -158,6 +158,17 @@ type HomepageStats struct {
 	SSLSkipped      int
 }
 
+// CountOpenIncidents returns the number of currently-down monitors —
+// used by the heartbeat body and ad-hoc queries.
+func (r *Repo) CountOpenIncidents(ctx context.Context) (int, error) {
+	row := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM monitors WHERE status = 'down' AND archived = FALSE`)
+	var n int
+	if err := row.Scan(&n); err != nil {
+		return 0, fmt.Errorf("count open incidents: %w", err)
+	}
+	return n, nil
+}
+
 func (r *Repo) HomepageStats(ctx context.Context) (HomepageStats, error) {
 	row := r.pool.QueryRow(ctx, `
 		SELECT

@@ -6,6 +6,7 @@ package observability
 
 import (
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -17,6 +18,10 @@ import (
 // once in lifecycle.RunServe and passed down to the modules that
 // produce data points. The labels and series names match
 // docs/issues-v1.md issue 14.
+//
+// The lastTickUnix field is a private mirror of the
+// WorkerLastTickSeconds gauge, kept in sync via atomic ops so the
+// heartbeat package can read it without pulling from the registry.
 type Metrics struct {
 	registry *prometheus.Registry
 
@@ -27,6 +32,8 @@ type Metrics struct {
 	SlackPostTotal        *prometheus.CounterVec
 	IngressReconcileTotal *prometheus.CounterVec
 	WorkerLastTickSeconds prometheus.Gauge
+
+	lastTickUnix atomic.Int64
 }
 
 // New builds a Metrics with all series registered into a fresh
@@ -98,9 +105,20 @@ func (m *Metrics) ObserveCheck(monitor, status string, duration time.Duration) {
 }
 
 // SetWorkerLastTick implements scheduler.Metrics: stamps the worker
-// liveness gauge.
+// liveness gauge and mirrors the value for non-Prometheus consumers.
 func (m *Metrics) SetWorkerLastTick(unixSeconds float64) {
 	m.WorkerLastTickSeconds.Set(unixSeconds)
+	m.lastTickUnix.Store(int64(unixSeconds))
+}
+
+// LastTick returns the most recent worker tick as a Go time.Time, or
+// the zero time if no tick has been recorded yet.
+func (m *Metrics) LastTick() time.Time {
+	v := m.lastTickUnix.Load()
+	if v == 0 {
+		return time.Time{}
+	}
+	return time.Unix(v, 0)
 }
 
 // SetActiveIncident implements scheduler.Metrics: flips the
