@@ -17,8 +17,11 @@ help:
 build: ## Compile the binary into bin/
 	$(GO) build -o $(BINARY) ./cmd/toggle-monitor
 
-test: ## Run all Go tests
+test: ## Run unit tests (fast, no Docker required)
 	$(GO) test ./...
+
+test-integration: ## Run integration tests (requires Docker; spins up Postgres via testcontainers)
+	$(GO) test -tags=integration ./...
 
 lint: $(GOLANGCI_LINT) ## Run golangci-lint
 	$(GOLANGCI_LINT) run ./...
