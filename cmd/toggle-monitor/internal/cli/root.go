@@ -9,8 +9,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// NewRootCmd returns the configured root command. Default action (no
-// subcommand) is "serve".
+// NewRootCmd returns the configured root command. The default action
+// (no subcommand) delegates to `serve`.
 func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "toggle-monitor",
@@ -20,12 +20,14 @@ func NewRootCmd() *cobra.Command {
 			"state changes and surfacing current state in a read-only UI.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		// Default action (no subcommand) is "serve".
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runServe(cmd.OutOrStdout())
-		},
 	}
-	root.AddCommand(newServeCmd())
+	serve := newServeCmd()
+	// Mirror serve's RunE so `toggle-monitor` with no subcommand starts
+	// the service (matching the design's "default action is serve").
+	root.RunE = serve.RunE
+	root.Flags().AddFlagSet(serve.Flags())
+
+	root.AddCommand(serve)
 	root.AddCommand(newValidateCmd())
 	root.AddCommand(newConfigCmd())
 	root.AddCommand(newMigrateCmd())
@@ -33,7 +35,8 @@ func NewRootCmd() *cobra.Command {
 }
 
 // notImplemented writes the standard placeholder message and returns
-// nil so the subcommand exits 0 (per Issue 1 acceptance criteria).
+// nil so a stub subcommand exits 0. Used by subcommands still on the
+// roadmap (validate, config show land in Issue 6).
 func notImplemented(w io.Writer, name string) error {
 	_, err := io.WriteString(w, name+": not yet implemented\n")
 	return err

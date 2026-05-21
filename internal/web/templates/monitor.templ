@@ -1,0 +1,71 @@
+package templates
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/toggle-corp/toggle-monitor/internal/store"
+)
+
+templ kv(label, value string) {
+	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 last:border-0">
+		<dt class="text-sm text-slate-500">{ label }</dt>
+		<dd class="text-sm text-slate-900 col-span-2 break-words">{ value }</dd>
+	</div>
+}
+
+templ MonitorDetail(m store.MonitorRow, history []store.AlertEventRow) {
+	@Layout(m.FriendlyName) {
+		<div class="flex items-center gap-3 mb-4">
+			<h1 class="text-xl font-semibold">{ m.FriendlyName }</h1>
+			@StatusBadge(string(m.Status))
+		</div>
+
+		<section class="bg-white rounded border border-slate-200 p-4 mb-6">
+			<h2 class="text-sm uppercase tracking-wide text-slate-500 mb-2">Current state</h2>
+			<dl>
+				@kv("Slug", m.Slug)
+				@kv("URL", m.URL)
+				@kv("Group", m.GroupSlug)
+				@kv("Source", string(m.Source))
+				if m.LastCheckedAt != nil {
+					@kv("Last checked", m.LastCheckedAt.UTC().Format(time.RFC3339))
+				}
+				if m.LastStatusCode != nil {
+					@kv("Last status code", fmt.Sprint(*m.LastStatusCode))
+				}
+				if m.LastError != nil && *m.LastError != "" {
+					@kv("Last error", *m.LastError)
+				}
+				if m.OpenedAt != nil {
+					@kv("Opened at", m.OpenedAt.UTC().Format(time.RFC3339))
+				}
+			</dl>
+		</section>
+
+		<section>
+			<h2 class="text-sm uppercase tracking-wide text-slate-500 mb-2">Alert history</h2>
+			if len(history) == 0 {
+				<p class="text-sm text-slate-500">No alert history yet.</p>
+			} else {
+				<ul class="bg-white rounded border border-slate-200 divide-y divide-slate-100">
+					for _, ev := range history {
+						<li class="py-2 px-3 text-sm flex gap-3">
+							<span class="font-medium w-20">{ string(ev.Type) }</span>
+							<span class="text-slate-500">{ ev.At.UTC().Format(time.RFC3339) }</span>
+							if ev.StatusCode != nil {
+								<span class="text-slate-700">HTTP { fmt.Sprint(*ev.StatusCode) }</span>
+							}
+							if ev.Error != nil && *ev.Error != "" {
+								<span class="text-rose-700">{ *ev.Error }</span>
+							}
+							if ev.DowntimeSeconds != nil {
+								<span class="text-slate-500">downtime { fmt.Sprint(*ev.DowntimeSeconds) }s</span>
+							}
+						</li>
+					}
+				</ul>
+			}
+		</section>
+	}
+}

@@ -1,0 +1,52 @@
+package templates
+
+import (
+	"fmt"
+
+	"github.com/toggle-corp/toggle-monitor/internal/store"
+)
+
+templ statTile(label string, count int, accent string) {
+	<div class={ "rounded border bg-white p-4", accent }>
+		<div class="text-sm text-slate-500">{ label }</div>
+		<div class="text-2xl font-semibold mt-1">{ fmt.Sprint(count) }</div>
+	</div>
+}
+
+templ Homepage(stats store.HomepageStats, monitors []store.MonitorRow) {
+	@Layout("Home") {
+		<section class="mb-8">
+			<h1 class="text-xl font-semibold mb-3">Overview</h1>
+			<div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+				@statTile("Up", stats.Up, "border-emerald-200")
+				@statTile("Down", stats.Down, "border-rose-200")
+				@statTile("Paused", stats.TemporaryPaused, "border-slate-200")
+				@statTile("SSL expiring", stats.SSLExpiring, "border-amber-200")
+				@statTile("SSL skipped", stats.SSLSkipped, "border-slate-200")
+			</div>
+		</section>
+
+		<section>
+			<h2 class="text-lg font-semibold mb-2">Monitors</h2>
+			if len(monitors) == 0 {
+				<p class="text-sm text-slate-500">No monitors configured yet.</p>
+			} else {
+				<table class="w-full bg-white rounded border border-slate-200 overflow-hidden">
+					<thead>
+						<tr class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+							<th class="py-2 px-3">Name</th>
+							<th class="py-2 px-3">Group</th>
+							<th class="py-2 px-3">Status</th>
+							<th class="py-2 px-3">URL</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, m := range monitors {
+							@MonitorRow(m)
+						}
+					</tbody>
+				</table>
+			}
+		</section>
+	}
+}

@@ -9,8 +9,8 @@ import (
 )
 
 // run executes the root command with the given args and returns whatever
-// it wrote to stdout and the exit error (if any). It mirrors what `main`
-// does in production.
+// it wrote to stdout/stderr and the exit error (if any). Mirrors what
+// `main` does in production.
 func run(args ...string) (string, error) {
 	root := cli.NewRootCmd()
 	out := &bytes.Buffer{}
@@ -21,24 +21,20 @@ func run(args ...string) (string, error) {
 	return out.String(), err
 }
 
-// TestSubcommandsStubbed verifies every documented CLI surface from
-// Issue 1 prints "not yet implemented" and exits cleanly.
-func TestSubcommandsStubbed(t *testing.T) {
+// TestStubSubcommandsPrintNotYetImplemented covers the CLI surfaces
+// that are still placeholders (validate, config show). Once their
+// real implementations land (Issue 6), these cases shift to the
+// "real-but-fails-gracefully" group below.
+func TestStubSubcommandsPrintNotYetImplemented(t *testing.T) {
 	t.Parallel()
-
 	cases := []struct {
 		name string
 		args []string
 		want string
 	}{
-		{"default (serve)", []string{}, "serve: not yet implemented"},
-		{"serve", []string{"serve"}, "serve: not yet implemented"},
 		{"validate", []string{"validate", "config.yaml"}, "validate: not yet implemented"},
 		{"config show", []string{"config", "show"}, "config show: not yet implemented"},
-		{"migrate", []string{"migrate"}, "migrate: not yet implemented"},
-		{"migrate --check", []string{"migrate", "--check"}, "migrate --check: not yet implemented"},
 	}
-
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -48,6 +44,31 @@ func TestSubcommandsStubbed(t *testing.T) {
 			}
 			if !strings.Contains(out, tc.want) {
 				t.Fatalf("execute %v: output %q does not contain %q", tc.args, out, tc.want)
+			}
+		})
+	}
+}
+
+// TestRealSubcommandsFailGracefullyOnBogusConfig covers surfaces that
+// now wire real behavior (serve, migrate). They expect a config file
+// and should error cleanly when one isn't supplied — not panic, not
+// hang.
+func TestRealSubcommandsFailGracefullyOnBogusConfig(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ name string; args []string }{
+		{"serve", []string{"serve", "--config", "/nonexistent/toggle-monitor.yaml"}},
+		{"migrate", []string{"migrate", "--config", "/nonexistent/toggle-monitor.yaml"}},
+		{"migrate --check", []string{"migrate", "--config", "/nonexistent/toggle-monitor.yaml", "--check"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := run(tc.args...)
+			if err == nil {
+				t.Fatalf("expected an error for missing config, got nil")
+			}
+			if !strings.Contains(err.Error(), "read config") && !strings.Contains(err.Error(), "no such file") {
+				t.Fatalf("expected a 'read config' error, got: %v", err)
 			}
 		})
 	}
