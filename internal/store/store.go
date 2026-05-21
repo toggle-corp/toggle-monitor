@@ -257,6 +257,85 @@ type HomepageStats struct {
 	SSLSkipped      int
 }
 
+// DiscoverySnapshotRow is one row from the discovery_snapshot table.
+type DiscoverySnapshotRow struct {
+	ID           int64
+	Namespace    string
+	IngressName  string
+	Host         string
+	Status       string // 'added' | 'kube-paused' | 'kube-invalid'
+	Reason       *string
+	PresetSlug   *string
+	MonitorSlug  *string
+	Annotations  map[string]string
+	LastSeenAt   time.Time
+}
+
+// UpsertDiscoverySnapshot writes (or refreshes) one snapshot row.
+// Called per-ingress by the reconcile pass.
+func (r *Repo) UpsertDiscoverySnapshot(ctx context.Context, row DiscoverySnapshotRow) error {
+	anns := row.Annotations
+	if anns == nil {
+		anns = map[string]string{}
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO discovery_snapshot
+			(namespace, ingress_name, host, status, reason, preset_slug, monitor_slug, annotations, last_seen_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+		ON CONFLICT (namespace, ingress_name, host) DO UPDATE SET
+			status        = EXCLUDED.status,
+			reason        = EXCLUDED.reason,
+			preset_slug   = EXCLUDED.preset_slug,
+			monitor_slug  = EXCLUDED.monitor_slug,
+			annotations   = EXCLUDED.annotations,
+			last_seen_at  = now()
+	`, row.Namespace, row.IngressName, row.Host, row.Status, row.Reason, row.PresetSlug, row.MonitorSlug, anns)
+	if err != nil {
+		return fmt.Errorf("upsert snapshot %s/%s/%s: %w", row.Namespace, row.IngressName, row.Host, err)
+	}
+	return nil
+}
+
+// PruneDiscoverySnapshot removes snapshot rows whose last_seen_at is
+// older than the supplied threshold. Called by the reconcile loop at
+// the end of every pass so disappeared ingresses fall out of the
+// snapshot.
+func (r *Repo) PruneDiscoverySnapshot(ctx context.Context, before time.Time) (int64, error) {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM discovery_snapshot WHERE last_seen_at < $1`, before)
+	if err != nil {
+		return 0, fmt.Errorf("prune discovery_snapshot: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// ListDiscoverySnapshot returns every snapshot row, ordered by
+// namespace then ingress name then host. Used by the auto-discovery
+// UI (Issue 12).
+func (r *Repo) ListDiscoverySnapshot(ctx context.Context) ([]DiscoverySnapshotRow, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, namespace, ingress_name, host, status, reason, preset_slug, monitor_slug, annotations, last_seen_at
+		FROM discovery_snapshot
+		ORDER BY namespace, ingress_name, host
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list discovery_snapshot: %w", err)
+	}
+	defer rows.Close()
+	var out []DiscoverySnapshotRow
+	for rows.Next() {
+		var row DiscoverySnapshotRow
+		if err := rows.Scan(
+			&row.ID, &row.Namespace, &row.IngressName, &row.Host,
+			&row.Status, &row.Reason, &row.PresetSlug, &row.MonitorSlug,
+			&row.Annotations, &row.LastSeenAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
 // CountOpenIncidents returns the number of currently-down monitors —
 // used by the heartbeat body and ad-hoc queries.
 func (r *Repo) CountOpenIncidents(ctx context.Context) (int, error) {

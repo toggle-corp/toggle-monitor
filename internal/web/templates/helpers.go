@@ -1,11 +1,33 @@
 package templates
 
 import (
+	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 
 	"github.com/a-h/templ"
+
+	"github.com/toggle-corp/toggle-monitor/internal/store"
 )
+
+func summary(rows []store.DiscoverySnapshotRow) string {
+	counts := map[string]int{}
+	for _, r := range rows {
+		counts[r.Status]++
+	}
+	return fmt.Sprintf("%d total · %d added · %d kube-paused · %d kube-invalid",
+		len(rows), counts["added"], counts["kube-paused"], counts["kube-invalid"])
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 func pageCount(total, perPage int) int {
 	if perPage <= 0 {

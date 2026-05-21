@@ -111,6 +111,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /monitors", s.handleMonitorsListing)
 	mux.HandleFunc("GET /monitor/{slug}", s.handleMonitorDetail)
 	mux.HandleFunc("GET /group/{slug}", s.handleGroupPage)
+	mux.HandleFunc("GET /discovery", s.handleDiscoveryListing)
+	mux.HandleFunc("GET /discovery/{ns}/{name}/{host}", s.handleDiscoveryDetail)
 
 	return mux
 }
@@ -174,6 +176,37 @@ func (s *Server) handleGroupPage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = templates.GroupPage(slug, listing, page, perPage).Render(ctx, w)
+}
+
+func (s *Server) handleDiscoveryListing(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	rows, err := s.repo.ListDiscoverySnapshot(ctx)
+	if err != nil {
+		s.renderDBUnavailable(ctx, w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = templates.DiscoveryListing(rows).Render(ctx, w)
+}
+
+func (s *Server) handleDiscoveryDetail(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	ns := r.PathValue("ns")
+	name := r.PathValue("name")
+	host := r.PathValue("host")
+	rows, err := s.repo.ListDiscoverySnapshot(ctx)
+	if err != nil {
+		s.renderDBUnavailable(ctx, w, err)
+		return
+	}
+	for _, row := range rows {
+		if row.Namespace == ns && row.IngressName == name && row.Host == host {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_ = templates.DiscoveryDetail(row).Render(ctx, w)
+			return
+		}
+	}
+	http.NotFound(w, r)
 }
 
 // pagination resolves the requested page + per-page from the URL,

@@ -37,6 +37,7 @@ type Config struct {
 	Theme           Theme      `yaml:"theme"`
 	HTTPClient      HTTPClient `yaml:"httpClient"`
 	Heartbeat       *Heartbeat `yaml:"heartbeat,omitempty"` // optional; nil disables the deadman loop
+	Kube            *Kube      `yaml:"kube,omitempty"`      // optional; nil disables auto-discovery
 	Slack           Slack      `yaml:"slack"`
 	Groups          []Group    `yaml:"groups"`
 	Monitors        []Monitor  `yaml:"monitors"`
@@ -48,6 +49,46 @@ type Heartbeat struct {
 	URL                 string   `yaml:"url"`
 	Interval            Duration `yaml:"interval"`
 	FailOnStalledWorker bool     `yaml:"failOnStalledWorker"`
+}
+
+// Kube is the auto-discovery block. When nil, no informer is started
+// and no kube monitors are materialized.
+type Kube struct {
+	AnnotationDomain string        `yaml:"annotationDomain"`
+	ResyncInterval   Duration      `yaml:"resyncInterval"`
+	Pause            []KubePause   `yaml:"pause,omitempty"`
+	Presets          []KubePreset  `yaml:"presets,omitempty"`
+}
+
+// KubePause is one entry in the kube.pause list — a host or host
+// glob that, when matched, materializes as a kube-paused monitor.
+type KubePause struct {
+	Host   string `yaml:"host"`
+	Reason string `yaml:"reason,omitempty"`
+}
+
+// KubePreset is the per-preset config block referenced by ingress
+// annotations to materialize a monitor with full settings.
+type KubePreset struct {
+	Slug                   string   `yaml:"slug"`
+	Scheme                 string   `yaml:"scheme"`
+	Path                   string   `yaml:"path"`
+	HTTPMethod             string   `yaml:"httpMethod"`
+	AcceptedStatusCodes    []int    `yaml:"acceptedStatusCodes"`
+	Interval               Duration `yaml:"interval"`
+	Timeout                Duration `yaml:"timeout"`
+	Retries                int      `yaml:"retries"`
+	RetryBackoff           Duration `yaml:"retryBackoff"`
+	FollowRedirects        bool     `yaml:"followRedirects"`
+	ReminderInterval       Duration `yaml:"reminderInterval"`
+	SSLAlertThreshold      Duration `yaml:"sslAlertThreshold"`
+	SSLEscalationThreshold Duration `yaml:"sslEscalationThreshold"`
+	SSLReminderInterval    Duration `yaml:"sslReminderInterval"`
+	Slack                  string   `yaml:"slack"`
+	Notify                 []string `yaml:"notify,omitempty"`
+	Tags                   []string `yaml:"tags,omitempty"`
+	DependsOn              []string `yaml:"dependsOn,omitempty"`
+	Group                  string   `yaml:"group,omitempty"`
 }
 
 // Slack is the consolidated Slack-related config block. v1 supports a
@@ -236,6 +277,29 @@ func (c *checker) validate(cfg *Config) {
 		}
 		if cfg.Heartbeat.Interval.AsDuration() < 30*time.Second {
 			c.errf([]any{"heartbeat", "interval"}, "must be >= 30s, got %s", cfg.Heartbeat.Interval)
+		}
+	}
+
+	if cfg.Kube != nil {
+		if cfg.Kube.AnnotationDomain == "" {
+			c.errf([]any{"kube", "annotationDomain"}, "required when kube block is set")
+		}
+		if cfg.Kube.ResyncInterval.AsDuration() < time.Minute {
+			c.errf([]any{"kube", "resyncInterval"}, "must be >= 1m, got %s", cfg.Kube.ResyncInterval)
+		}
+		seenPresets := map[string]struct{}{}
+		for i, p := range cfg.Kube.Presets {
+			base := []any{"kube", "presets", i}
+			if err := slug.Validate(p.Slug); err != nil {
+				c.errf(append(base, "slug"), "%v", err)
+			}
+			if _, dup := seenPresets[p.Slug]; dup {
+				c.errf(append(base, "slug"), "duplicate preset slug %q", p.Slug)
+			}
+			seenPresets[p.Slug] = struct{}{}
+			if p.Scheme != "" && p.Scheme != "http" && p.Scheme != "https" {
+				c.errf(append(base, "scheme"), "must be http or https, got %q", p.Scheme)
+			}
 		}
 	}
 

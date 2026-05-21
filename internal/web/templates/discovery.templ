@@ -1,0 +1,79 @@
+package templates
+
+import "github.com/toggle-corp/toggle-monitor/internal/store"
+
+templ DiscoveryListing(rows []store.DiscoverySnapshotRow) {
+	@Layout("Auto-discovery") {
+		<h1 class="text-xl font-semibold mb-3">Auto-discovery snapshot</h1>
+		if len(rows) == 0 {
+			<p class="text-sm text-slate-500">No ingresses observed yet. (Auto-discovery is enabled only when the kube block is set in config.)</p>
+		} else {
+			<div class="mb-3 text-sm text-slate-600">{ summary(rows) }</div>
+			<table class="w-full bg-white rounded border border-slate-200 overflow-hidden">
+				<thead>
+					<tr class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+						<th class="py-2 px-3">Namespace</th>
+						<th class="py-2 px-3">Ingress</th>
+						<th class="py-2 px-3">Host</th>
+						<th class="py-2 px-3">Status</th>
+						<th class="py-2 px-3">Reason</th>
+						<th class="py-2 px-3">Monitor</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, r := range rows {
+						<tr class="border-b border-slate-100">
+							<td class="py-2 px-3 text-sm">{ r.Namespace }</td>
+							<td class="py-2 px-3 text-sm">{ r.IngressName }</td>
+							<td class="py-2 px-3 text-sm">{ r.Host }</td>
+							<td class="py-2 px-3 text-sm">{ r.Status }</td>
+							<td class="py-2 px-3 text-sm text-slate-500">
+								if r.Reason != nil {
+									{ *r.Reason }
+								}
+							</td>
+							<td class="py-2 px-3 text-sm">
+								if r.MonitorSlug != nil {
+									<a class="text-blue-700 hover:underline" href={ templ.URL("/monitor/" + *r.MonitorSlug) }>{ *r.MonitorSlug }</a>
+								}
+							</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		}
+	}
+}
+
+templ DiscoveryDetail(row store.DiscoverySnapshotRow) {
+	@Layout("Discovery — "+row.IngressName) {
+		<h1 class="text-xl font-semibold mb-3">{ row.Namespace }/{ row.IngressName } · { row.Host }</h1>
+		<section class="bg-white rounded border border-slate-200 p-4 mb-6">
+			<h2 class="text-sm uppercase tracking-wide text-slate-500 mb-2">Snapshot</h2>
+			<dl>
+				@kv("Status", row.Status)
+				if row.Reason != nil {
+					@kv("Reason", *row.Reason)
+				}
+				if row.PresetSlug != nil {
+					@kv("Preset", *row.PresetSlug)
+				}
+				if row.MonitorSlug != nil {
+					@kv("Materialized monitor", *row.MonitorSlug)
+				}
+			</dl>
+		</section>
+		<section class="bg-white rounded border border-slate-200 p-4">
+			<h2 class="text-sm uppercase tracking-wide text-slate-500 mb-2">Annotations</h2>
+			if len(row.Annotations) == 0 {
+				<p class="text-sm text-slate-500">No annotations.</p>
+			} else {
+				<dl>
+					for _, k := range sortedKeys(row.Annotations) {
+						@kv(k, row.Annotations[k])
+					}
+				</dl>
+			}
+		</section>
+	}
+}

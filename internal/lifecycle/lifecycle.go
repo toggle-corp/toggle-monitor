@@ -23,6 +23,8 @@ import (
 	"github.com/toggle-corp/toggle-monitor/internal/config"
 	"github.com/toggle-corp/toggle-monitor/internal/db"
 	"github.com/toggle-corp/toggle-monitor/internal/heartbeat"
+	"github.com/toggle-corp/toggle-monitor/internal/kube"
+	"github.com/toggle-corp/toggle-monitor/internal/merger"
 	"github.com/toggle-corp/toggle-monitor/internal/migrate"
 	"github.com/toggle-corp/toggle-monitor/internal/observability"
 	"github.com/toggle-corp/toggle-monitor/internal/scheduler"
@@ -44,6 +46,16 @@ type ServeOptions struct {
 	// SlackBaseURL lets tests point the Slack client at an httptest
 	// server. Empty → slack.DefaultBaseURL.
 	SlackBaseURL string
+
+	// KubeconfigPath, when set, drives client-go via the named file
+	// instead of in-cluster ServiceAccount. Tests typically inject a
+	// KubeIngressLister instead and skip this entirely.
+	KubeconfigPath string
+
+	// KubeIngressLister lets tests bypass NewWithCluster (which needs
+	// a real cluster) and feed a hand-built lister directly. When
+	// non-nil and Config.Kube != nil, it overrides KubeconfigPath.
+	KubeIngressLister kube.IngressLister
 }
 
 // RunServe wires the worker, the HTTP server, and the DB connection
@@ -192,6 +204,34 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		defer wg.Done()
 		wsWatcher.Run(ctx, time.Hour)
 	}()
+
+	// Optional kube auto-discovery. When Config.Kube is nil we don't
+	// start an informer; when set, the watcher records every
+	// observed Ingress in the snapshot table. Issue-9 plugs a
+	// Materializer in here to also produce active monitors.
+	if kc := opts.Config.Kube; kc != nil {
+		mat := merger.New(repo, kc, opts.Config.Monitors)
+		kubeOpts := kube.Options{
+			AnnotationDomain: kc.AnnotationDomain,
+			ResyncInterval:   kc.ResyncInterval.AsDuration(),
+			Materializer:     mat,
+			Logger:           log,
+		}
+		var watcher *kube.Watcher
+		if opts.KubeIngressLister != nil {
+			watcher = kube.New(repo, opts.KubeIngressLister, kubeOpts)
+		} else {
+			watcher, err = kube.NewWithCluster(ctx, repo, kubeOpts, opts.KubeconfigPath)
+			if err != nil {
+				return fmt.Errorf("kube watcher: %w", err)
+			}
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			watcher.Run(ctx)
+		}()
+	}
 
 	// Optional outbound heartbeat. When the YAML omits the block we
 	// skip starting the loop entirely.
