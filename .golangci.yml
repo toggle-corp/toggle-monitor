@@ -1,0 +1,35 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - revive
+    - gosec
+    - gocritic
+    - misspell
+    - unused
+    - unparam
+    - ineffassign
+  settings:
+    gosec:
+      excludes:
+        # G104: errors unchecked — errcheck owns this.
+        - G104
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - gocritic
+          - revive
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
