@@ -1,0 +1,169 @@
+# toggle-monitor — example config
+# Reference for hand-writing your ConfigMap. See docs/config-schema.md for the per-field reference.
+
+# ── Top-level ─────────────────────────────────────────────────────────────────
+displayTimezone: Asia/Kathmandu
+publicBaseURL: https://monitor.internal.example.com
+dbBodyMaxChars: 4000
+
+httpClient:
+  userAgent: "toggle-monitor/0.1 (+https://github.com/toggle-corp/toggle-monitor)"
+
+ui:
+  pageSize:
+    homepageAlerts: 20
+    monitorListing: 50
+    monitorHistory: 50
+    discoveryListing: 50
+  maxPerPage: 200
+
+theme:
+  defaultGroupColor: "#64748b"
+
+heartbeat:
+  url: https://hc-ping.com/00000000-0000-0000-0000-000000000000
+  interval: 1m
+  failOnStalledWorker: true
+
+# ── Database ──────────────────────────────────────────────────────────────────
+# Non-secret values support ${VAR} interpolation (with optional defaults).
+database:
+  host: ${DB_HOST:-toggle-monitor-pg-rw.cnpg-system.svc.cluster.local}
+  port: ${DB_PORT:-5432}
+  user: ${DB_USER:-toggle_monitor}
+  name: ${DB_NAME:-toggle_monitor}
+  sslMode: require
+  passwordEnv: DB_PASSWORD                          # secrets always via *Env, never inline
+
+# ── Kube auto-discovery ───────────────────────────────────────────────────────
+kube:
+  annotationDomain: monitor.togglecorp.com
+  resyncInterval: 30m
+  pause:
+    - host: api.foo.example.com
+      reason: "Endpoint under maintenance until 2026-06-01"
+    - host: "*.staging.example.com"
+  presets:
+    - slug: internal-api
+      scheme: https
+      path: /health
+      httpMethod: GET
+      acceptedStatusCodes: [200]
+      interval: 5m
+      timeout: 10s
+      retries: 2
+      retryBackoff: 5s
+      followRedirects: false
+      reminderInterval: 3d
+      sslAlertThreshold: 30d
+      sslEscalationThreshold: 7d
+      sslReminderInterval: 3d
+      slack: ops-alerts
+      notify: [alice]
+      group: production-apis
+      tags: [internal]
+      dependsOn: [bastion-proxy]
+
+    - slug: public-web
+      scheme: https
+      path: /
+      httpMethod: GET
+      acceptedStatusCodes: [200, 301, 302]
+      interval: 5m
+      timeout: 15s
+      retries: 3
+      retryBackoff: 10s
+      followRedirects: false
+      reminderInterval: 3d
+      sslAlertThreshold: 30d
+      sslEscalationThreshold: 7d
+      sslReminderInterval: 3d
+      slack: ops-alerts
+      group: public
+
+# ── Slack ─────────────────────────────────────────────────────────────────────
+slack:
+  bodyMaxChars: 200
+  summaryChannel: ops-summary                       # weekly operational summary lands here
+  channels:
+    - slug: ops-alerts
+      channelId: ${SLACK_OPS_CHANNEL_ID:-C0123ABCD} # #ops-alerts
+      tokenEnv: SLACK_BOT_TOKEN
+    - slug: ops-summary
+      channelId: C0789EFGH                          # #monitor-summary
+      tokenEnv: SLACK_BOT_TOKEN
+  userMapping:
+    alice: U01ABCDEF12                              # @alice
+    ops-team: S02ABCDEF34                           # @ops-team (subteam)
+
+# ── Groups ────────────────────────────────────────────────────────────────────
+groups:
+  - slug: gateways
+    friendlyName: Gateways
+    description: Bastion, ingress controller, and other upstream dependencies
+    color: "#0ea5e9"
+
+  - slug: production-apis
+    friendlyName: Production APIs
+    description: Customer-facing API services
+    color: "#ef4444"
+
+  - slug: public
+    friendlyName: Public Sites
+    description: Public-facing websites and landing pages
+    color: "#10b981"
+
+  - slug: kube-discovered                            # REQUIRED — fallback for ingresses without config.group
+    friendlyName: Kube Discovered
+    description: Auto-discovered ingresses that didn't specify a group
+
+# ── Anchor host (ignored by validator) ────────────────────────────────────────
+x-monitor-defaults: &staticDefaults
+  httpMethod: GET
+  acceptedStatusCodes: [200]
+  interval: 5m
+  timeout: 10s
+  retries: 2
+  retryBackoff: 5s
+  followRedirects: false
+  reminderInterval: 3d
+  sslAlertThreshold: 30d
+  sslEscalationThreshold: 7d
+  sslReminderInterval: 3d
+  slack: ops-alerts
+
+# ── Static monitors ───────────────────────────────────────────────────────────
+monitors:
+  # An upstream gateway — checked more often, used as a parent for downstream monitors.
+  - <<: *staticDefaults
+    slug: bastion-proxy
+    friendlyName: Bastion Proxy
+    url: https://bastion.internal.example.com/health
+    group: gateways
+    interval: 1m
+    notify: [ops-team]
+    tags: [gateway, critical]
+
+  # A legacy HTTP-only service. SSL fields can stay (from anchor) and are ignored.
+  - <<: *staticDefaults
+    slug: legacy-internal
+    friendlyName: Legacy Internal Service
+    url: http://legacy.internal.example.com/health
+    group: production-apis
+    dependsOn: [bastion-proxy]
+    notify: [alice]
+    tags: [legacy]
+
+  # A heartbeat for an external SaaS we depend on. Custom timeouts for a slower endpoint.
+  - <<: *staticDefaults
+    slug: saas-status
+    friendlyName: External SaaS Status
+    url: https://api.external-saas.com/v1/status
+    group: production-apis
+    timeout: 30s
+    retries: 1
+    retryBackoff: 10s
+    interval: 10m
+    notify:
+      - ops-team
+      - "<!here>"                                    # raw Slack markup passes through
