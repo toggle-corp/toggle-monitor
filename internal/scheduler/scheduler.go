@@ -49,13 +49,23 @@ type CheckFunc func(ctx context.Context, cfg httpcheck.Config) httpcheck.Result
 // refs that are about to be cleared on resolve.
 type EventSink func(ctx context.Context, m store.MonitorRow, channelSlug string, mentions []string, event *alert.Event) error
 
+// Metrics is the slim seam the scheduler uses to emit Prometheus
+// data points. Production wires observability.Metrics; tests pass
+// nil to disable.
+type Metrics interface {
+	ObserveCheck(monitor string, status string, duration time.Duration)
+	SetWorkerLastTick(unixSeconds float64)
+	SetActiveIncident(typeLabel, monitor string, active bool)
+}
+
 // Scheduler drives the configured set of monitors.
 type Scheduler struct {
-	repo  *store.Repo
-	check CheckFunc
-	sink  EventSink
-	log   *slog.Logger
-	now   func() time.Time
+	repo    *store.Repo
+	check   CheckFunc
+	sink    EventSink
+	metrics Metrics
+	log     *slog.Logger
+	now     func() time.Time
 }
 
 // Option configures a Scheduler. Used by tests to inject a deterministic
@@ -74,6 +84,10 @@ func WithLogger(l *slog.Logger) Option { return func(s *Scheduler) { s.log = l }
 // WithEventSink wires the Slack notifier (or any other consumer of
 // alert events). Defaults to a no-op.
 func WithEventSink(sink EventSink) Option { return func(s *Scheduler) { s.sink = sink } }
+
+// WithMetrics wires the Prometheus metrics sink. Defaults to a no-op
+// (tests that don't care about metrics need no setup).
+func WithMetrics(m Metrics) Option { return func(s *Scheduler) { s.metrics = m } }
 
 // New constructs a Scheduler with sensible defaults.
 func New(repo *store.Repo, opts ...Option) *Scheduler {
@@ -137,6 +151,9 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 			return err
 		}
 		if paused {
+			if s.metrics != nil {
+				s.metrics.ObserveCheck(p.Slug, "paused", 0)
+			}
 			return s.repo.MarkTemporaryPaused(ctx, p.Slug)
 		}
 	}
@@ -152,6 +169,7 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 
 	var res httpcheck.Result
 	attempts := p.Retries + 1
+	tickStart := time.Now()
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
 			if !sleep(ctx, p.RetryBackoff) {
@@ -168,6 +186,15 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 		if res.Error == "" {
 			break
 		}
+	}
+
+	if s.metrics != nil {
+		status := "ok"
+		if res.Error != "" {
+			status = "fail"
+		}
+		s.metrics.ObserveCheck(p.Slug, status, time.Since(tickStart))
+		s.metrics.SetWorkerLastTick(float64(s.now().Unix()))
 	}
 
 	row, err := s.repo.GetMonitor(ctx, p.Slug)
@@ -202,6 +229,16 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 	nextState, event := alert.Apply(row.State(), check)
 	if err := s.repo.ApplyCheck(ctx, p.Slug, nextState, now, res.StatusCode, res.Error, event); err != nil {
 		return err
+	}
+
+	// Active-incident gauge: 1 while down, 0 while up.
+	if s.metrics != nil && event != nil {
+		switch event.Type {
+		case alert.EventOpen:
+			s.metrics.SetActiveIncident("uptime", p.Slug, true)
+		case alert.EventResolve:
+			s.metrics.SetActiveIncident("uptime", p.Slug, false)
+		}
 	}
 
 	// Dispatch to the event sink AFTER the DB transaction has

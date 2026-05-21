@@ -22,6 +22,7 @@ import (
 	"github.com/toggle-corp/toggle-monitor/internal/config"
 	"github.com/toggle-corp/toggle-monitor/internal/db"
 	"github.com/toggle-corp/toggle-monitor/internal/migrate"
+	"github.com/toggle-corp/toggle-monitor/internal/observability"
 	"github.com/toggle-corp/toggle-monitor/internal/scheduler"
 	"github.com/toggle-corp/toggle-monitor/internal/secret"
 	"github.com/toggle-corp/toggle-monitor/internal/slack"
@@ -119,7 +120,10 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		Logger:       log,
 	})
 
+	metrics := observability.New()
+
 	srv := web.New(repo, log)
+	srv.SetMetricsHandler(metrics.Handler())
 	listener, err := net.Listen("tcp", opts.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("bind listen address %q: %w", opts.ListenAddr, err)
@@ -136,6 +140,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	sched := scheduler.New(repo,
 		scheduler.WithLogger(log),
 		scheduler.WithEventSink(buildSink(notifier)),
+		scheduler.WithMetrics(metrics),
 	)
 	plans := buildPlans(opts.Config)
 

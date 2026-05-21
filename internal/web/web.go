@@ -26,9 +26,10 @@ var StaticAssets embed.FS
 // Server wires the HTTP surface for the read-only UI plus the
 // k8s probe endpoints.
 type Server struct {
-	repo  *store.Repo
-	log   *slog.Logger
-	ready atomic.Bool
+	repo    *store.Repo
+	log     *slog.Logger
+	metrics http.Handler // /metrics handler; nil → endpoint is omitted
+	ready   atomic.Bool
 }
 
 // New constructs a Server. Call MarkReady once the DB is connected and
@@ -39,6 +40,11 @@ func New(repo *store.Repo, log *slog.Logger) *Server {
 	}
 	return &Server{repo: repo, log: log}
 }
+
+// SetMetricsHandler wires the Prometheus exposition handler. When set,
+// /metrics is exposed; when nil (the default in tests that don't care
+// about metrics), the endpoint is omitted.
+func (s *Server) SetMetricsHandler(h http.Handler) { s.metrics = h }
 
 // MarkReady flips /readyz from 503 to 200. Idempotent.
 func (s *Server) MarkReady() { s.ready.Store(true) }
@@ -64,6 +70,10 @@ func (s *Server) Routes() http.Handler {
 
 	staticFS, _ := fs.Sub(StaticAssets, "static")
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
+
+	if s.metrics != nil {
+		mux.Handle("GET /metrics", s.metrics)
+	}
 
 	mux.HandleFunc("GET /{$}", s.handleHomepage)
 	mux.HandleFunc("GET /monitor/{slug}", s.handleMonitorDetail)
