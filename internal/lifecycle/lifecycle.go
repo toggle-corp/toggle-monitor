@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -148,6 +149,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	sched := scheduler.New(repo,
 		scheduler.WithLogger(log),
 		scheduler.WithEventSink(buildSink(notifier)),
+		scheduler.WithSSLSink(buildSSLSink(notifier)),
 		scheduler.WithMetrics(metrics),
 	)
 	plans := buildPlans(opts.Config)
@@ -240,22 +242,27 @@ func buildPlans(cfg config.Config) []scheduler.Plan {
 		merged := make([]string, 0, len(m.Notify)+len(groupNotify[m.Group]))
 		merged = append(merged, groupNotify[m.Group]...)
 		merged = append(merged, m.Notify...)
+		isHTTPS := strings.HasPrefix(m.URL, "https://")
 		out = append(out, scheduler.Plan{
-			Slug:                m.Slug,
-			FriendlyName:        m.FriendlyName,
-			URL:                 m.URL,
-			HTTPMethod:          m.HTTPMethod,
-			AcceptedStatusCodes: m.AcceptedStatusCodes,
-			Interval:            m.Interval.AsDuration(),
-			Timeout:             m.Timeout.AsDuration(),
-			Retries:             m.Retries,
-			RetryBackoff:        m.RetryBackoff.AsDuration(),
-			FollowRedirects:     m.FollowRedirects,
-			UserAgent:           cfg.HTTPClient.UserAgent,
-			ReminderInterval:    m.ReminderInterval.AsDuration(),
-			ChannelSlug:         m.Slack,
-			Mentions:            slack.ResolveMentions(merged, cfg.Slack.UserMapping),
-			DependsOn:           m.DependsOn,
+			Slug:                   m.Slug,
+			FriendlyName:           m.FriendlyName,
+			URL:                    m.URL,
+			HTTPMethod:             m.HTTPMethod,
+			AcceptedStatusCodes:    m.AcceptedStatusCodes,
+			Interval:               m.Interval.AsDuration(),
+			Timeout:                m.Timeout.AsDuration(),
+			Retries:                m.Retries,
+			RetryBackoff:           m.RetryBackoff.AsDuration(),
+			FollowRedirects:        m.FollowRedirects,
+			UserAgent:              cfg.HTTPClient.UserAgent,
+			ReminderInterval:       m.ReminderInterval.AsDuration(),
+			ChannelSlug:            m.Slack,
+			Mentions:               slack.ResolveMentions(merged, cfg.Slack.UserMapping),
+			DependsOn:              m.DependsOn,
+			IsHTTPS:                isHTTPS,
+			SSLAlertThreshold:      m.SSLAlertThreshold.AsDuration(),
+			SSLEscalationThreshold: m.SSLEscalationThreshold.AsDuration(),
+			SSLReminderInterval:    m.SSLReminderInterval.AsDuration(),
 		})
 	}
 	return out
@@ -298,31 +305,61 @@ func resolveSlackTokens(cfg config.Config) (
 	return channelByMonitor, tokensByEnv, nil
 }
 
+// buildSSLSink turns the slack.Notifier into the scheduler.SSLSink
+// shape so the scheduler stays free of a hard slack dep.
+func buildSSLSink(n *slack.Notifier) scheduler.SSLSink {
+	return func(ctx context.Context, row store.MonitorRow, channelSlug string, mentions []string, event *alert.SSLEvent) error {
+		mv := monitorViewFromRow(row)
+		ssl := slack.SSLView{ExpiresAt: event.ExpiresAt}
+		return n.NotifySSL(ctx, channelSlug, mentions, mv, ssl, event)
+	}
+}
+
+// monitorViewFromRow is the common projection. Shared by the uptime
+// and SSL sinks so both see the same SSL/uptime thread refs.
+func monitorViewFromRow(row store.MonitorRow) slack.MonitorView {
+	mv := slack.MonitorView{
+		Slug:         row.Slug,
+		FriendlyName: row.FriendlyName,
+		GroupSlug:    row.GroupSlug,
+		URL:          row.URL,
+	}
+	if row.OpenedAt != nil {
+		mv.OpenedAt = *row.OpenedAt
+	}
+	if row.LastStatusCode != nil {
+		mv.StatusCode = *row.LastStatusCode
+	}
+	if row.LastError != nil {
+		mv.LastError = *row.LastError
+	}
+	if row.UptimeThreadChannel != nil {
+		mv.UptimeThreadChannel = *row.UptimeThreadChannel
+	}
+	if row.UptimeThreadTS != nil {
+		mv.UptimeThreadTS = *row.UptimeThreadTS
+	}
+	if row.SSLThreadChannel != nil {
+		mv.SSLThreadChannel = *row.SSLThreadChannel
+	}
+	if row.SSLThreadTS != nil {
+		mv.SSLThreadTS = *row.SSLThreadTS
+	}
+	if row.SSLIssuer != nil {
+		mv.SSLIssuer = *row.SSLIssuer
+	}
+	if row.SSLSubject != nil {
+		mv.SSLSubject = *row.SSLSubject
+	}
+	mv.StatusText = http.StatusText(mv.StatusCode)
+	return mv
+}
+
 // buildSink turns the slack.Notifier into the scheduler.EventSink
 // shape (which deliberately doesn't import slack).
 func buildSink(n *slack.Notifier) scheduler.EventSink {
 	return func(ctx context.Context, row store.MonitorRow, channelSlug string, mentions []string, event *alert.Event) error {
-		mv := slack.MonitorView{
-			Slug:         row.Slug,
-			FriendlyName: row.FriendlyName,
-			GroupSlug:    row.GroupSlug,
-			URL:          row.URL,
-		}
-		if row.OpenedAt != nil {
-			mv.OpenedAt = *row.OpenedAt
-		}
-		if row.LastStatusCode != nil {
-			mv.StatusCode = *row.LastStatusCode
-		}
-		if row.LastError != nil {
-			mv.LastError = *row.LastError
-		}
-		if row.UptimeThreadChannel != nil {
-			mv.UptimeThreadChannel = *row.UptimeThreadChannel
-		}
-		if row.UptimeThreadTS != nil {
-			mv.UptimeThreadTS = *row.UptimeThreadTS
-		}
+		mv := monitorViewFromRow(row)
 		// Open: the event carries the fresh status/error that's about
 		// to be persisted. Resolve: the row has the just-cleared but
 		// still relevant last fields.

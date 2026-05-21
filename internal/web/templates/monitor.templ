@@ -47,6 +47,15 @@ templ MonitorDetail(m store.MonitorRow, gatingParents []string, history []store.
 				if m.OpenedAt != nil {
 					@kv("Opened at", m.OpenedAt.UTC().Format(time.RFC3339))
 				}
+				if m.SSLStatus != nil {
+					@kv("SSL status", string(*m.SSLStatus))
+				}
+				if m.SSLExpiresAt != nil {
+					@kv("SSL expires at", m.SSLExpiresAt.UTC().Format(time.RFC3339))
+				}
+				if m.SSLIssuer != nil && *m.SSLIssuer != "" {
+					@kv("SSL issuer", *m.SSLIssuer)
+				}
 			</dl>
 		</section>
 

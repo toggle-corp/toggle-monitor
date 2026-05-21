@@ -26,6 +26,18 @@ type Result struct {
 	Duration     time.Duration
 	Error        string // empty iff the request returned a status code in AcceptedStatusCodes
 	ResponseBody []byte
+
+	// TLS holds certificate info captured from the response's
+	// TLS handshake. Nil for plain HTTP probes and for probes that
+	// failed before the handshake completed.
+	TLS *TLSInfo
+}
+
+// TLSInfo is the slim cert info the SSL state machine consumes.
+type TLSInfo struct {
+	Subject   string
+	Issuer    string
+	NotAfter  time.Time
 }
 
 // Check performs one HTTP probe according to cfg. The caller is
@@ -63,6 +75,14 @@ func Check(ctx context.Context, cfg Config) Result {
 		StatusCode:   resp.StatusCode,
 		Duration:     dur,
 		ResponseBody: body,
+	}
+	if resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
+		cert := resp.TLS.PeerCertificates[0]
+		res.TLS = &TLSInfo{
+			Subject:  cert.Subject.CommonName,
+			Issuer:   cert.Issuer.CommonName,
+			NotAfter: cert.NotAfter,
+		}
 	}
 	if !accepted(resp.StatusCode, cfg.AcceptedStatusCodes) {
 		res.Error = fmt.Sprintf("unexpected status %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))

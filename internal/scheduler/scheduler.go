@@ -36,6 +36,13 @@ type Plan struct {
 	ChannelSlug         string   // slack destination slug; empty disables Slack output
 	Mentions            []string // pre-resolved raw Slack markup (parent-only)
 	DependsOn           []string // upstream static-monitor slugs; any of them down pauses this monitor
+
+	// SSL thresholds; SSL evaluation is skipped when all are zero
+	// (which is also the case for static HTTP monitors).
+	SSLAlertThreshold      time.Duration
+	SSLEscalationThreshold time.Duration
+	SSLReminderInterval    time.Duration
+	IsHTTPS                bool
 }
 
 // CheckFunc is the seam used to run a probe; production wires
@@ -48,6 +55,9 @@ type CheckFunc func(ctx context.Context, cfg httpcheck.Config) httpcheck.Result
 // row is the snapshot read BEFORE ApplyCheck so callers see thread
 // refs that are about to be cleared on resolve.
 type EventSink func(ctx context.Context, m store.MonitorRow, channelSlug string, mentions []string, event *alert.Event) error
+
+// SSLSink is the analogous seam for SSL events.
+type SSLSink func(ctx context.Context, m store.MonitorRow, channelSlug string, mentions []string, event *alert.SSLEvent) error
 
 // Metrics is the slim seam the scheduler uses to emit Prometheus
 // data points. Production wires observability.Metrics; tests pass
@@ -63,6 +73,7 @@ type Scheduler struct {
 	repo    *store.Repo
 	check   CheckFunc
 	sink    EventSink
+	sslSink SSLSink
 	metrics Metrics
 	log     *slog.Logger
 	now     func() time.Time
@@ -84,6 +95,9 @@ func WithLogger(l *slog.Logger) Option { return func(s *Scheduler) { s.log = l }
 // WithEventSink wires the Slack notifier (or any other consumer of
 // alert events). Defaults to a no-op.
 func WithEventSink(sink EventSink) Option { return func(s *Scheduler) { s.sink = sink } }
+
+// WithSSLSink wires the Slack notifier for SSL events. Defaults to nil.
+func WithSSLSink(sink SSLSink) Option { return func(s *Scheduler) { s.sslSink = sink } }
 
 // WithMetrics wires the Prometheus metrics sink. Defaults to a no-op
 // (tests that don't care about metrics need no setup).
@@ -250,6 +264,45 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 			// Don't propagate: the DB transition is committed; the
 			// Slack post can be retried on a later tick. Issue 16
 			// owns the full retry policy.
+		}
+	}
+
+	// SSL state machine, driven independently from the uptime side.
+	// Static HTTP monitors get ssl-skipped; HTTPS monitors check
+	// against the configured thresholds when the probe captured cert
+	// info (it won't have if the probe transport-failed).
+	sslCheck := alert.SSLCheck{
+		At:                  now,
+		IsHTTPS:             p.IsHTTPS,
+		AlertThreshold:      p.SSLAlertThreshold,
+		EscalationThreshold: p.SSLEscalationThreshold,
+		ReminderInterval:    p.SSLReminderInterval,
+	}
+	var issuer, subject string
+	if res.TLS != nil {
+		sslCheck.ExpiresAt = res.TLS.NotAfter
+		issuer = res.TLS.Issuer
+		subject = res.TLS.Subject
+	}
+	prevSSL := row.SSL()
+	nextSSL, sslEvent := alert.ApplySSL(prevSSL, sslCheck)
+	if err := s.repo.ApplySSLCheck(ctx, p.Slug, nextSSL, sslCheck.ExpiresAt, issuer, subject, sslEvent); err != nil {
+		s.log.Error("apply ssl check", "monitor", p.Slug, "error", err)
+		return nil // not fatal — uptime side already committed
+	}
+
+	if s.metrics != nil && sslEvent != nil {
+		switch sslEvent.Type {
+		case alert.EventSSLOpen:
+			s.metrics.SetActiveIncident("ssl", p.Slug, true)
+		case alert.EventSSLResolve:
+			s.metrics.SetActiveIncident("ssl", p.Slug, false)
+		}
+	}
+
+	if sslEvent != nil && s.sslSink != nil && p.ChannelSlug != "" {
+		if err := s.sslSink(ctx, row, p.ChannelSlug, p.Mentions, sslEvent); err != nil {
+			s.log.Error("ssl sink", "monitor", p.Slug, "event", sslEvent.Type, "error", err)
 		}
 	}
 	return nil

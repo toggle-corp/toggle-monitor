@@ -118,8 +118,14 @@ type Monitor struct {
 	FollowRedirects     bool     `yaml:"followRedirects"`
 	ReminderInterval    Duration `yaml:"reminderInterval"`
 	Slack               string   `yaml:"slack"`               // channel slug
-	Notify              []string `yaml:"notify,omitempty"`    // raw <...> Slack markup; userMapping lands in Issue 13
+	Notify              []string `yaml:"notify,omitempty"`    // raw <...> Slack markup or userMapping slug
 	DependsOn           []string `yaml:"dependsOn,omitempty"` // upstream static-monitor slugs that gate this one
+
+	// SSL thresholds — required when URL is HTTPS, allowed but
+	// ignored for HTTP URLs (so anchored defaults can be shared).
+	SSLAlertThreshold      Duration `yaml:"sslAlertThreshold,omitempty"`
+	SSLEscalationThreshold Duration `yaml:"sslEscalationThreshold,omitempty"`
+	SSLReminderInterval    Duration `yaml:"sslReminderInterval,omitempty"`
 }
 
 // Load parses and validates the YAML config. Returns a populated
@@ -341,6 +347,26 @@ func (c *checker) validate(cfg *Config) {
 			if _, ok := seenMonitors[dep]; !ok {
 				// Forward references are valid (YAML order is independent of dep order)
 				// — defer that check to the global pass below.
+			}
+		}
+
+		// SSL thresholds: required for HTTPS URLs, allowed but ignored
+		// for HTTP. When required and present, alert > escalation > 0.
+		if strings.HasPrefix(m.URL, "https://") {
+			if m.SSLAlertThreshold.AsDuration() <= 0 {
+				c.errf(append(base, "sslAlertThreshold"), "required for HTTPS monitors")
+			}
+			if m.SSLEscalationThreshold.AsDuration() <= 0 {
+				c.errf(append(base, "sslEscalationThreshold"), "required for HTTPS monitors")
+			}
+			if m.SSLReminderInterval.AsDuration() <= 0 {
+				c.errf(append(base, "sslReminderInterval"), "required for HTTPS monitors")
+			}
+			if m.SSLAlertThreshold.AsDuration() > 0 && m.SSLEscalationThreshold.AsDuration() > 0 &&
+				m.SSLAlertThreshold.AsDuration() <= m.SSLEscalationThreshold.AsDuration() {
+				c.errf(append(base, "sslAlertThreshold"),
+					"must be strictly greater than sslEscalationThreshold (%s)",
+					m.SSLEscalationThreshold.AsDuration())
 			}
 		}
 	}

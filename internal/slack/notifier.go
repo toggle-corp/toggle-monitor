@@ -21,6 +21,7 @@ type ChannelInfo struct {
 // wires this to store.Repo.SetUptimeThread; tests inject a fake.
 type ThreadStore interface {
 	SetUptimeThread(ctx context.Context, monitorSlug, channelID, ts string) error
+	SetSSLThread(ctx context.Context, monitorSlug, channelID, ts string) error
 }
 
 // Notifier turns alert events into Slack API calls.
@@ -77,6 +78,17 @@ type MonitorView struct {
 	// has been recorded (used for reminders + resolve).
 	UptimeThreadChannel string
 	UptimeThreadTS      string
+
+	// SSL-side counterparts.
+	SSLThreadChannel string
+	SSLThreadTS      string
+	SSLIssuer        string
+	SSLSubject       string
+}
+
+// SSLView is the slim shape NotifySSL needs about a cert event.
+type SSLView struct {
+	ExpiresAt time.Time
 }
 
 // Notify dispatches the right Slack call(s) for an alert event:
@@ -213,4 +225,82 @@ func (n *Notifier) detailURL(monitorSlug string) string {
 		return ""
 	}
 	return n.publicBase + "/monitor/" + monitorSlug
+}
+
+// NotifySSL dispatches the right Slack call(s) for an SSL event:
+//   - ssl_open:     post a parent, persist the SSL thread ref.
+//   - ssl_reminder: post a thread reply.
+//   - ssl_resolve:  edit the parent + post a thread reply.
+func (n *Notifier) NotifySSL(ctx context.Context, channelSlug string, mentions []string, m MonitorView, ssl SSLView, ev *alert.SSLEvent) error {
+	if ev == nil {
+		return nil
+	}
+	ch, ok := n.channels(channelSlug)
+	if !ok {
+		return fmt.Errorf("slack channel slug %q is not registered", channelSlug)
+	}
+	daysRem := int(ssl.ExpiresAt.Sub(ev.At).Hours() / 24)
+	in := SSLDownInput{
+		FriendlyName:  m.FriendlyName,
+		Group:         m.GroupSlug,
+		URL:           m.URL,
+		Mentions:      mentions,
+		ExpiresAt:     ssl.ExpiresAt,
+		Issuer:        m.SSLIssuer,
+		Subject:       m.SSLSubject,
+		DaysRemaining: daysRem,
+		DetailURL:     n.detailURL(m.Slug),
+	}
+
+	switch ev.Type {
+	case alert.EventSSLOpen:
+		res, err := n.client.PostMessage(ctx, ch.Token, PostMessageInput{
+			ChannelID: ch.ID,
+			Blocks:    BuildSSLParent(in),
+		})
+		if err != nil {
+			return err
+		}
+		if err := n.store.SetSSLThread(ctx, m.Slug, res.Channel, res.TS); err != nil {
+			n.log.Warn("persist ssl thread ref", "monitor", m.Slug, "error", err)
+		}
+		return nil
+
+	case alert.EventSSLReminder:
+		if m.SSLThreadTS == "" {
+			n.log.Warn("ssl reminder skipped: no parent ref", "monitor", m.Slug)
+			return nil
+		}
+		_, err := n.client.PostMessage(ctx, ch.Token, PostMessageInput{
+			ChannelID: ch.ID,
+			ThreadTS:  m.SSLThreadTS,
+			Blocks:    BuildSSLReminderReply(in),
+		})
+		return err
+
+	case alert.EventSSLResolve:
+		resolveIn := SSLResolveInput{SSLDownInput: in, NewExpiresAt: ssl.ExpiresAt}
+		if m.SSLThreadTS == "" {
+			// No parent — fall back to a standalone resolve post.
+			_, err := n.client.PostMessage(ctx, ch.Token, PostMessageInput{
+				ChannelID: ch.ID,
+				Blocks:    BuildSSLResolveReply(resolveIn),
+			})
+			return err
+		}
+		if err := n.client.UpdateMessage(ctx, ch.Token, UpdateMessageInput{
+			ChannelID: m.SSLThreadChannel,
+			TS:        m.SSLThreadTS,
+			Blocks:    BuildSSLResolveEdit(resolveIn),
+		}); err != nil {
+			return fmt.Errorf("update ssl parent: %w", err)
+		}
+		_, err := n.client.PostMessage(ctx, ch.Token, PostMessageInput{
+			ChannelID: m.SSLThreadChannel,
+			ThreadTS:  m.SSLThreadTS,
+			Blocks:    BuildSSLResolveReply(resolveIn),
+		})
+		return err
+	}
+	return nil
 }

@@ -64,6 +64,15 @@ type MonitorRow struct {
 	ArchiveReason       *string
 	UptimeThreadChannel *string
 	UptimeThreadTS      *string
+
+	SSLStatus         *alert.SSLStatus
+	SSLExpiresAt      *time.Time
+	SSLIssuer         *string
+	SSLSubject        *string
+	SSLOpenedAt       *time.Time
+	SSLLastReminderAt *time.Time
+	SSLThreadChannel  *string
+	SSLThreadTS       *string
 }
 
 // State returns the alert.State that the state machine would consume.
@@ -74,6 +83,22 @@ func (r MonitorRow) State() alert.State {
 	}
 	if r.LastReminderAt != nil {
 		s.LastReminderAt = *r.LastReminderAt
+	}
+	return s
+}
+
+// SSL returns the SSL-side state for the state machine. Zero state
+// (Status="") is fine — ApplySSL treats it like SSLStatusOK.
+func (r MonitorRow) SSL() alert.SSLState {
+	s := alert.SSLState{}
+	if r.SSLStatus != nil {
+		s.Status = *r.SSLStatus
+	}
+	if r.SSLOpenedAt != nil {
+		s.OpenedAt = *r.SSLOpenedAt
+	}
+	if r.SSLLastReminderAt != nil {
+		s.LastReminderAt = *r.SSLLastReminderAt
 	}
 	return s
 }
@@ -175,8 +200,8 @@ func (r *Repo) HomepageStats(ctx context.Context) (HomepageStats, error) {
 			COUNT(*) FILTER (WHERE status = 'up'),
 			COUNT(*) FILTER (WHERE status = 'down'),
 			COUNT(*) FILTER (WHERE status = 'temporary-paused'),
-			COUNT(*) FILTER (WHERE status = 'ssl-expiring'),
-			COUNT(*) FILTER (WHERE status = 'ssl-skipped')
+			COUNT(*) FILTER (WHERE ssl_status = 'ssl-expiring'),
+			COUNT(*) FILTER (WHERE ssl_status = 'ssl-skipped')
 		FROM monitors WHERE archived = FALSE`)
 	var s HomepageStats
 	if err := row.Scan(&s.Up, &s.Down, &s.TemporaryPaused, &s.SSLExpiring, &s.SSLSkipped); err != nil {
@@ -296,6 +321,116 @@ func (r *Repo) MarkTemporaryPaused(ctx context.Context, slug string) error {
 	return nil
 }
 
+// ApplySSLCheck mirrors ApplyCheck for the SSL state machine. Updates
+// the ssl_* columns and, when event != nil, appends an alert_event of
+// the matching SSL type (ssl_open / ssl_reminder / ssl_resolve). On
+// resolve, the SSL thread refs are cleared.
+func (r *Repo) ApplySSLCheck(
+	ctx context.Context,
+	monitorSlug string,
+	next alert.SSLState,
+	expiresAt time.Time,
+	issuer, subject string,
+	event *alert.SSLEvent,
+) error {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var (
+		statusArg     any
+		expiresArg    any
+		issuerArg     any
+		subjectArg    any
+		openedAtArg   any
+		lastReminder  any
+	)
+	if next.Status != "" {
+		statusArg = string(next.Status)
+	}
+	if !expiresAt.IsZero() {
+		expiresArg = expiresAt
+	}
+	if issuer != "" {
+		issuerArg = issuer
+	}
+	if subject != "" {
+		subjectArg = subject
+	}
+	if !next.OpenedAt.IsZero() {
+		openedAtArg = next.OpenedAt
+	}
+	if !next.LastReminderAt.IsZero() {
+		lastReminder = next.LastReminderAt
+	}
+
+	clearThread := event != nil && event.Type == alert.EventSSLResolve
+	if clearThread {
+		_, err = tx.Exec(ctx, `
+			UPDATE monitors
+			SET ssl_status            = $1,
+				ssl_expires_at        = $2,
+				ssl_issuer            = COALESCE($3, ssl_issuer),
+				ssl_subject           = COALESCE($4, ssl_subject),
+				ssl_opened_at         = $5,
+				ssl_last_reminder_at  = $6,
+				ssl_thread_channel    = NULL,
+				ssl_thread_ts         = NULL,
+				updated_at = now()
+			WHERE slug = $7
+		`, statusArg, expiresArg, issuerArg, subjectArg, openedAtArg, lastReminder, monitorSlug)
+	} else {
+		_, err = tx.Exec(ctx, `
+			UPDATE monitors
+			SET ssl_status            = $1,
+				ssl_expires_at        = $2,
+				ssl_issuer            = COALESCE($3, ssl_issuer),
+				ssl_subject           = COALESCE($4, ssl_subject),
+				ssl_opened_at         = $5,
+				ssl_last_reminder_at  = $6,
+				updated_at = now()
+			WHERE slug = $7
+		`, statusArg, expiresArg, issuerArg, subjectArg, openedAtArg, lastReminder, monitorSlug)
+	}
+	if err != nil {
+		return fmt.Errorf("update monitor row (ssl): %w", err)
+	}
+
+	if event != nil {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO alert_events (monitor_slug, type, at, status_code, error, downtime_seconds)
+			VALUES ($1, $2, $3, NULL, NULL, NULL)
+		`, monitorSlug, string(event.Type), event.At)
+		if err != nil {
+			return fmt.Errorf("insert ssl alert_event: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit (ssl): %w", err)
+	}
+	return nil
+}
+
+// SetSSLThread persists the Slack thread ref for the currently-open
+// SSL incident on this monitor. Called by the notifier after
+// successfully posting the SSL parent message.
+func (r *Repo) SetSSLThread(ctx context.Context, slug, channel, ts string) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE monitors
+		SET ssl_thread_channel = $1,
+			ssl_thread_ts      = $2,
+			updated_at = now()
+		WHERE slug = $3
+	`, channel, ts, slug)
+	if err != nil {
+		return fmt.Errorf("set ssl thread for %q: %w", slug, err)
+	}
+	return nil
+}
+
 // SetUptimeThread persists the Slack thread ref for the currently-open
 // uptime incident on this monitor. Called by the notifier after
 // successfully posting the parent down message.
@@ -381,7 +516,10 @@ const selectMonitor = `
 	SELECT slug, friendly_name, url, group_slug, source, depends_on,
 	       status, opened_at, last_reminder_at, last_checked_at, last_status_code, last_error,
 	       archived, archived_at, archive_reason,
-	       uptime_thread_channel, uptime_thread_ts
+	       uptime_thread_channel, uptime_thread_ts,
+	       ssl_status, ssl_expires_at, ssl_issuer, ssl_subject,
+	       ssl_opened_at, ssl_last_reminder_at,
+	       ssl_thread_channel, ssl_thread_ts
 	FROM monitors`
 
 // rowScanner abstracts pgx.Row and pgx.Rows for scanMonitor.
@@ -392,11 +530,15 @@ type rowScanner interface {
 func scanMonitor(row rowScanner) (MonitorRow, error) {
 	var m MonitorRow
 	var src, status string
+	var sslStatus *string
 	err := row.Scan(
 		&m.Slug, &m.FriendlyName, &m.URL, &m.GroupSlug, &src, &m.DependsOn,
 		&status, &m.OpenedAt, &m.LastReminderAt, &m.LastCheckedAt, &m.LastStatusCode, &m.LastError,
 		&m.Archived, &m.ArchivedAt, &m.ArchiveReason,
 		&m.UptimeThreadChannel, &m.UptimeThreadTS,
+		&sslStatus, &m.SSLExpiresAt, &m.SSLIssuer, &m.SSLSubject,
+		&m.SSLOpenedAt, &m.SSLLastReminderAt,
+		&m.SSLThreadChannel, &m.SSLThreadTS,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -406,5 +548,9 @@ func scanMonitor(row rowScanner) (MonitorRow, error) {
 	}
 	m.Source = MonitorSource(src)
 	m.Status = alert.Status(status)
+	if sslStatus != nil {
+		ss := alert.SSLStatus(*sslStatus)
+		m.SSLStatus = &ss
+	}
 	return m, nil
 }
