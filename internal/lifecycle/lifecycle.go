@@ -226,8 +226,20 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 }
 
 func buildPlans(cfg config.Config) []scheduler.Plan {
+	groupNotify := map[string][]string{}
+	for _, g := range cfg.Groups {
+		if len(g.Notify) > 0 {
+			groupNotify[g.Slug] = g.Notify
+		}
+	}
 	out := make([]scheduler.Plan, 0, len(cfg.Monitors))
 	for _, m := range cfg.Monitors {
+		// Union: group-level entries are applied first so monitor-level
+		// values get dedup priority. Order within the resulting markup
+		// list follows the source lists; ResolveMentions handles dedup.
+		merged := make([]string, 0, len(m.Notify)+len(groupNotify[m.Group]))
+		merged = append(merged, groupNotify[m.Group]...)
+		merged = append(merged, m.Notify...)
 		out = append(out, scheduler.Plan{
 			Slug:                m.Slug,
 			FriendlyName:        m.FriendlyName,
@@ -242,7 +254,7 @@ func buildPlans(cfg config.Config) []scheduler.Plan {
 			UserAgent:           cfg.HTTPClient.UserAgent,
 			ReminderInterval:    m.ReminderInterval.AsDuration(),
 			ChannelSlug:         m.Slack,
-			Mentions:            m.Notify,
+			Mentions:            slack.ResolveMentions(merged, cfg.Slack.UserMapping),
 			DependsOn:           m.DependsOn,
 		})
 	}

@@ -23,6 +23,9 @@ import (
 // rejected at config-load.
 var channelIDPattern = regexp.MustCompile(`^[CG][A-Z0-9]{8,}$`)
 
+// userOrSubteamIDPattern matches user IDs (U...) and subteam IDs (S...).
+var userOrSubteamIDPattern = regexp.MustCompile(`^[US][A-Z0-9]{8,}$`)
+
 // Config is the typed, validated representation of the toggle-monitor
 // YAML config.
 type Config struct {
@@ -51,8 +54,9 @@ type Heartbeat struct {
 // single workspace; multiple channels can be declared and referenced
 // by slug from monitors.
 type Slack struct {
-	BodyMaxChars int            `yaml:"bodyMaxChars"`
-	Channels     []SlackChannel `yaml:"channels"`
+	BodyMaxChars int               `yaml:"bodyMaxChars"`
+	Channels     []SlackChannel    `yaml:"channels"`
+	UserMapping  map[string]string `yaml:"userMapping,omitempty"` // slug → U... | S...
 }
 
 // SlackChannel is one Slack destination.
@@ -92,11 +96,12 @@ type HTTPClient struct {
 }
 
 type Group struct {
-	Slug         string `yaml:"slug"`
-	FriendlyName string `yaml:"friendlyName"`
-	Description  string `yaml:"description,omitempty"`
-	LogoURL      string `yaml:"logoUrl,omitempty"`
-	Color        string `yaml:"color,omitempty"`
+	Slug         string   `yaml:"slug"`
+	FriendlyName string   `yaml:"friendlyName"`
+	Description  string   `yaml:"description,omitempty"`
+	LogoURL      string   `yaml:"logoUrl,omitempty"`
+	Color        string   `yaml:"color,omitempty"`
+	Notify       []string `yaml:"notify,omitempty"` // userMapping slugs or raw <…> markup; merged union with monitor.notify
 }
 
 type Monitor struct {
@@ -257,6 +262,17 @@ func (c *checker) validate(cfg *Config) {
 		}
 	}
 
+	// userMapping: slug regex + ID regex (U... user, S... subteam).
+	for slugName, id := range cfg.Slack.UserMapping {
+		if err := slug.Validate(slugName); err != nil {
+			c.errf([]any{"slack", "userMapping", slugName}, "slug: %v", err)
+		}
+		if !userOrSubteamIDPattern.MatchString(id) {
+			c.errf([]any{"slack", "userMapping", slugName},
+				"%q must match %s (U... = user, S... = subteam)", id, userOrSubteamIDPattern.String())
+		}
+	}
+
 	// Group validation: kube-discovered required; slugs unique and valid.
 	seenGroups := map[string]struct{}{}
 	hasKubeDiscovered := false
@@ -271,6 +287,12 @@ func (c *checker) validate(cfg *Config) {
 		seenGroups[g.Slug] = struct{}{}
 		if g.Slug == "kube-discovered" {
 			hasKubeDiscovered = true
+		}
+		for j, n := range g.Notify {
+			if !c.isValidNotifyEntry(cfg.Slack.UserMapping, n) {
+				c.errf(append(base, "notify", j),
+					"%q must be a userMapping slug or raw Slack markup wrapped in <…>", n)
+			}
 		}
 	}
 	if !hasKubeDiscovered {
@@ -295,9 +317,9 @@ func (c *checker) validate(cfg *Config) {
 			c.errf(append(base, "slack"), "unknown channel slug %q", m.Slack)
 		}
 		for j, n := range m.Notify {
-			if !isRawSlackMarkup(n) {
+			if !c.isValidNotifyEntry(cfg.Slack.UserMapping, n) {
 				c.errf(append(base, "notify", j),
-					"%q must be raw Slack markup wrapped in <…> (userMapping slugs land in a later release)", n)
+					"%q must be a userMapping slug or raw Slack markup wrapped in <…>", n)
 			}
 		}
 		interval := m.Interval.AsDuration()
@@ -465,9 +487,16 @@ func pathStr(path []any) string {
 var envVarNamePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
 // isRawSlackMarkup reports whether s is a verbatim <…> Slack mention
-// markup string (e.g. <!here>, <@U123ABC>, <!subteam^S456>). v1 — until
-// Issue 13 introduces slack.userMapping — only raw markup is accepted
-// in notify lists.
+// markup string (e.g. <!here>, <@U123ABC>, <!subteam^S456>).
 func isRawSlackMarkup(s string) bool {
 	return len(s) >= 2 && s[0] == '<' && s[len(s)-1] == '>'
+}
+
+// isValidNotifyEntry accepts either a userMapping slug or raw Slack
+// markup. Other strings are rejected at config-load.
+func (c *checker) isValidNotifyEntry(mapping map[string]string, s string) bool {
+	if _, ok := mapping[s]; ok {
+		return true
+	}
+	return isRawSlackMarkup(s)
 }

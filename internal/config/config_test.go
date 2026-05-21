@@ -193,6 +193,41 @@ func TestLoad_acceptsNotifyEntriesThatAreRawMarkup(t *testing.T) {
 	}
 }
 
+func TestLoad_acceptsUserMappingSlugInNotify(t *testing.T) {
+	// Inject a userMapping and reference one of its slugs from a
+	// monitor's notify list.
+	data := strings.Replace(validMinimal,
+		"      tokenEnv: SLACK_BOT_TOKEN\n",
+		"      tokenEnv: SLACK_BOT_TOKEN\n  userMapping:\n    alice: U01ABCDEF12\n    ops-team: S02GHIJKL34\n",
+		1)
+	data = strings.Replace(data, "    slack: ops-alerts\n",
+		"    slack: ops-alerts\n    notify: [alice, ops-team]\n", 1)
+	if _, err := config.Load([]byte(data)); err != nil {
+		t.Fatalf("userMapping slugs should be valid notify entries: %v", err)
+	}
+}
+
+func TestLoad_rejectsMalformedUserMappingID(t *testing.T) {
+	data := strings.Replace(validMinimal,
+		"      tokenEnv: SLACK_BOT_TOKEN\n",
+		"      tokenEnv: SLACK_BOT_TOKEN\n  userMapping:\n    alice: \"not-an-id\"\n",
+		1)
+	_, err := config.Load([]byte(data))
+	if err == nil {
+		t.Fatal("expected malformed userMapping ID to be rejected")
+	}
+}
+
+func TestLoad_acceptsGroupNotify(t *testing.T) {
+	data := strings.Replace(validMinimal,
+		"  - slug: gateways\n    friendlyName: Gateways\n",
+		"  - slug: gateways\n    friendlyName: Gateways\n    notify: [\"<!here>\"]\n",
+		1)
+	if _, err := config.Load([]byte(data)); err != nil {
+		t.Fatalf("group.notify should accept raw markup: %v", err)
+	}
+}
+
 func TestLoad_rejectsDBBodyMaxCharsSmallerThanSlackBodyMaxChars(t *testing.T) {
 	data := withReplaced(t, "dbBodyMaxChars: 4000", "dbBodyMaxChars: 100")
 	_, err := config.Load(data)
