@@ -2,6 +2,7 @@ package templates
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/toggle-corp/toggle-monitor/internal/store"
@@ -14,7 +15,7 @@ templ kv(label, value string) {
 	</div>
 }
 
-templ MonitorDetail(m store.MonitorRow, history []store.AlertEventRow) {
+templ MonitorDetail(m store.MonitorRow, gatingParents []string, history []store.AlertEventRow) {
 	@Layout(m.FriendlyName) {
 		<div class="flex items-center gap-3 mb-4">
 			<h1 class="text-xl font-semibold">{ m.FriendlyName }</h1>
@@ -28,6 +29,12 @@ templ MonitorDetail(m store.MonitorRow, history []store.AlertEventRow) {
 				@kv("URL", m.URL)
 				@kv("Group", m.GroupSlug)
 				@kv("Source", string(m.Source))
+				if len(m.DependsOn) > 0 {
+					@kv("Depends on", strings.Join(m.DependsOn, ", "))
+				}
+				if string(m.Status) == "temporary-paused" && len(gatingParents) > 0 {
+					@kv("Gated by (currently down)", strings.Join(gatingParents, ", "))
+				}
 				if m.LastCheckedAt != nil {
 					@kv("Last checked", m.LastCheckedAt.UTC().Format(time.RFC3339))
 				}

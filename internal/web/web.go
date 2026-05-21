@@ -104,13 +104,26 @@ func (s *Server) handleMonitorDetail(w http.ResponseWriter, r *http.Request) {
 		s.renderDBUnavailable(ctx, w, err)
 		return
 	}
+
+	// When the monitor is temporary-paused, surface which parent(s)
+	// are currently keeping it gated.
+	var gatingParents []string
+	if m.Status == "temporary-paused" && len(m.DependsOn) > 0 {
+		for _, dep := range m.DependsOn {
+			p, perr := s.repo.GetMonitor(ctx, dep)
+			if perr == nil && p.Status == "down" {
+				gatingParents = append(gatingParents, dep)
+			}
+		}
+	}
+
 	history, err := s.repo.ListAlertsForMonitor(ctx, slug, 50)
 	if err != nil {
 		s.renderDBUnavailable(ctx, w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.MonitorDetail(m, history).Render(ctx, w)
+	_ = templates.MonitorDetail(m, gatingParents, history).Render(ctx, w)
 }
 
 // renderDBUnavailable serves a 503 with the friendly fallback page.

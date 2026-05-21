@@ -35,6 +35,7 @@ type Plan struct {
 	ReminderInterval    time.Duration
 	ChannelSlug         string   // slack destination slug; empty disables Slack output
 	Mentions            []string // pre-resolved raw Slack markup (parent-only)
+	DependsOn           []string // upstream static-monitor slugs; any of them down pauses this monitor
 }
 
 // CheckFunc is the seam used to run a probe; production wires
@@ -127,6 +128,19 @@ func (s *Scheduler) runMonitor(ctx context.Context, p Plan) {
 // integration tests can drive the scheduler without running the
 // jittered loop.
 func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
+	// dependsOn gate: any parent down → skip the probe and mark
+	// the child temporary-paused. No HTTP, no DB write to last_*,
+	// no alert event.
+	if len(p.DependsOn) > 0 {
+		paused, err := s.anyParentDown(ctx, p.DependsOn)
+		if err != nil {
+			return err
+		}
+		if paused {
+			return s.repo.MarkTemporaryPaused(ctx, p.Slug)
+		}
+	}
+
 	cfg := httpcheck.Config{
 		URL:                 p.URL,
 		Method:              p.HTTPMethod,
@@ -161,6 +175,18 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 		return err
 	}
 
+	// Resuming from temporary-paused: treat the SM's "previous"
+	// status as up so a failing first tick produces a fresh open,
+	// not a doubled transition. Pre-pause runtime fields are
+	// already cleared/irrelevant because MarkTemporaryPaused doesn't
+	// touch last_reminder_at / opened_at; ensure OpenedAt is zero
+	// here so the open event picks up the current tick time.
+	if row.Status == alert.StatusTemporaryPaused {
+		row.Status = alert.StatusUp
+		row.OpenedAt = nil
+		row.LastReminderAt = nil
+	}
+
 	outcome := alert.OutcomeFail
 	if res.Error == "" {
 		outcome = alert.OutcomeOK
@@ -190,6 +216,24 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 		}
 	}
 	return nil
+}
+
+// anyParentDown reports whether any of the listed monitor slugs is
+// currently in StatusDown. Missing parents are skipped (logged for
+// visibility) so a transient outage of a single dependency lookup
+// doesn't ripple into the wrong gating decision.
+func (s *Scheduler) anyParentDown(ctx context.Context, parents []string) (bool, error) {
+	for _, slug := range parents {
+		row, err := s.repo.GetMonitor(ctx, slug)
+		if err != nil {
+			s.log.Warn("dependsOn parent lookup failed", "parent", slug, "error", err)
+			continue
+		}
+		if row.Status == alert.StatusDown {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // sleep returns false if ctx was cancelled before the duration elapsed.

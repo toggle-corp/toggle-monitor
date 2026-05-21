@@ -79,6 +79,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 			URL:          m.URL,
 			GroupSlug:    m.Group,
 			Source:       store.SourceStatic,
+			DependsOn:    m.DependsOn,
 		}
 		if err := repo.ReconcileMonitor(ctx, spec); err != nil {
 			return fmt.Errorf("reconcile %q: %w", m.Slug, err)
@@ -198,6 +199,7 @@ func buildPlans(cfg config.Config) []scheduler.Plan {
 			ReminderInterval:    m.ReminderInterval.AsDuration(),
 			ChannelSlug:         m.Slack,
 			Mentions:            m.Notify,
+			DependsOn:           m.DependsOn,
 		})
 	}
 	return out

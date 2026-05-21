@@ -11,8 +11,9 @@ import "time"
 type Status string
 
 const (
-	StatusUp   Status = "up"
-	StatusDown Status = "down"
+	StatusUp              Status = "up"
+	StatusDown            Status = "down"
+	StatusTemporaryPaused Status = "temporary-paused"
 )
 
 // Outcome is the result of a single check tick (after in-cycle retries

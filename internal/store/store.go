@@ -46,9 +46,11 @@ type MonitorSpec struct {
 	URL          string
 	GroupSlug    string
 	Source       MonitorSource
+	DependsOn    []string
 }
 
-// MonitorRow is the full row as the UI sees it.
+// MonitorRow is the full row as the UI sees it. The embedded
+// MonitorSpec carries the YAML-side fields including DependsOn.
 type MonitorRow struct {
 	MonitorSpec
 	Status              alert.Status
@@ -84,19 +86,24 @@ func (r *Repo) ReconcileMonitor(ctx context.Context, spec MonitorSpec) error {
 	if src == "" {
 		src = SourceStatic
 	}
+	deps := spec.DependsOn
+	if deps == nil {
+		deps = []string{}
+	}
 	_, err := r.pool.Exec(ctx, `
-		INSERT INTO monitors (slug, friendly_name, url, group_slug, source)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO monitors (slug, friendly_name, url, group_slug, source, depends_on)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (slug) DO UPDATE SET
 			friendly_name = EXCLUDED.friendly_name,
 			url           = EXCLUDED.url,
 			group_slug    = EXCLUDED.group_slug,
 			source        = EXCLUDED.source,
+			depends_on    = EXCLUDED.depends_on,
 			archived      = FALSE,
 			archived_at   = NULL,
 			archive_reason= NULL,
 			updated_at    = now()
-	`, spec.Slug, spec.FriendlyName, spec.URL, spec.GroupSlug, string(src))
+	`, spec.Slug, spec.FriendlyName, spec.URL, spec.GroupSlug, string(src), deps)
 	if err != nil {
 		return fmt.Errorf("reconcile monitor %q: %w", spec.Slug, err)
 	}
@@ -261,6 +268,23 @@ func (r *Repo) ApplyCheck(
 	return nil
 }
 
+// MarkTemporaryPaused sets a monitor's status to 'temporary-paused'
+// without touching last_* fields or appending an alert_event. Called
+// by the scheduler when at least one dependsOn parent is currently
+// down. Idempotent — repeat calls while paused are no-ops.
+func (r *Repo) MarkTemporaryPaused(ctx context.Context, slug string) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE monitors
+		SET status = 'temporary-paused',
+			updated_at = now()
+		WHERE slug = $1 AND status <> 'temporary-paused'
+	`, slug)
+	if err != nil {
+		return fmt.Errorf("mark temporary-paused %q: %w", slug, err)
+	}
+	return nil
+}
+
 // SetUptimeThread persists the Slack thread ref for the currently-open
 // uptime incident on this monitor. Called by the notifier after
 // successfully posting the parent down message.
@@ -343,7 +367,7 @@ func (r *Repo) ListLatestAlerts(ctx context.Context, limit int) ([]AlertEventRow
 }
 
 const selectMonitor = `
-	SELECT slug, friendly_name, url, group_slug, source,
+	SELECT slug, friendly_name, url, group_slug, source, depends_on,
 	       status, opened_at, last_reminder_at, last_checked_at, last_status_code, last_error,
 	       archived, archived_at, archive_reason,
 	       uptime_thread_channel, uptime_thread_ts
@@ -358,7 +382,7 @@ func scanMonitor(row rowScanner) (MonitorRow, error) {
 	var m MonitorRow
 	var src, status string
 	err := row.Scan(
-		&m.Slug, &m.FriendlyName, &m.URL, &m.GroupSlug, &src,
+		&m.Slug, &m.FriendlyName, &m.URL, &m.GroupSlug, &src, &m.DependsOn,
 		&status, &m.OpenedAt, &m.LastReminderAt, &m.LastCheckedAt, &m.LastStatusCode, &m.LastError,
 		&m.Archived, &m.ArchivedAt, &m.ArchiveReason,
 		&m.UptimeThreadChannel, &m.UptimeThreadTS,

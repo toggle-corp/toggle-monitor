@@ -117,6 +117,90 @@ func TestTick_endToEndUptimeLifecycle(t *testing.T) {
 	}
 }
 
+// TestTick_dependsOn_pausesChildWhenParentDown verifies the runtime
+// gate: while any parent is StatusDown the child is marked
+// temporary-paused, the probe is skipped, and no alert event is
+// written. When the parent recovers, the child resumes and a fresh
+// failing tick produces an open event (i.e. resuming-from-paused does
+// not double-emit transitions).
+func TestTick_dependsOn_pausesChildWhenParentDown(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+
+	for _, slug := range []string{"parent", "child"} {
+		if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
+			Slug: slug, FriendlyName: slug, URL: "http://x", GroupSlug: "g", Source: store.SourceStatic,
+		}); err != nil {
+			t.Fatalf("reconcile %s: %v", slug, err)
+		}
+	}
+	// Knock the parent down.
+	t0 := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+	if err := repo.ApplyCheck(ctx, "parent",
+		alert.State{Status: alert.StatusDown, OpenedAt: t0},
+		t0, 503, "down",
+		&alert.Event{Type: alert.EventOpen, At: t0, StatusCode: 503, Error: "down"},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// CheckFunc that fails — but should not be invoked while paused.
+	var called atomic.Int32
+	check := func(ctx context.Context, _ httpcheck.Config) httpcheck.Result {
+		called.Add(1)
+		return httpcheck.Result{StatusCode: 500, Error: "would-fail"}
+	}
+	s := scheduler.New(repo, scheduler.WithCheck(check))
+
+	plan := scheduler.Plan{
+		Slug: "child", URL: "x", HTTPMethod: "GET",
+		AcceptedStatusCodes: []int{200},
+		Interval:            5 * time.Minute, Timeout: time.Second,
+		Retries: 0, RetryBackoff: time.Second,
+		DependsOn: []string{"parent"},
+	}
+	if err := s.Tick(ctx, plan); err != nil {
+		t.Fatalf("paused tick: %v", err)
+	}
+	if called.Load() != 0 {
+		t.Errorf("probe should NOT be called while paused, but was called %d time(s)", called.Load())
+	}
+
+	row, err := repo.GetMonitor(ctx, "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != alert.StatusTemporaryPaused {
+		t.Errorf("child status: got %q, want %q", row.Status, alert.StatusTemporaryPaused)
+	}
+	if events, _ := repo.ListAlertsForMonitor(ctx, "child", 10); len(events) != 0 {
+		t.Errorf("paused tick must not write alert_events; got %d", len(events))
+	}
+
+	// Bring the parent back up.
+	t1 := t0.Add(5 * time.Minute)
+	if err := repo.ApplyCheck(ctx, "parent",
+		alert.State{Status: alert.StatusUp},
+		t1, 200, "",
+		&alert.Event{Type: alert.EventResolve, At: t1, Downtime: 5 * time.Minute},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// Child's next tick should actually run the probe and, since
+	// it's failing, produce a fresh open.
+	if err := s.Tick(ctx, plan); err != nil {
+		t.Fatalf("resumed tick: %v", err)
+	}
+	if called.Load() != 1 {
+		t.Errorf("probe should run once after resume, called %d time(s)", called.Load())
+	}
+	events, _ := repo.ListAlertsForMonitor(ctx, "child", 10)
+	if len(events) != 1 || events[0].Type != alert.EventOpen {
+		t.Errorf("expected exactly 1 open event after resume, got %d", len(events))
+	}
+}
+
 // TestTick_inCycleRetriesSuppressTransientFailure: if the first probe
 // fails but a retry within the same tick succeeds, the tick records
 // success — no alert event is emitted for the transient failure.

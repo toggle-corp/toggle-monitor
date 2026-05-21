@@ -331,6 +331,97 @@ monitors:
 	}
 }
 
+func TestLoad_dependsOn_acceptsValidForwardReference(t *testing.T) {
+	yaml := strings.Replace(validMinimal, "monitors:\n",
+		"monitors:\n  - slug: api\n    friendlyName: API\n    url: http://api\n    group: gateways\n    httpMethod: GET\n    acceptedStatusCodes: [200]\n    interval: 5m\n    timeout: 10s\n    retries: 2\n    retryBackoff: 5s\n    followRedirects: false\n    reminderInterval: 3d\n    slack: ops-alerts\n    dependsOn: [bastion]\n",
+		1)
+	if _, err := config.Load([]byte(yaml)); err != nil {
+		t.Fatalf("forward reference should be valid: %v", err)
+	}
+}
+
+func TestLoad_dependsOn_rejectsUnknownSlug(t *testing.T) {
+	yaml := strings.Replace(validMinimal, "    slack: ops-alerts\n",
+		"    slack: ops-alerts\n    dependsOn: [does-not-exist]\n",
+		1)
+	_, err := config.Load([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected unknown dependsOn slug to fail")
+	}
+	if !strings.Contains(err.Error(), "does-not-exist") {
+		t.Errorf("error should name the missing parent, got: %v", err)
+	}
+}
+
+func TestLoad_dependsOn_rejectsSelfDependency(t *testing.T) {
+	yaml := strings.Replace(validMinimal, "    slack: ops-alerts\n",
+		"    slack: ops-alerts\n    dependsOn: [bastion]\n",
+		1)
+	_, err := config.Load([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected self-dependency to fail")
+	}
+	if !strings.Contains(err.Error(), "cannot depend on itself") {
+		t.Errorf("error should mention self-dependency, got: %v", err)
+	}
+}
+
+func TestLoad_dependsOn_rejectsCycle(t *testing.T) {
+	// Two monitors that depend on each other.
+	yaml := strings.Replace(validMinimal,
+		`  - slug: bastion
+    friendlyName: Bastion
+    url: http://bastion.local/health
+    group: gateways
+    httpMethod: GET
+    acceptedStatusCodes: [200]
+    interval: 5m
+    timeout: 10s
+    retries: 2
+    retryBackoff: 5s
+    followRedirects: false
+    reminderInterval: 3d
+    slack: ops-alerts
+`,
+		`  - slug: bastion
+    friendlyName: Bastion
+    url: http://bastion.local/health
+    group: gateways
+    httpMethod: GET
+    acceptedStatusCodes: [200]
+    interval: 5m
+    timeout: 10s
+    retries: 2
+    retryBackoff: 5s
+    followRedirects: false
+    reminderInterval: 3d
+    slack: ops-alerts
+    dependsOn: [alpha]
+  - slug: alpha
+    friendlyName: Alpha
+    url: http://alpha.local/health
+    group: gateways
+    httpMethod: GET
+    acceptedStatusCodes: [200]
+    interval: 5m
+    timeout: 10s
+    retries: 2
+    retryBackoff: 5s
+    followRedirects: false
+    reminderInterval: 3d
+    slack: ops-alerts
+    dependsOn: [bastion]
+`,
+		1)
+	_, err := config.Load([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected cycle to be detected")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("error should mention cycle, got: %v", err)
+	}
+}
+
 func TestInterp_strictResolvesSetVar(t *testing.T) {
 	t.Setenv("TM_TEST_VAR", "hello")
 	data := withReplaced(t, `userAgent: "toggle-monitor/test"`, `userAgent: "toggle-monitor/${TM_TEST_VAR}"`)

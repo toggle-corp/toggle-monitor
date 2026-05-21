@@ -103,8 +103,9 @@ type Monitor struct {
 	RetryBackoff        Duration `yaml:"retryBackoff"`
 	FollowRedirects     bool     `yaml:"followRedirects"`
 	ReminderInterval    Duration `yaml:"reminderInterval"`
-	Slack               string   `yaml:"slack"`            // channel slug
-	Notify              []string `yaml:"notify,omitempty"` // raw <...> Slack markup; userMapping lands in Issue 13
+	Slack               string   `yaml:"slack"`               // channel slug
+	Notify              []string `yaml:"notify,omitempty"`    // raw <...> Slack markup; userMapping lands in Issue 13
+	DependsOn           []string `yaml:"dependsOn,omitempty"` // upstream static-monitor slugs that gate this one
 }
 
 // Load parses and validates the YAML config. Returns a populated
@@ -292,7 +293,93 @@ func (c *checker) validate(cfg *Config) {
 		if retryWindow >= interval {
 			c.errf(base, "retries × (timeout + retryBackoff) = %s must be less than interval (%s)", retryWindow, interval)
 		}
+		for j, dep := range m.DependsOn {
+			if dep == m.Slug {
+				c.errf(append(base, "dependsOn", j), "monitor cannot depend on itself")
+				continue
+			}
+			if _, ok := seenMonitors[dep]; !ok {
+				// Forward references are valid (YAML order is independent of dep order)
+				// — defer that check to the global pass below.
+			}
+		}
 	}
+
+	// Global dependsOn pass: every reference resolves to a known
+	// static monitor, and the graph has no cycles. Done after the
+	// per-monitor pass so we have the full slug set.
+	monitorByIdx := map[string]int{}
+	for i, m := range cfg.Monitors {
+		monitorByIdx[m.Slug] = i
+	}
+	for i, m := range cfg.Monitors {
+		base := []any{"monitors", i}
+		for j, dep := range m.DependsOn {
+			if dep == m.Slug {
+				continue // already reported above
+			}
+			if _, ok := monitorByIdx[dep]; !ok {
+				c.errf(append(base, "dependsOn", j), "unknown monitor slug %q (parents must be declared static monitors)", dep)
+			}
+		}
+	}
+	if cycle := detectDependsOnCycle(cfg.Monitors); cycle != "" {
+		c.errf([]any{"monitors"}, "dependsOn graph contains a cycle: %s", cycle)
+	}
+}
+
+// detectDependsOnCycle runs a DFS over the monitor dependency graph
+// and returns a human-readable description of the first cycle found,
+// or "" if the graph is acyclic.
+func detectDependsOnCycle(monitors []Monitor) string {
+	const (
+		white = 0
+		gray  = 1
+		black = 2
+	)
+	color := map[string]int{}
+	parents := map[string][]string{}
+	for _, m := range monitors {
+		color[m.Slug] = white
+		parents[m.Slug] = m.DependsOn
+	}
+	var path []string
+	var dfs func(node string) string
+	dfs = func(node string) string {
+		switch color[node] {
+		case gray:
+			// Found a back-edge — extract the cycle from path.
+			for i, s := range path {
+				if s == node {
+					return strings.Join(append(path[i:], node), " → ")
+				}
+			}
+			return node + " → " + node
+		case black:
+			return ""
+		}
+		color[node] = gray
+		path = append(path, node)
+		for _, p := range parents[node] {
+			if _, known := color[p]; !known {
+				continue // unknown slug — already reported separately
+			}
+			if c := dfs(p); c != "" {
+				return c
+			}
+		}
+		path = path[:len(path)-1]
+		color[node] = black
+		return ""
+	}
+	for _, m := range monitors {
+		if color[m.Slug] == white {
+			if c := dfs(m.Slug); c != "" {
+				return c
+			}
+		}
+	}
+	return ""
 }
 
 // nodeAt walks the yaml.Node tree following a path of mapping keys
