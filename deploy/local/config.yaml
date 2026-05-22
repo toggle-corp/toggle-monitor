@@ -1,0 +1,91 @@
+# Sample local-dev config for the docker-compose stack.
+#
+#   docker compose -f deploy/local/docker-compose.yaml up --build
+#
+# This config talks to the `postgres` service for storage and to the
+# `upstream` (httpbin) service so you get something to probe out of
+# the box. Adjust freely.
+
+displayTimezone: UTC
+publicBaseURL: http://localhost:8080
+dbBodyMaxChars: 4000
+
+database:
+  host: postgres
+  port: 5432
+  user: toggle_monitor
+  name: toggle_monitor
+  sslMode: disable
+  passwordEnv: DB_PASSWORD
+
+ui:
+  pageSize:
+    homepageAlerts: 20
+    monitorListing: 50
+    monitorHistory: 50
+    discoveryListing: 50
+  maxPerPage: 200
+
+theme:
+  defaultGroupColor: "#64748b"
+
+httpClient:
+  userAgent: "toggle-monitor/local-dev"
+
+# Outbound deadman heartbeat — commented out by default. Point at
+# healthchecks.io (or similar) to exercise it.
+# heartbeat:
+#   url: https://hc-ping.com/00000000-0000-0000-0000-000000000000
+#   interval: 1m
+#   failOnStalledWorker: true
+
+# Replace channelId + tokenEnv with real values to send actual Slack
+# messages. Default token is a non-working placeholder so the binary
+# starts (the auth.test failure becomes a warning, not a fatal).
+slack:
+  bodyMaxChars: 200
+  channels:
+    - slug: ops-alerts
+      channelId: C0123ABCD
+      tokenEnv: SLACK_BOT_TOKEN
+  userMapping:
+    alice: U0123ABCDEF
+
+groups:
+  - slug: kube-discovered
+    friendlyName: Kube Discovered
+    description: Fallback group for auto-discovered ingresses
+  - slug: local
+    friendlyName: Local services
+    color: "#10b981"
+
+monitors:
+  - slug: upstream-ok
+    friendlyName: Upstream OK
+    url: http://upstream/status/200
+    group: local
+    httpMethod: GET
+    acceptedStatusCodes: [200]
+    interval: 30s
+    timeout: 5s
+    retries: 1
+    retryBackoff: 2s
+    followRedirects: false
+    reminderInterval: 1h
+    slack: ops-alerts
+
+  - slug: upstream-flaky
+    friendlyName: Upstream Flaky
+    url: http://upstream/status/500
+    group: local
+    httpMethod: GET
+    acceptedStatusCodes: [200]
+    interval: 30s
+    timeout: 5s
+    retries: 1
+    retryBackoff: 2s
+    followRedirects: false
+    reminderInterval: 1h
+    slack: ops-alerts
+    notify:
+      - "<!here>"
