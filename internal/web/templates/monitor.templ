@@ -15,6 +15,32 @@ templ kv(label, value string) {
 	</div>
 }
 
+// kvTime is the same row shape as kv but the value is an
+// RFC3339 + (Xago) Timestamp instead of a plain string.
+templ kvTime(label string, t time.Time) {
+	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
+		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
+		<dd class="text-sm text-slate-900 dark:text-slate-100 col-span-2">@Timestamp(t)</dd>
+	</div>
+}
+
+// kvHTTPCode is the same row shape as kv but renders an HTTP status
+// code as a colored chip.
+templ kvHTTPCode(label string, code int) {
+	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
+		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
+		<dd class="text-sm col-span-2">@HTTPStatusBadge(code)</dd>
+	</div>
+}
+
+// kvSSL renders the SSL status as a colored chip.
+templ kvSSL(label, status string) {
+	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
+		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
+		<dd class="text-sm col-span-2">@SSLBadge(status)</dd>
+	</div>
+}
+
 templ MonitorDetail(m store.MonitorRow, gatingParents []string, history []store.AlertEventRow) {
 	@Layout(m.FriendlyName) {
 		<div class="flex items-center gap-3 mb-4">
@@ -36,22 +62,22 @@ templ MonitorDetail(m store.MonitorRow, gatingParents []string, history []store.
 					@kv("Gated by (currently down)", strings.Join(gatingParents, ", "))
 				}
 				if m.LastCheckedAt != nil {
-					@kv("Last checked", m.LastCheckedAt.UTC().Format(time.RFC3339))
+					@kvTime("Last checked", *m.LastCheckedAt)
 				}
 				if m.LastStatusCode != nil {
-					@kv("Last status code", fmt.Sprint(*m.LastStatusCode))
+					@kvHTTPCode("Last status code", *m.LastStatusCode)
 				}
 				if m.LastError != nil && *m.LastError != "" {
 					@kv("Last error", *m.LastError)
 				}
 				if m.OpenedAt != nil {
-					@kv("Opened at", m.OpenedAt.UTC().Format(time.RFC3339))
+					@kvTime("Opened at", *m.OpenedAt)
 				}
 				if m.SSLStatus != nil {
-					@kv("SSL status", string(*m.SSLStatus))
+					@kvSSL("SSL status", string(*m.SSLStatus))
 				}
 				if m.SSLExpiresAt != nil {
-					@kv("SSL expires at", m.SSLExpiresAt.UTC().Format(time.RFC3339))
+					@kvTime("SSL expires at", *m.SSLExpiresAt)
 				}
 				if m.SSLIssuer != nil && *m.SSLIssuer != "" {
 					@kv("SSL issuer", *m.SSLIssuer)
@@ -66,11 +92,11 @@ templ MonitorDetail(m store.MonitorRow, gatingParents []string, history []store.
 			} else {
 				<ul class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 divide-y divide-slate-100 dark:divide-slate-800">
 					for _, ev := range history {
-						<li class="py-2 px-3 text-sm flex gap-3">
-							<span class="font-medium w-20">{ string(ev.Type) }</span>
-							<span class="text-slate-500 dark:text-slate-400">{ ev.At.UTC().Format(time.RFC3339) }</span>
+						<li class="py-2 px-3 text-sm flex flex-wrap items-center gap-3">
+							<span class="w-20">@EventTypeBadge(string(ev.Type))</span>
+							<span class="text-slate-500 dark:text-slate-400">@Timestamp(ev.At)</span>
 							if ev.StatusCode != nil {
-								<span class="text-slate-700 dark:text-slate-300">HTTP { fmt.Sprint(*ev.StatusCode) }</span>
+								@HTTPStatusBadge(*ev.StatusCode)
 							}
 							if ev.Error != nil && *ev.Error != "" {
 								<span class="text-rose-700 dark:text-rose-400">{ *ev.Error }</span>

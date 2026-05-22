@@ -5,11 +5,144 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/a-h/templ"
 
 	"github.com/toggle-corp/toggle-monitor/internal/store"
 )
+
+// nowFunc is overridable for tests.
+var nowFunc = time.Now
+
+// humanDuration renders a compact "5m ago" / "in 3d" / "just now"
+// token suitable for sitting beside an RFC3339 timestamp. Returns ""
+// for a zero time so callers can guard their layout cheaply.
+func humanDuration(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	d := nowFunc().Sub(t)
+	future := d < 0
+	if future {
+		d = -d
+	}
+	var token string
+	switch {
+	case d < 5*time.Second:
+		return "just now"
+	case d < time.Minute:
+		token = fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		token = fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		token = fmt.Sprintf("%dh", int(d.Hours()))
+	case d < 30*24*time.Hour:
+		token = fmt.Sprintf("%dd", int(d.Hours()/24))
+	default:
+		token = fmt.Sprintf("%dmo", int(d.Hours()/(24*30)))
+	}
+	if future {
+		return "in " + token
+	}
+	return token + " ago"
+}
+
+// statTileAccent returns the border class for an overview tile. count
+// drives whether the accent activates ("at least one of these things
+// is worth your attention") vs. stays neutral slate.
+func statTileAccent(kind string, count int) string {
+	if count == 0 {
+		return "border-slate-200 dark:border-slate-700"
+	}
+	switch kind {
+	case "up":
+		return "border-emerald-300 dark:border-emerald-700 bg-emerald-50/40 dark:bg-emerald-950/30"
+	case "down":
+		return "border-rose-300 dark:border-rose-700 bg-rose-50/40 dark:bg-rose-950/30"
+	case "warn":
+		return "border-amber-300 dark:border-amber-700 bg-amber-50/40 dark:bg-amber-950/30"
+	default:
+		return "border-slate-200 dark:border-slate-700"
+	}
+}
+
+// statTileCount returns text-color classes matching statTileAccent.
+func statTileCount(kind string, count int) string {
+	if count == 0 {
+		return "text-slate-900 dark:text-slate-100"
+	}
+	switch kind {
+	case "up":
+		return "text-emerald-700 dark:text-emerald-300"
+	case "down":
+		return "text-rose-700 dark:text-rose-300"
+	case "warn":
+		return "text-amber-700 dark:text-amber-300"
+	default:
+		return "text-slate-900 dark:text-slate-100"
+	}
+}
+
+// httpCodeBadgeClasses maps an HTTP status code to a Tailwind class
+// fragment for the badge background + text. 2xx → emerald, 3xx →
+// amber, 4xx/5xx → rose, anything else → slate.
+func httpCodeBadgeClasses(code int) string {
+	switch {
+	case code >= 200 && code < 300:
+		return "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
+	case code >= 300 && code < 400:
+		return "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+	case code >= 400:
+		return "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300"
+	default:
+		return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+	}
+}
+
+// eventTypeBadgeClasses colors the alert-event chip on the homepage
+// feed and the per-monitor history.
+func eventTypeBadgeClasses(t string) string {
+	switch t {
+	case "open", "ssl_open":
+		return "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300"
+	case "resolve", "ssl_resolve":
+		return "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
+	case "reminder", "ssl_reminder":
+		return "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+	default:
+		return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+	}
+}
+
+// sslBadgeClasses colors the SSL-status chip. "ok" is the explicit
+// success case the design doc calls out.
+func sslBadgeClasses(s string) string {
+	switch s {
+	case "ok":
+		return "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
+	case "ssl-expiring":
+		return "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+	case "ssl-skipped":
+		return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+	default:
+		return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+	}
+}
+
+// discoveryBadgeClasses colors the discovery-snapshot row status.
+func discoveryBadgeClasses(s string) string {
+	switch s {
+	case "added":
+		return "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
+	case "kube-paused":
+		return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+	case "kube-invalid":
+		return "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300"
+	default:
+		return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+	}
+}
 
 func summary(rows []store.DiscoverySnapshotRow) string {
 	counts := map[string]int{}
@@ -63,6 +196,9 @@ func paramsFromFilter(f MonitorsFilter) url.Values {
 	}
 	if f.Status != "" {
 		v.Set("status", f.Status)
+	}
+	if f.SSL != "" {
+		v.Set("ssl", f.SSL)
 	}
 	if f.Group != "" {
 		v.Set("group", f.Group)

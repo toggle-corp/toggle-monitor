@@ -166,6 +166,7 @@ func (r *Repo) ListActiveMonitors(ctx context.Context) ([]MonitorRow, error) {
 type ListMonitorsOpts struct {
 	Search          string // substring match on friendly_name OR slug
 	Status          string // "" → no status filter
+	SSL             string // "" → no ssl_status filter ('ok' | 'ssl-expiring' | 'ssl-skipped')
 	GroupSlug       string // "" → no group filter
 	IncludeArchived bool
 	Offset          int
@@ -193,6 +194,9 @@ func (r *Repo) ListMonitors(ctx context.Context, opts ListMonitorsOpts) (Monitor
 	}
 	if opts.Status != "" {
 		add("status = %s", opts.Status)
+	}
+	if opts.SSL != "" {
+		add("ssl_status = %s", opts.SSL)
 	}
 	if opts.GroupSlug != "" {
 		add("group_slug = %s", opts.GroupSlug)

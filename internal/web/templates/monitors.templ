@@ -12,6 +12,7 @@ import (
 type MonitorsFilter struct {
 	Search string
 	Status string
+	SSL    string
 	Group  string
 }
 
@@ -59,6 +60,15 @@ templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, groups [
 				</select>
 			</div>
 			<div>
+				<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="ssl">SSL</label>
+				<select id="ssl" name="ssl" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
+					<option value="" selected?={ filter.SSL == "" }>(any)</option>
+					<option value="ok" selected?={ filter.SSL == "ok" }>ok</option>
+					<option value="ssl-expiring" selected?={ filter.SSL == "ssl-expiring" }>ssl-expiring</option>
+					<option value="ssl-skipped" selected?={ filter.SSL == "ssl-skipped" }>ssl-skipped</option>
+				</select>
+			</div>
+			<div>
 				<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="group">Group</label>
 				<select id="group" name="group" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
 					<option value="" selected?={ filter.Group == "" }>(any)</option>
@@ -68,7 +78,7 @@ templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, groups [
 				</select>
 			</div>
 			<button class="bg-slate-900 dark:bg-slate-200 dark:text-slate-900 text-white text-sm px-3 py-1.5 rounded">Apply</button>
-			if filter.Search != "" || filter.Status != "" || filter.Group != "" {
+			if filter.Search != "" || filter.Status != "" || filter.SSL != "" || filter.Group != "" {
 				<a class="text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100" href="/monitors">Clear filters</a>
 			}
 		</form>

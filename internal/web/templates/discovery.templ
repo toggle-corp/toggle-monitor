@@ -26,7 +26,7 @@ templ DiscoveryListing(rows []store.DiscoverySnapshotRow) {
 							<td class="py-2 px-3 text-sm">{ r.Namespace }</td>
 							<td class="py-2 px-3 text-sm">{ r.IngressName }</td>
 							<td class="py-2 px-3 text-sm">{ r.Host }</td>
-							<td class="py-2 px-3 text-sm">{ r.Status }</td>
+							<td class="py-2 px-3 text-sm">@DiscoveryBadge(r.Status)</td>
 							<td class="py-2 px-3 text-sm text-slate-500 dark:text-slate-400">
 								if r.Reason != nil {
 									{ *r.Reason }
@@ -51,7 +51,10 @@ templ DiscoveryDetail(row store.DiscoverySnapshotRow) {
 		<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6">
 			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Snapshot</h2>
 			<dl>
-				@kv("Status", row.Status)
+				<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
+					<dt class="text-sm text-slate-500 dark:text-slate-400">Status</dt>
+					<dd class="text-sm col-span-2">@DiscoveryBadge(row.Status)</dd>
+				</div>
 				if row.Reason != nil {
 					@kv("Reason", *row.Reason)
 				}

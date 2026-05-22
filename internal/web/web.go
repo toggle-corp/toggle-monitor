@@ -177,11 +177,13 @@ func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
 	filter := templates.MonitorsFilter{
 		Search: r.URL.Query().Get("q"),
 		Status: r.URL.Query().Get("status"),
+		SSL:    r.URL.Query().Get("ssl"),
 		Group:  r.URL.Query().Get("group"),
 	}
 	listing, err := s.repo.ListMonitors(ctx, store.ListMonitorsOpts{
 		Search:          filter.Search,
 		Status:          filter.Status,
+		SSL:             filter.SSL,
 		GroupSlug:       filter.Group,
 		IncludeArchived: includeArchived,
 		Limit:           perPage,
