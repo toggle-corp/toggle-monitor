@@ -141,6 +141,16 @@ func (w *Watcher) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list ingresses: %w", err)
 	}
+	// Heartbeat for the operator: confirms the watcher is alive and
+	// reaching the cluster. Zero is a normal observation (fresh
+	// cluster, RBAC scoped to a namespace with no ingresses, etc.)
+	// but the empty-state UI can't tell that apart from "watcher
+	// never ran" without this line in the log.
+	if len(ingresses) == 0 {
+		w.log.Info("kube reconcile: no ingresses observed in cluster")
+	} else {
+		w.log.Info("kube reconcile", "ingresses", len(ingresses))
+	}
 	for _, ing := range ingresses {
 		for _, host := range uniqueHosts(ing) {
 			row, err := w.snapshotRowFor(ctx, ing, host)
