@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -122,6 +123,24 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		Logger:       log,
 	})
 
+	// userMapping validator. v1 is single-workspace so picking any of
+	// the resolved tokens is fine; tokenAny grabs the first
+	// alphabetically by env-var name for determinism.
+	tokenAny := func() string {
+		keys := make([]string, 0, len(tokens))
+		for k := range tokens {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		if len(keys) == 0 {
+			return ""
+		}
+		return tokens[keys[0]].Reveal()
+	}
+	umValidator := slack.NewUserMappingValidator(slackClient, opts.Config.Slack.UserMapping, tokenAny, log)
+	// Best-effort startup verification; failures are cached for the UI.
+	umValidator.VerifyOnce(ctx)
+
 	// Reconcile YAML-declared static monitors into the DB, then
 	// soft-delete any prior static monitor that is no longer
 	// declared. Soft-delete fires the in-thread closeout + the
@@ -169,6 +188,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 
 	srv := web.New(repo, log)
 	srv.SetMetricsHandler(metrics.Handler())
+	srv.SetMappingReader(&mappingAdapter{v: umValidator})
 	srv.SetPageSizes(web.PageSizes{
 		HomepageAlerts:   opts.Config.UI.PageSize.HomepageAlerts,
 		MonitorListing:   opts.Config.UI.PageSize.MonitorListing,
@@ -248,6 +268,13 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	go func() {
 		defer wg.Done()
 		wsWatcher.Run(ctx, time.Hour)
+	}()
+
+	// 24h userMapping re-validation.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		umValidator.Run(ctx, 24*time.Hour)
 	}()
 
 	// Kube auto-discovery: the materializer was built above so the
@@ -383,6 +410,25 @@ func (c *combinedPlanSource) CurrentPlans() []scheduler.Plan {
 	out = append(out, c.static...)
 	out = append(out, kube...)
 	return out
+}
+
+// mappingAdapter converts slack.UserMappingValidator.Snapshot() into
+// the web.MappingHealthReader shape. Keeps the web package free of a
+// hard slack import.
+type mappingAdapter struct{ v *slack.UserMappingValidator }
+
+func (a *mappingAdapter) Snapshot() (entries []web.MappingEntry, lastRun time.Time) {
+	if a == nil || a.v == nil {
+		return nil, time.Time{}
+	}
+	src, run := a.v.Snapshot()
+	out := make([]web.MappingEntry, 0, len(src))
+	for _, e := range src {
+		out = append(out, web.MappingEntry{
+			Slug: e.Slug, ID: e.ID, OK: e.OK, Reason: e.Reason, Checked: e.Checked,
+		})
+	}
+	return out, run
 }
 
 // kubeRemovalSink dispatches the same soft-delete + Slack closeout +

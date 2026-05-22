@@ -112,6 +112,49 @@ type UpdateMessageResult struct {
 	Error string `json:"error"`
 }
 
+// UsersInfoResult is the slim shape of slack.users.info we use.
+type UsersInfoResult struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error"`
+	User  struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"user"`
+}
+
+// UsersInfo calls slack.users.info for the given user ID. Returns
+// (result, nil) on a Slack-level error (ok=false) so callers can
+// classify it as "unknown user" vs "transport failure".
+func (c *Client) UsersInfo(ctx context.Context, token secret.SecretString, userID string) (UsersInfoResult, error) {
+	var out UsersInfoResult
+	// users.info accepts the user via either query string or form body;
+	// we send it as a form body for symmetry with the other POSTs.
+	if err := c.doForm(ctx, "users.info", token, map[string]string{"user": userID}, &out); err != nil {
+		return UsersInfoResult{}, err
+	}
+	return out, nil
+}
+
+// UsergroupsListResult is the slim shape of slack.usergroups.list.
+type UsergroupsListResult struct {
+	OK         bool   `json:"ok"`
+	Error      string `json:"error"`
+	Usergroups []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"usergroups"`
+}
+
+// UsergroupsList calls slack.usergroups.list. Returns the slim list
+// of subteam IDs visible to the bot.
+func (c *Client) UsergroupsList(ctx context.Context, token secret.SecretString) (UsergroupsListResult, error) {
+	var out UsergroupsListResult
+	if err := c.doForm(ctx, "usergroups.list", token, nil, &out); err != nil {
+		return UsergroupsListResult{}, err
+	}
+	return out, nil
+}
+
 // UpdateMessage edits an existing message in place (used for the
 // resolve transition's parent-edit).
 func (c *Client) UpdateMessage(ctx context.Context, token secret.SecretString, in UpdateMessageInput) error {
@@ -154,6 +197,44 @@ func (c *Client) do(ctx context.Context, method string, token secret.SecretStrin
 		req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	}
 
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("call %s: %w", method, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("call %s: http %d: %s", method, resp.StatusCode, truncate(string(raw), 200))
+	}
+	if out != nil {
+		dec := json.NewDecoder(resp.Body)
+		if err := dec.Decode(out); err != nil {
+			return fmt.Errorf("decode %s response: %w", method, err)
+		}
+	}
+	return nil
+}
+
+// doForm is do() but sends application/x-www-form-urlencoded.
+// users.info / usergroups.list accept both — the form variant matches
+// what the Slack Go SDK does and keeps the wire layout simple.
+func (c *Client) doForm(ctx context.Context, method string, token secret.SecretString, params map[string]string, out any) error {
+	if token.Reveal() == "" {
+		return errors.New("slack: empty token")
+	}
+	body := ""
+	for k, v := range params {
+		if body != "" {
+			body += "&"
+		}
+		body += k + "=" + v
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/"+method, bytes.NewReader([]byte(body)))
+	if err != nil {
+		return fmt.Errorf("new request %s: %w", method, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token.Reveal())
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("call %s: %w", method, err)

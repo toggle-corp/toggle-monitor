@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/toggle-corp/toggle-monitor/internal/store"
 	"github.com/toggle-corp/toggle-monitor/internal/web/templates"
@@ -53,8 +54,31 @@ type Server struct {
 	metrics     http.Handler // /metrics handler; nil → endpoint is omitted
 	pageSizes   PageSizes
 	knownGroups []string
+	mapping     MappingHealthReader
 	ready       atomic.Bool
 }
+
+// MappingHealthReader exposes the userMapping validator's current
+// snapshot to the UI. Production wires slack.UserMappingValidator;
+// tests can pass nil or a fake.
+type MappingHealthReader interface {
+	Snapshot() (entries []MappingEntry, lastRun time.Time)
+}
+
+// MappingEntry is the slim shape the homepage panel renders. Mirrors
+// slack.MappingEntryState; web doesn't import slack to keep the
+// dependency arrow pointing the right way.
+type MappingEntry struct {
+	Slug    string
+	ID      string
+	OK      bool
+	Reason  string
+	Checked time.Time
+}
+
+// SetMappingReader plugs in the userMapping validator. When nil
+// (tests), the homepage panel is suppressed.
+func (s *Server) SetMappingReader(r MappingHealthReader) { s.mapping = r }
 
 // SetPageSizes overrides the per-listing default page sizes (called
 // by lifecycle after the config is loaded).
@@ -130,8 +154,20 @@ func (s *Server) handleHomepage(w http.ResponseWriter, r *http.Request) {
 		s.renderDBUnavailable(ctx, w, err)
 		return
 	}
+	var mapping templates.MappingHealth
+	if s.mapping != nil {
+		entries, lastRun := s.mapping.Snapshot()
+		mapping.LastRun = lastRun
+		for _, e := range entries {
+			if !e.OK {
+				mapping.Invalid = append(mapping.Invalid, templates.MappingEntry{
+					Slug: e.Slug, ID: e.ID, Reason: e.Reason, Checked: e.Checked,
+				})
+			}
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.Homepage(stats, alerts, page, perPage).Render(ctx, w)
+	_ = templates.Homepage(stats, alerts, page, perPage, mapping).Render(ctx, w)
 }
 
 func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {

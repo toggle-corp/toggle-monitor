@@ -14,7 +14,24 @@ templ statTile(label string, count int, accent string) {
 	</div>
 }
 
-templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page, perPage int) {
+// MappingEntry is the per-row payload the homepage renders in the
+// "Slack mapping health" panel. Mirrors web.MappingEntry so this
+// package doesn't import web (it's imported by web).
+type MappingEntry struct {
+	Slug    string
+	ID      string
+	Reason  string
+	Checked time.Time
+}
+
+// MappingHealth carries the whole panel's state. Empty Invalid →
+// quiet panel; non-empty → flagged entries listed.
+type MappingHealth struct {
+	Invalid []MappingEntry
+	LastRun time.Time
+}
+
+templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page, perPage int, mapping MappingHealth) {
 	@Layout("Home") {
 		<section class="mb-8">
 			<h1 class="text-xl font-semibold mb-3">Overview</h1>
@@ -29,6 +46,29 @@ templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page
 				<a href="/monitors" class="text-sm text-blue-700 hover:underline">All monitors →</a>
 			</div>
 		</section>
+
+		if len(mapping.Invalid) > 0 {
+			<section class="mb-6">
+				<h2 class="text-lg font-semibold mb-2 text-rose-700">Slack mapping issues</h2>
+				<div class="bg-white rounded border border-rose-200 p-4">
+					<p class="text-sm text-slate-500 mb-2">
+						{ fmt.Sprint(len(mapping.Invalid)) } userMapping entry/entries failed validation. Fix the IDs in config.yaml or your workspace and re-run the validator (next pass: every 24h, or restart the binary).
+					</p>
+					<ul class="text-sm divide-y divide-slate-100">
+						for _, e := range mapping.Invalid {
+							<li class="py-2 flex gap-3">
+								<span class="font-medium w-32">{ e.Slug }</span>
+								<code class="text-slate-700 w-32">{ e.ID }</code>
+								<span class="text-rose-700">{ e.Reason }</span>
+							</li>
+						}
+					</ul>
+					if !mapping.LastRun.IsZero() {
+						<p class="text-xs text-slate-400 mt-2">Last checked { mapping.LastRun.UTC().Format(time.RFC3339) }</p>
+					}
+				</div>
+			</section>
+		}
 
 		<section>
 			<h2 class="text-lg font-semibold mb-2">Latest alerts</h2>
