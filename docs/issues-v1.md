@@ -24,7 +24,7 @@ Includes:
 - Go module init; pin a single Go toolchain version.
 - Locked dependency list: `pgx` (Postgres driver), `golang-migrate/migrate` (library form, SQL files), `client-go` (Ingress informer), `templ` (templating, with `go generate`), `promhttp` (Prometheus), `slog` (stdlib), `yaml.v3` (config), `cobra` or stdlib `flag` (CLI — decide here).
 - Directory layout (internal modules per PRD: `config`, `slug`, `secret`, `db`, `migrate`, `store`, `kube`, `merger`, `scheduler`, `httpcheck`, `sslinspect`, `alert`, `slack`, `heartbeat`, `web`, `lifecycle`, `observability`). Empty packages OK.
-- `Makefile` (or `Taskfile`) with `build`, `test`, `lint`, `templ`, `tailwind`.
+- `justfile` with `build`, `test`, `lint`, `templ`, `tailwind` recipes (originally a Makefile; see ADR 0001 for the switch).
 - CI workflow (GitHub Actions) running build + lint + tests on PR.
 - Tailwind precompile pipeline checked in or scripted (no Node at runtime; CSS embedded via `embed.FS`).
 - CLI structure: `toggle-monitor` (default = `serve` placeholder), `validate`, `config show`, `migrate`, `migrate --check` — all subcommands wired to placeholder handlers that print "not yet implemented" and exit 0.
@@ -33,8 +33,8 @@ Includes:
 
 ### Acceptance criteria
 
-- [ ] `make build` produces a single static binary
-- [ ] `make test` and `make lint` pass on an empty test suite
+- [ ] `just build` produces a single static binary
+- [ ] `just test` and `just lint` pass on an empty test suite
 - [ ] `toggle-monitor --help` lists every documented subcommand
 - [ ] Every subcommand prints "not yet implemented" and exits 0
 - [ ] CI runs build + lint + tests on PR

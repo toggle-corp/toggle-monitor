@@ -7,7 +7,7 @@
 
 FROM golang:1.26-alpine
 
-RUN apk add --no-cache git curl bash make
+RUN apk add --no-cache git curl bash just
 
 # air = live reload, templ = HTML template codegen. Pinned at @latest
 # for v0.1; if reproducibility becomes important we'll switch to

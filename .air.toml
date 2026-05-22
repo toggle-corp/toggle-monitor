@@ -5,7 +5,7 @@
 # before each rebuild so .templ source edits flow through to the
 # generated _templ.go files. Tailwind CSS is deliberately NOT regenerated
 # here (it's slow + the checked-in app.css is usually fine for dev) —
-# run `make tailwind` manually after touching utility classes in templs.
+# run `just tailwind` manually after touching utility classes in templs.
 
 root = "."
 tmp_dir = ".air-tmp"

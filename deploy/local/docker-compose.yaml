@@ -1,7 +1,7 @@
 # Local-dev stack: postgres + toggle-monitor + an upstream mock to
 # poke at. Bring up with:
 #
-#   make dev-up      # or: docker compose -f deploy/local/docker-compose.yaml up --build
+#   just dev-up      # or: docker compose -f deploy/local/docker-compose.yaml up --build
 #
 # Defaults assume nothing — every secret is pulled from deploy/local/.env
 # (copy .env.example over to get started).

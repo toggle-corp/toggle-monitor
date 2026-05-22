@@ -86,12 +86,12 @@ Locked decision per [`prd-v1.md`](../prd-v1.md). This ADR records the
 build-time toolchain:
 
 - **templ** for type-safe Go-native templates with codegen via
-  `go generate`. `templ generate` is invoked by `make templ`. The
+  `go generate`. `templ generate` is invoked by `just templ`. The
   generated `_templ.go` files are checked in.
 - **HTMX** loaded as a small static asset; no SPA build.
 - **Tailwind via the standalone CLI binary** — `scripts/tailwindcss.sh`
   downloads the platform-specific binary into `bin/tailwindcss`. No
-  Node, no npm, no `package.json`. The Makefile's `tailwind` target
+  Node, no npm, no `package.json`. The justfile's `tailwind` recipe
   compiles `internal/web/tailwind/input.css` into
   `internal/web/static/css/app.css`, which is then embedded via
   `embed.FS`.
@@ -123,14 +123,18 @@ the gap (catching dead code, ineffective assignments, security
 patterns, error-handling slips) is real and `golangci-lint` adds it
 for one tool install.
 
-### Build/CI: GNU Make + GitHub Actions
+### Build/CI: just + GitHub Actions
 
-- **Make** for the local task interface (`build`, `test`, `lint`,
-  `templ`, `tailwind`, `tools`, `clean`). Considered alternative
-  Taskfile; rejected because Make is universally present and the
-  Makefile is small.
-- **GitHub Actions** for CI. Workflow runs build + test + lint on PRs
-  and pushes to `main`. Cache is keyed on `go.sum`.
+- **[just](https://github.com/casey/just)** for the local task
+  interface (`build`, `test`, `lint`, `templ`, `tailwind`, `tools`,
+  `clean`, plus the `dev-*` docker-compose helpers). Originally
+  shipped with a GNU Makefile (see commit history); switched because
+  just's syntax is easier to read and writes, no `.PHONY`/tab
+  pitfalls, and recipe docstrings show up in `just --list`. just is
+  a single static binary — install once and reuse.
+- **GitHub Actions** for CI. Workflow installs just via
+  `extractions/setup-just`, then runs `just build` + `just test`.
+  Cache is keyed on `go.sum`.
 
 ### Repository layout
 
@@ -167,7 +171,7 @@ one (some empty); later issues fill them in.
   `.gitignore`d.
 - The Tailwind compiled CSS (`internal/web/static/css/app.css`) IS
   checked in so a fresh clone can build without first running
-  `make tailwind`. This is reconciled by the `make tailwind` step
+  `just tailwind`. This is reconciled by the `just tailwind` step
   before any UI work.
 - Switching CLI library, linter, or build tool later is each a
   self-contained refactor — none of them are cross-cutting concerns.

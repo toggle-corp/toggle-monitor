@@ -10,8 +10,8 @@ Pick the flavor:
 
 | Flavor | Command | When to use |
 |---|---|---|
-| **production-like** (built image, no reload) | `make dev-up` | shaking down behavior, demos |
-| **autoreload** (air watches `.go` + `.templ`) | `make dev-watch-up` | day-to-day iteration |
+| **production-like** (built image, no reload) | `just dev-up` | shaking down behavior, demos |
+| **autoreload** (air watches `.go` + `.templ`) | `just dev-watch-up` | day-to-day iteration |
 
 Both flavors use the same `config.yaml`, postgres volume, and httpbin
 upstream, so you can switch between them freely.
@@ -20,8 +20,8 @@ upstream, so you can switch between them freely.
 cp deploy/local/.env.example deploy/local/.env   # optional; fill in
                                                   # SLACK_BOT_TOKEN
                                                   # for real Slack
-make dev-watch-up                                # build dev image + start
-make dev-watch-logs                              # follow rebuild output
+just dev-watch-up                                # build dev image + start
+just dev-watch-logs                              # follow rebuild output
 open http://localhost:8080                       # the UI
 ```
 
@@ -60,9 +60,9 @@ are kept in named volumes so warm rebuilds stay fast.
 ## Teardown
 
 ```bash
-make dev-down          # stop the production-like stack
-make dev-watch-down    # stop the autoreload stack
-make dev-clean         # also drop the postgres + go-cache volumes
+just dev-down          # stop the production-like stack
+just dev-watch-down    # stop the autoreload stack
+just dev-clean         # also drop the postgres + go-cache volumes
 ```
 
 ## Autoreload notes
@@ -70,8 +70,8 @@ make dev-clean         # also drop the postgres + go-cache volumes
 - Touches to `.go`, `.templ`, or `.sql` files trigger a rebuild.
 - `templ generate` runs as an air pre-build step, so editing a
   `.templ` file regenerates the `_templ.go` automatically.
-- Tailwind CSS is **not** rebuilt on the fly — run `make tailwind`
+- Tailwind CSS is **not** rebuilt on the fly — run `just tailwind`
   on the host after adding new utility classes in `.templ` files
   (the checked-in `app.css` is usually fine for dev).
 - `_test.go` edits are ignored to keep the watcher quiet; run
-  `make test` or `make test-integration` from the host instead.
+  `just test` or `just test-integration` from the host instead.

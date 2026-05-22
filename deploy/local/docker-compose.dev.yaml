@@ -3,12 +3,12 @@
 # the production distroless image for one with the Go toolchain, and
 # let air watch + rebuild on every change.
 #
-#   make dev-watch-up    # bring up postgres + httpbin + app (autoreload)
-#   make dev-watch-down  # tear down
+#   just dev-watch-up    # bring up postgres + httpbin + app (autoreload)
+#   just dev-watch-down  # tear down
 #
 # Touch any .go or .templ file and the binary should rebuild + restart
 # within ~1s. Templ codegen runs as a pre-build step; tailwind CSS is
-# NOT regenerated automatically (run `make tailwind` if you tweak
+# NOT regenerated automatically (run `just tailwind` if you tweak
 # utility classes in .templ files).
 #
 # Postgres + httpbin services come from the base compose file
