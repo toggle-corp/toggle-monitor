@@ -15,6 +15,25 @@ import (
 // nowFunc is overridable for tests.
 var nowFunc = time.Now
 
+// humanInterval renders a positive duration as "30m", "1h", "2d" —
+// no "ago" / "in" prefix. Used for things like reconcile cadence
+// that aren't tied to a specific timestamp.
+func humanInterval(d time.Duration) string {
+	if d <= 0 {
+		return "n/a"
+	}
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
 // humanDuration renders a compact "5m ago" / "in 3d" / "just now"
 // token suitable for sitting beside an RFC3339 timestamp. Returns ""
 // for a zero time so callers can guard their layout cheaply.

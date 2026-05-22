@@ -1,12 +1,24 @@
 package templates
 
-import "github.com/toggle-corp/toggle-monitor/internal/store"
+import (
+	"time"
 
-templ DiscoveryListing(rows []store.DiscoverySnapshotRow) {
+	"github.com/toggle-corp/toggle-monitor/internal/store"
+)
+
+// DiscoveryStatus is what handleDiscoveryListing passes alongside the
+// rows so the empty state can explain *why* the page is empty:
+// auto-discovery off entirely vs. configured-but-no-ingresses-yet.
+type DiscoveryStatus struct {
+	KubeEnabled    bool          // cfg.Kube != nil
+	ResyncInterval time.Duration // 0 when disabled
+}
+
+templ DiscoveryListing(rows []store.DiscoverySnapshotRow, status DiscoveryStatus) {
 	@Layout("Auto-discovery") {
 		<h1 class="text-xl font-semibold mb-3">Auto-discovery snapshot</h1>
 		if len(rows) == 0 {
-			<p class="text-sm text-slate-500 dark:text-slate-400">No ingresses observed yet. (Auto-discovery is enabled only when the kube block is set in config.)</p>
+			@discoveryEmptyState(status)
 		} else {
 			<div class="mb-3 text-sm text-slate-600 dark:text-slate-400">{ summary(rows) }</div>
 			<table class="w-full bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 overflow-hidden">
@@ -42,6 +54,27 @@ templ DiscoveryListing(rows []store.DiscoverySnapshotRow) {
 				</tbody>
 			</table>
 		}
+	}
+}
+
+// discoveryEmptyState picks one of three messages: kube block absent,
+// kube enabled but reconcile pending, or kube enabled + nothing to
+// see (real cluster, zero ingresses). The "pending" vs. "nothing"
+// distinction is heuristic — there's no startup timestamp here, so
+// we lean on resyncInterval to phrase the wait honestly.
+templ discoveryEmptyState(s DiscoveryStatus) {
+	if !s.KubeEnabled {
+		<div class="rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 text-sm">
+			<p class="font-medium text-slate-700 dark:text-slate-200 mb-1">Auto-discovery is disabled.</p>
+			<p class="text-slate-500 dark:text-slate-400">The <code class="text-xs">kube</code> block is not set in <code class="text-xs">config.yaml</code>. Add one to start watching cluster ingresses — see <code class="text-xs">docs/config-example.yaml</code>.</p>
+		</div>
+	} else {
+		<div class="rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 text-sm">
+			<p class="font-medium text-slate-700 dark:text-slate-200 mb-1">Auto-discovery is enabled — no ingresses observed yet.</p>
+			<p class="text-slate-500 dark:text-slate-400">
+				The watcher reconciles every { humanInterval(s.ResyncInterval) }. If your cluster has Ingress resources and this stays empty, check the app logs for <code class="text-xs">kube reconcile failed</code> or RBAC errors on <code class="text-xs">networking.k8s.io/ingresses</code>.
+			</p>
+		</div>
 	}
 }
 

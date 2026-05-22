@@ -34,6 +34,7 @@ import (
 	"github.com/toggle-corp/toggle-monitor/internal/slack"
 	"github.com/toggle-corp/toggle-monitor/internal/store"
 	"github.com/toggle-corp/toggle-monitor/internal/web"
+	"github.com/toggle-corp/toggle-monitor/internal/web/templates"
 )
 
 // ServeOptions parameterizes serve startup. CLI parses these from
@@ -211,6 +212,13 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		groupSlugs = append(groupSlugs, g.Slug)
 	}
 	srv.SetKnownGroups(groupSlugs)
+	{
+		ds := templates.DiscoveryStatus{KubeEnabled: opts.Config.Kube != nil}
+		if ds.KubeEnabled {
+			ds.ResyncInterval = opts.Config.Kube.ResyncInterval.AsDuration()
+		}
+		srv.SetDiscoveryStatus(ds)
+	}
 	listener, err := net.Listen("tcp", opts.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("bind listen address %q: %w", opts.ListenAddr, err)

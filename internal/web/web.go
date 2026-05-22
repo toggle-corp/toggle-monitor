@@ -49,13 +49,14 @@ var DefaultPageSizes = PageSizes{
 // Server wires the HTTP surface for the read-only UI plus the
 // k8s probe endpoints.
 type Server struct {
-	repo        *store.Repo
-	log         *slog.Logger
-	metrics     http.Handler // /metrics handler; nil → endpoint is omitted
-	pageSizes   PageSizes
-	knownGroups []string
-	mapping     MappingHealthReader
-	ready       atomic.Bool
+	repo            *store.Repo
+	log             *slog.Logger
+	metrics         http.Handler // /metrics handler; nil → endpoint is omitted
+	pageSizes       PageSizes
+	knownGroups     []string
+	mapping         MappingHealthReader
+	discoveryStatus templates.DiscoveryStatus
+	ready           atomic.Bool
 }
 
 // MappingHealthReader exposes the userMapping validator's current
@@ -87,6 +88,11 @@ func (s *Server) SetPageSizes(ps PageSizes) { s.pageSizes = ps }
 // SetKnownGroups wires the slugs that appear in the filter dropdown
 // on /monitors. Called by lifecycle after config load.
 func (s *Server) SetKnownGroups(g []string) { s.knownGroups = g }
+
+// SetDiscoveryStatus tells the /discovery page whether kube
+// auto-discovery is enabled (and at what cadence) so the empty state
+// can explain why no rows are showing.
+func (s *Server) SetDiscoveryStatus(d templates.DiscoveryStatus) { s.discoveryStatus = d }
 
 // New constructs a Server. Call MarkReady once the DB is connected and
 // the config has loaded so /readyz starts returning 200.
@@ -230,7 +236,7 @@ func (s *Server) handleDiscoveryListing(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.DiscoveryListing(rows).Render(ctx, w)
+	_ = templates.DiscoveryListing(rows, s.discoveryStatus).Render(ctx, w)
 }
 
 func (s *Server) handleDiscoveryDetail(w http.ResponseWriter, r *http.Request) {
