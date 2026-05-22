@@ -202,6 +202,106 @@ func TestTick_dependsOn_pausesChildWhenParentDown(t *testing.T) {
 	}
 }
 
+// TestTick_dependsOn_resumeFromPaused_preservesOpenIncident reproduces
+// the user-reported scenario: B already has an open incident when its
+// parent A goes down (so B is marked temporary-paused without losing
+// its prior down classification). When A recovers and B's probe runs,
+// B is *still* failing — the resume must NOT emit a duplicate Open;
+// the original incident should continue (no event, or at most a
+// reminder if the interval elapsed). Without the fix, the resume code
+// forces prev=up and the next failing tick emits a fresh Open.
+func TestTick_dependsOn_resumeFromPaused_preservesOpenIncident(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+
+	for _, slug := range []string{"parent", "child"} {
+		if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
+			Slug: slug, FriendlyName: slug, URL: "http://x", GroupSlug: "g", Source: store.SourceStatic,
+		}); err != nil {
+			t.Fatalf("reconcile %s: %v", slug, err)
+		}
+	}
+
+	// 1. Child goes down first (independent of any parent issue).
+	t0 := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+	if err := repo.ApplyCheck(ctx, "child",
+		alert.State{Status: alert.StatusDown, OpenedAt: t0, LastReminderAt: t0},
+		t0, 503, "down",
+		&alert.Event{Type: alert.EventOpen, At: t0, StatusCode: 503, Error: "down"},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Parent goes down a minute later.
+	t1 := t0.Add(time.Minute)
+	if err := repo.ApplyCheck(ctx, "parent",
+		alert.State{Status: alert.StatusDown, OpenedAt: t1},
+		t1, 503, "down",
+		&alert.Event{Type: alert.EventOpen, At: t1, StatusCode: 503, Error: "down"},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. Child's next tick: parent is down → child gets paused. The
+	//    gate must not lose the child's prior open incident.
+	failingCheck := func(ctx context.Context, _ httpcheck.Config) httpcheck.Result {
+		return httpcheck.Result{StatusCode: 500, Error: "still failing"}
+	}
+	s := scheduler.New(repo, scheduler.WithCheck(failingCheck))
+	plan := scheduler.Plan{
+		Slug: "child", URL: "x", HTTPMethod: "GET",
+		AcceptedStatusCodes: []int{200},
+		Interval:            5 * time.Minute, Timeout: time.Second,
+		Retries: 0, RetryBackoff: time.Second,
+		DependsOn: []string{"parent"},
+	}
+	if err := s.Tick(ctx, plan); err != nil {
+		t.Fatalf("paused tick: %v", err)
+	}
+
+	// 4. Parent recovers.
+	t2 := t1.Add(2 * time.Minute)
+	if err := repo.ApplyCheck(ctx, "parent",
+		alert.State{Status: alert.StatusUp},
+		t2, 200, "",
+		&alert.Event{Type: alert.EventResolve, At: t2, Downtime: 2 * time.Minute},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// 5. Child's next tick: child still fails. With the bug, this
+	//    emits a fresh Open (the duplicate notification). Correct
+	//    behavior: no new event — the original incident continues.
+	if err := s.Tick(ctx, plan); err != nil {
+		t.Fatalf("resumed tick: %v", err)
+	}
+
+	events, err := repo.ListAlertsForMonitor(ctx, "child", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opens := 0
+	for _, ev := range events {
+		if ev.Type == alert.EventOpen {
+			opens++
+		}
+	}
+	if opens != 1 {
+		t.Errorf("expected exactly 1 Open event for child across the whole flow, got %d (events=%+v)", opens, events)
+	}
+
+	row, err := repo.GetMonitor(ctx, "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != alert.StatusDown {
+		t.Errorf("child status after resume: got %q, want %q (still failing)", row.Status, alert.StatusDown)
+	}
+	if row.OpenedAt == nil || !row.OpenedAt.Equal(t0) {
+		t.Errorf("child OpenedAt: got %v, want original incident time %v", row.OpenedAt, t0)
+	}
+}
+
 // mutableSource lets a test swap the plan set mid-flight.
 type mutableSource struct {
 	mu    sync.Mutex

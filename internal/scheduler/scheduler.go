@@ -298,16 +298,20 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 		return err
 	}
 
-	// Resuming from temporary-paused: treat the SM's "previous"
-	// status as up so a failing first tick produces a fresh open,
-	// not a doubled transition. Pre-pause runtime fields are
-	// already cleared/irrelevant because MarkTemporaryPaused doesn't
-	// touch last_reminder_at / opened_at; ensure OpenedAt is zero
-	// here so the open event picks up the current tick time.
+	// Resuming from temporary-paused: restore the pre-pause uptime
+	// classification so the state machine continues the prior story
+	// instead of double-emitting transitions. MarkTemporaryPaused
+	// only overwrites `status` — opened_at / last_reminder_at are
+	// preserved, so a non-nil OpenedAt means the child was already
+	// in an open incident when the parent went down. Forcing prev=up
+	// in that case would produce a duplicate EventOpen on the next
+	// failing tick (the original user-reported bug).
 	if row.Status == alert.StatusTemporaryPaused {
-		row.Status = alert.StatusUp
-		row.OpenedAt = nil
-		row.LastReminderAt = nil
+		if row.OpenedAt != nil {
+			row.Status = alert.StatusDown
+		} else {
+			row.Status = alert.StatusUp
+		}
 	}
 
 	outcome := alert.OutcomeFail
