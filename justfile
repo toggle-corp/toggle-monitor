@@ -94,11 +94,24 @@ _local-config:
 
 # Validate the local config (or a path passed as the first argument).
 # Wraps the binary's `validate` subcommand so YAML errors surface with
-# line numbers before you spin the stack up.
+# line numbers before you spin the stack up. Output is colorized when
+# stdout is a TTY and NO_COLOR is unset.
 validate-config *args: build _local-config
     @path="${1:-{{local_config}}}"; \
-    echo "validating $path"; \
-    {{binary}} validate "$path"
+    if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then \
+        B=$'\e[1m'; DIM=$'\e[2m'; GREEN=$'\e[32m'; RED=$'\e[31m'; YELLOW=$'\e[33m'; RESET=$'\e[0m'; \
+    else B=""; DIM=""; GREEN=""; RED=""; YELLOW=""; RESET=""; fi; \
+    printf "%svalidating%s %s%s%s\n" "$B" "$RESET" "$DIM" "$path" "$RESET"; \
+    if out=$({{binary}} validate "$path" 2>&1); then \
+        printf "%s✓ ok%s — config is valid\n" "$GREEN$B" "$RESET"; \
+        [ -n "$out" ] && printf "%s%s%s\n" "$DIM" "$out" "$RESET"; \
+        exit 0; \
+    else \
+        rc=$?; \
+        printf "%s✗ invalid%s\n" "$RED$B" "$RESET"; \
+        printf "%s%s%s\n" "$YELLOW" "$out" "$RESET"; \
+        exit $rc; \
+    fi
 
 # Bring up the production-like local stack (built image, no autoreload).
 dev-up: _local-config
