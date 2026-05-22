@@ -8,12 +8,34 @@ import (
 )
 
 // MonitorsFilter is the slim shape the listing handler passes to the
-// template for repopulating the filter form.
+// template for repopulating the filter form + reflecting the active
+// sort column / direction on the table headers.
 type MonitorsFilter struct {
-	Search string
-	Status string
-	SSL    string
-	Group  string
+	Search   string
+	Status   string
+	SSL      string
+	Group    string
+	Sort     string // one of store.ListSortKeys; "" → default
+	SortDesc bool
+}
+
+// sortableHeader renders one <th> as a clickable link that toggles
+// the sort direction when the header is already active, or sets a
+// default ascending sort otherwise. The active column gets an
+// ASCII ↑ / ↓ indicator so the current state is visible at a glance.
+templ sortableHeader(label, key string, f MonitorsFilter) {
+	<th class="py-2 px-3">
+		<a class="inline-flex items-center gap-1 hover:text-slate-900 dark:hover:text-slate-100" href={ templ.URL(sortHref(key, f)) }>
+			{ label }
+			if f.Sort == key {
+				if f.SortDesc {
+					<span aria-hidden="true">↓</span>
+				} else {
+					<span aria-hidden="true">↑</span>
+				}
+			}
+		</a>
+	</th>
 }
 
 // Paginator renders prev/next controls plus a "page X of Y" indicator.
@@ -89,21 +111,27 @@ templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, groups [
 				<a class="text-blue-700 dark:text-blue-400 hover:underline" href="/monitors">Clear filters</a>
 			</div>
 		} else {
-			<table class="w-full bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 overflow-hidden">
-				<thead>
-					<tr class="bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
-						<th class="py-2 px-3">Name</th>
-						<th class="py-2 px-3">Group</th>
-						<th class="py-2 px-3">Status</th>
-						<th class="py-2 px-3">URL</th>
-					</tr>
-				</thead>
-				<tbody>
-					for _, m := range listing.Items {
-						@MonitorRow(m)
-					}
-				</tbody>
-			</table>
+			<div class="overflow-x-auto bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700">
+				<table class="w-full">
+					<thead>
+						<tr class="bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
+							@sortableHeader("Name", "name", filter)
+							@sortableHeader("Group", "group", filter)
+							@sortableHeader("Status", "status", filter)
+							@sortableHeader("URL", "url", filter)
+							@sortableHeader("Code", "code", filter)
+							@sortableHeader("Last checked", "checked", filter)
+							<th class="py-2 px-3">Depends on</th>
+							@sortableHeader("SSL expires", "ssl_expires", filter)
+						</tr>
+					</thead>
+					<tbody>
+						for _, m := range listing.Items {
+							@MonitorRow(m)
+						}
+					</tbody>
+				</table>
+			</div>
 			@Paginator("/monitors", page, perPage, listing.Total, paramsFromFilter(filter))
 		}
 	}

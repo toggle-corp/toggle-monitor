@@ -169,8 +169,70 @@ type ListMonitorsOpts struct {
 	SSL             string // "" → no ssl_status filter ('ok' | 'ssl-expiring' | 'ssl-skipped')
 	GroupSlug       string // "" → no group filter
 	IncludeArchived bool
-	Offset          int
-	Limit           int
+	// Sort is a logical column key (one of ListSortKeys); "" → default
+	// "status priority then group then name" order. Unknown keys fall
+	// back to the default to keep the API forgiving.
+	Sort     string
+	SortDesc bool
+	Offset   int
+	Limit    int
+}
+
+// ListSortKeys is the whitelist of values acceptable for
+// ListMonitorsOpts.Sort. Exported so the web layer can validate the
+// query param against the same set. Order here is the order shown in
+// the UI's column-picker dropdown if one is ever added.
+var ListSortKeys = []string{"name", "group", "status", "url", "code", "checked", "ssl_expires"}
+
+// sortClause maps a Sort key to a SQL ORDER BY fragment. NULL handling
+// stays consistent: missing values sort last regardless of direction
+// so empty rows don't dominate either end of the listing.
+func sortClause(key string, desc bool) string {
+	dir := "ASC"
+	if desc {
+		dir = "DESC"
+	}
+	// Default tiebreaker so equal sort-key rows have a stable order.
+	tiebreak := ", group_slug, friendly_name"
+	switch key {
+	case "name":
+		return "friendly_name " + dir + ", group_slug"
+	case "group":
+		return "group_slug " + dir + ", friendly_name"
+	case "url":
+		return "url " + dir + tiebreak
+	case "code":
+		return "last_status_code " + dir + " NULLS LAST" + tiebreak
+	case "checked":
+		return "last_checked_at " + dir + " NULLS LAST" + tiebreak
+	case "ssl_expires":
+		return "ssl_expires_at " + dir + " NULLS LAST" + tiebreak
+	case "status":
+		// Severity priority — "down first" makes more sense than
+		// alphabetical even when the user clicks 'sort by status'.
+		statusCase := `
+			CASE status
+				WHEN 'down' THEN 0
+				WHEN 'temporary-paused' THEN 1
+				WHEN 'kube-paused' THEN 2
+				WHEN 'up' THEN 4
+				ELSE 5
+			END ` + dir
+		return statusCase + tiebreak
+	default:
+		// Default order: down > paused > kube-paused > up, then
+		// group, then name. Matches the original behavior.
+		return `
+			CASE status
+				WHEN 'down' THEN 0
+				WHEN 'temporary-paused' THEN 1
+				WHEN 'kube-paused' THEN 2
+				WHEN 'up' THEN 4
+				ELSE 5
+			END,
+			group_slug,
+			friendly_name`
+	}
 }
 
 // MonitorListing is the paginated result of ListMonitors.
@@ -209,17 +271,7 @@ func (r *Repo) ListMonitors(ctx context.Context, opts ListMonitorsOpts) (Monitor
 	if len(conds) > 0 {
 		where = " WHERE " + strings.Join(conds, " AND ")
 	}
-	order := `
-		ORDER BY
-			CASE status
-				WHEN 'down' THEN 0
-				WHEN 'temporary-paused' THEN 1
-				WHEN 'kube-paused' THEN 2
-				WHEN 'up' THEN 4
-				ELSE 5
-			END,
-			group_slug,
-			friendly_name`
+	order := " ORDER BY " + sortClause(opts.Sort, opts.SortDesc)
 
 	// total
 	var total int

@@ -189,6 +189,27 @@ func paginatorLink(base string, extra url.Values, page int) templ.SafeURL {
 	return templ.URL(base + "?" + v.Encode())
 }
 
+// sortHref builds the link for a clickable column header. Clicking
+// the column that's already active flips direction; clicking a
+// different column starts at ascending. All other filter params are
+// preserved so sort doesn't blow away the user's search/filters.
+func sortHref(key string, f MonitorsFilter) string {
+	v := paramsFromFilter(f)
+	v.Del("sort")
+	v.Del("dir")
+	v.Del("page") // jump back to page 1 on a fresh sort
+	v.Set("sort", key)
+	if f.Sort == key && !f.SortDesc {
+		// Currently asc on this column → switch to desc.
+		v.Set("dir", "desc")
+	}
+	q := v.Encode()
+	if q == "" {
+		return "/monitors"
+	}
+	return "/monitors?" + q
+}
+
 func paramsFromFilter(f MonitorsFilter) url.Values {
 	v := url.Values{}
 	if f.Search != "" {
@@ -202,6 +223,12 @@ func paramsFromFilter(f MonitorsFilter) url.Values {
 	}
 	if f.Group != "" {
 		v.Set("group", f.Group)
+	}
+	if f.Sort != "" {
+		v.Set("sort", f.Sort)
+		if f.SortDesc {
+			v.Set("dir", "desc")
+		}
 	}
 	return v
 }

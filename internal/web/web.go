@@ -175,10 +175,12 @@ func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
 	page, perPage := s.pagination(r, s.pageSizes.MonitorListing)
 	includeArchived := r.URL.Query().Get("archived") == "true"
 	filter := templates.MonitorsFilter{
-		Search: r.URL.Query().Get("q"),
-		Status: r.URL.Query().Get("status"),
-		SSL:    r.URL.Query().Get("ssl"),
-		Group:  r.URL.Query().Get("group"),
+		Search:   r.URL.Query().Get("q"),
+		Status:   r.URL.Query().Get("status"),
+		SSL:      r.URL.Query().Get("ssl"),
+		Group:    r.URL.Query().Get("group"),
+		Sort:     normalizeSortKey(r.URL.Query().Get("sort")),
+		SortDesc: r.URL.Query().Get("dir") == "desc",
 	}
 	listing, err := s.repo.ListMonitors(ctx, store.ListMonitorsOpts{
 		Search:          filter.Search,
@@ -186,6 +188,8 @@ func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
 		SSL:             filter.SSL,
 		GroupSlug:       filter.Group,
 		IncludeArchived: includeArchived,
+		Sort:            filter.Sort,
+		SortDesc:        filter.SortDesc,
 		Limit:           perPage,
 		Offset:          (page - 1) * perPage,
 	})
@@ -315,6 +319,22 @@ func (s *Server) renderDBUnavailable(ctx context.Context, w http.ResponseWriter,
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusServiceUnavailable)
 	_ = templates.DBUnavailable().Render(ctx, w)
+}
+
+// normalizeSortKey filters the `?sort=` query parameter against the
+// store's whitelist. Unknown keys collapse to "" so the listing falls
+// back to the default order rather than 500-ing or running an
+// attacker-supplied ORDER BY.
+func normalizeSortKey(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	for _, k := range store.ListSortKeys {
+		if raw == k {
+			return raw
+		}
+	}
+	return ""
 }
 
 // validSlugForURL is a defensive sanity check on the slug arriving via

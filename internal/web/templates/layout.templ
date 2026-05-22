@@ -161,5 +161,38 @@ templ MonitorRow(m store.MonitorRow) {
 				<div class="text-xs text-rose-700 dark:text-rose-400 mt-0.5 break-words"><code>{ *m.LastError }</code></div>
 			}
 		</td>
+		<td class="py-2 px-3 text-sm">
+			if m.LastStatusCode != nil && *m.LastStatusCode != 0 {
+				@HTTPStatusBadge(*m.LastStatusCode)
+			} else {
+				<span class="text-slate-400 dark:text-slate-600">—</span>
+			}
+		</td>
+		<td class="py-2 px-3 text-sm text-slate-500 dark:text-slate-400 whitespace-nowrap">
+			if m.LastCheckedAt != nil {
+				<span title={ m.LastCheckedAt.UTC().Format(time.RFC3339) }>{ humanDuration(*m.LastCheckedAt) }</span>
+			} else {
+				—
+			}
+		</td>
+		<td class="py-2 px-3 text-xs text-slate-600 dark:text-slate-400">
+			if len(m.DependsOn) > 0 {
+				for i, dep := range m.DependsOn {
+					if i > 0 {
+						<span>, </span>
+					}
+					<a class="hover:text-blue-700 dark:hover:text-blue-400 hover:underline" href={ templ.URL("/monitor/" + dep) }><code>{ dep }</code></a>
+				}
+			} else {
+				<span class="text-slate-400 dark:text-slate-600">—</span>
+			}
+		</td>
+		<td class="py-2 px-3 text-sm whitespace-nowrap">
+			if m.SSLExpiresAt != nil {
+				<span title={ m.SSLExpiresAt.UTC().Format(time.RFC3339) } class="text-slate-500 dark:text-slate-400">{ humanDuration(*m.SSLExpiresAt) }</span>
+			} else {
+				<span class="text-slate-400 dark:text-slate-600">—</span>
+			}
+		</td>
 	</tr>
 }
