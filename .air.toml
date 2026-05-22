@@ -1,0 +1,44 @@
+# air config for local development. Used by the docker-compose `dev`
+# variant — see deploy/local/docker-compose.dev.yaml.
+#
+# Watches every .go and .templ file in the tree; runs `templ generate`
+# before each rebuild so .templ source edits flow through to the
+# generated _templ.go files. Tailwind CSS is deliberately NOT regenerated
+# here (it's slow + the checked-in app.css is usually fine for dev) —
+# run `make tailwind` manually after touching utility classes in templs.
+
+root = "."
+tmp_dir = ".air-tmp"
+
+[build]
+  # `templ generate` runs before `go build` so .templ → _templ.go is
+  # always fresh. If templ isn't on PATH (i.e. the prod compose file),
+  # the command fails harmlessly and air falls back to `go build`.
+  pre_cmd = ["templ generate"]
+  # -buildvcs=false because git state isn't always reachable inside
+  # the container; toggle-monitor doesn't read its own VCS stamp.
+  cmd = "go build -buildvcs=false -o ./.air-tmp/toggle-monitor ./cmd/toggle-monitor"
+  bin = "./.air-tmp/toggle-monitor"
+  # Args + env vars the binary needs to run. The compose file injects
+  # DB_PASSWORD + SLACK_BOT_TOKEN as container env vars; air just
+  # passes them through.
+  full_bin = "./.air-tmp/toggle-monitor serve --config /etc/toggle-monitor/config.yaml --listen :8080"
+
+  include_ext = ["go", "templ", "sql"]
+  exclude_dir = [".air-tmp", "bin", "tmp", "vendor", "node_modules"]
+  exclude_regex = ["_test\\.go$"]
+  exclude_unchanged = true
+
+  delay = 500
+  stop_on_error = true
+  send_interrupt = true
+  kill_delay = "5s"
+
+[log]
+  time = true
+
+[color]
+  main = "magenta"
+  watcher = "cyan"
+  build = "yellow"
+  runner = "green"

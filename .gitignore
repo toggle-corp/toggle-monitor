@@ -8,3 +8,7 @@ coverage.txt
 
 # Local-dev secrets (template lives at deploy/local/.env.example).
 deploy/local/.env
+
+# air autoreload working dir (lives at the repo root, populated inside
+# the dev container too).
+.air-tmp/

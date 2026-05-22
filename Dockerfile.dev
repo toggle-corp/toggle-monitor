@@ -1,0 +1,23 @@
+# Dev image used by docker-compose.dev.yaml. Installs `air` for live
+# reload and bakes in templ + a Go toolchain so the watcher can
+# rebuild from source mounted at /src.
+#
+# DO NOT use this for production — it ships the full Go toolchain.
+# The production path is Dockerfile (distroless final stage).
+
+FROM golang:1.26-alpine
+
+RUN apk add --no-cache git curl bash make
+
+# air = live reload, templ = HTML template codegen. Pinned at @latest
+# for v0.1; if reproducibility becomes important we'll switch to
+# version pins.
+RUN go install github.com/air-verse/air@latest \
+ && go install github.com/a-h/templ/cmd/templ@latest
+
+WORKDIR /src
+
+# Default: run air. The compose file mounts the source tree on top of
+# /src so changes on the host trigger a rebuild + restart inside the
+# container.
+CMD ["air", "-c", ".air.toml"]

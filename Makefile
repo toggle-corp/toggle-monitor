@@ -50,11 +50,13 @@ clean: ## Remove build artifacts
 
 # --- Local development (docker-compose) -------------------------------
 
-COMPOSE := docker compose -f deploy/local/docker-compose.yaml
+COMPOSE       := docker compose -f deploy/local/docker-compose.yaml
+COMPOSE_WATCH := docker compose -f deploy/local/docker-compose.yaml -f deploy/local/docker-compose.dev.yaml
 
 .PHONY: dev-up dev-down dev-clean dev-logs dev-restart-app
+.PHONY: dev-watch-up dev-watch-down dev-watch-logs
 
-dev-up: ## Bring up the local-dev stack (postgres + httpbin + app)
+dev-up: ## Bring up the production-like local stack (built image, no autoreload)
 	$(COMPOSE) up --build -d
 	@echo
 	@echo "UI:        http://localhost:8080"
@@ -64,11 +66,26 @@ dev-up: ## Bring up the local-dev stack (postgres + httpbin + app)
 dev-down: ## Stop the local-dev stack (keeps the postgres volume)
 	$(COMPOSE) down
 
-dev-clean: ## Stop and drop the postgres volume (fresh DB next dev-up)
-	$(COMPOSE) down -v
+dev-clean: ## Stop, drop the postgres volume, drop go module/build caches
+	$(COMPOSE_WATCH) down -v
 
-dev-logs: ## Tail app logs
+dev-logs: ## Tail app logs (production-like stack)
 	$(COMPOSE) logs -f app
 
 dev-restart-app: ## Rebuild + restart only the app after a config edit
 	$(COMPOSE) up --build -d app
+
+dev-watch-up: ## Bring up the dev stack with autoreload (air watches .go + .templ)
+	$(COMPOSE_WATCH) up --build -d
+	@echo
+	@echo "UI:        http://localhost:8080   (autoreloads on source change)"
+	@echo "Metrics:   http://localhost:8080/metrics"
+	@echo "Postgres:  localhost:5432 (user toggle_monitor)"
+	@echo
+	@echo "  make dev-watch-logs   # follow air + binary output"
+
+dev-watch-down: ## Stop the dev (autoreload) stack
+	$(COMPOSE_WATCH) down
+
+dev-watch-logs: ## Tail air output + binary logs from the dev stack
+	$(COMPOSE_WATCH) logs -f app

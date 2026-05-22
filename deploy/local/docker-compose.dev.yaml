@@ -1,0 +1,55 @@
+# Dev override: layer this file on top of docker-compose.yaml to get
+# autoreload via `air`. Mount the repo source into the container, swap
+# the production distroless image for one with the Go toolchain, and
+# let air watch + rebuild on every change.
+#
+#   make dev-watch-up    # bring up postgres + httpbin + app (autoreload)
+#   make dev-watch-down  # tear down
+#
+# Touch any .go or .templ file and the binary should rebuild + restart
+# within ~1s. Templ codegen runs as a pre-build step; tailwind CSS is
+# NOT regenerated automatically (run `make tailwind` if you tweak
+# utility classes in .templ files).
+#
+# Postgres + httpbin services come from the base compose file
+# unchanged; only `app` is overridden.
+
+services:
+  app:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.dev
+    # Mount the entire repo so file changes on the host are visible
+    # inside the container. The Go module cache is kept in a named
+    # volume so warm rebuilds stay fast.
+    volumes:
+      - ../../:/src:cached
+      - go-modcache:/go/pkg/mod
+      - go-buildcache:/root/.cache/go-build
+      - ./config.yaml:/etc/toggle-monitor/config.yaml:ro
+    working_dir: /src
+    # Override the base-image ENTRYPOINT (which is /app/toggle-monitor
+    # from the production Dockerfile). The Dev image's default CMD
+    # already runs `air`, but ENTRYPOINT is inherited from the base
+    # so we explicitly reset both here.
+    entrypoint: []
+    command: ["air", "-c", ".air.toml"]
+
+  migrate:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ../../:/src:cached
+      - go-modcache:/go/pkg/mod
+      - go-buildcache:/root/.cache/go-build
+      - ./config.yaml:/etc/toggle-monitor/config.yaml:ro
+    working_dir: /src
+    # Use `go run` so we don't depend on a built binary inside the
+    # dev image. The one-shot migrate path stays identical.
+    entrypoint: []
+    command: ["go", "run", "./cmd/toggle-monitor", "migrate", "--config", "/etc/toggle-monitor/config.yaml"]
+
+volumes:
+  go-modcache:
+  go-buildcache:
