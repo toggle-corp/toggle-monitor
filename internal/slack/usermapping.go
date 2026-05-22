@@ -33,9 +33,9 @@ type UserMappingValidator struct {
 	token   func() string
 	log     *slog.Logger
 
-	mu       sync.RWMutex
-	entries  map[string]MappingEntryState
-	lastRun  time.Time
+	mu      sync.RWMutex
+	entries map[string]MappingEntryState
+	lastRun time.Time
 }
 
 // NewUserMappingValidator constructs a validator over the configured
@@ -179,4 +179,3 @@ func (v *UserMappingValidator) setRunAt(t time.Time) {
 	v.lastRun = t
 	v.mu.Unlock()
 }
-

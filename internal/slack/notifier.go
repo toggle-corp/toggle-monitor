@@ -12,8 +12,8 @@ import (
 
 // ChannelInfo describes one resolved Slack destination.
 type ChannelInfo struct {
-	ID    string                // C0123…
-	Token secret.SecretString   // bot token resolved from tokenEnv
+	ID    string              // C0123…
+	Token secret.SecretString // bot token resolved from tokenEnv
 }
 
 // ThreadStore is the slim seam the notifier uses to persist the

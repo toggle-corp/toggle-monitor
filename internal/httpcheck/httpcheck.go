@@ -35,9 +35,9 @@ type Result struct {
 
 // TLSInfo is the slim cert info the SSL state machine consumes.
 type TLSInfo struct {
-	Subject   string
-	Issuer    string
-	NotAfter  time.Time
+	Subject  string
+	Issuer   string
+	NotAfter time.Time
 }
 
 // Check performs one HTTP probe according to cfg. The caller is
@@ -68,7 +68,7 @@ func Check(ctx context.Context, cfg Config) Result {
 	if err != nil {
 		return Result{Error: err.Error(), Duration: dur}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(resp.Body)
 	res := Result{

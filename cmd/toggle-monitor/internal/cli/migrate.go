@@ -53,12 +53,12 @@ func runMigrateCLI(cfgPath string, checkOnly bool) error {
 		if err := migrate.Check(dsn); err != nil {
 			return err
 		}
-		fmt.Fprintln(os.Stdout, "schema is at the latest version")
+		_, _ = fmt.Fprintln(os.Stdout, "schema is at the latest version")
 		return nil
 	}
 	if err := migrate.Up(dsn); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stdout, "migrations applied")
+	_, _ = fmt.Fprintln(os.Stdout, "migrations applied")
 	return nil
 }

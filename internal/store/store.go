@@ -265,16 +265,16 @@ type HomepageStats struct {
 
 // DiscoverySnapshotRow is one row from the discovery_snapshot table.
 type DiscoverySnapshotRow struct {
-	ID           int64
-	Namespace    string
-	IngressName  string
-	Host         string
-	Status       string // 'added' | 'kube-paused' | 'kube-invalid'
-	Reason       *string
-	PresetSlug   *string
-	MonitorSlug  *string
-	Annotations  map[string]string
-	LastSeenAt   time.Time
+	ID          int64
+	Namespace   string
+	IngressName string
+	Host        string
+	Status      string // 'added' | 'kube-paused' | 'kube-invalid'
+	Reason      *string
+	PresetSlug  *string
+	MonitorSlug *string
+	Annotations map[string]string
+	LastSeenAt  time.Time
 }
 
 // UpsertDiscoverySnapshot writes (or refreshes) one snapshot row.
@@ -553,12 +553,12 @@ func (r *Repo) ApplySSLCheck(
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var (
-		statusArg     any
-		expiresArg    any
-		issuerArg     any
-		subjectArg    any
-		openedAtArg   any
-		lastReminder  any
+		statusArg    any
+		expiresArg   any
+		issuerArg    any
+		subjectArg   any
+		openedAtArg  any
+		lastReminder any
 	)
 	if next.Status != "" {
 		statusArg = string(next.Status)

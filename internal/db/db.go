@@ -44,12 +44,12 @@ func ConnectWithBackoff(ctx context.Context, cfg Config, logger *slog.Logger) (*
 	for attempt := 1; ; attempt++ {
 		pool, err := pgxpool.New(ctx, cfg.DSN())
 		if err == nil {
-			if pingErr := pool.Ping(ctx); pingErr == nil {
+			pingErr := pool.Ping(ctx)
+			if pingErr == nil {
 				return pool, nil
-			} else {
-				pool.Close()
-				err = pingErr
 			}
+			pool.Close()
+			err = pingErr
 		}
 		lastErr = err
 		if time.Now().After(deadline) {

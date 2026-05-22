@@ -94,9 +94,9 @@ func TestSanitizeKubeDiscovered_rules(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name      string
+		name       string
 		ns, ing, h string
-		want      string // empty string means "expect error"
+		want       string // empty string means "expect error"
 	}{
 		{"basic single-segment host", "default", "foo", "bar", "kube-default-foo-bar"},
 		{"host with dots", "default", "foo", "foo.example.com", "kube-default-foo-foo-example-com"},

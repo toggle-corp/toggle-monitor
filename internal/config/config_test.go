@@ -352,9 +352,9 @@ monitors:
 	}
 	msg := err.Error()
 	for _, want := range []string{
-		"DMs (D...)",         // channelId
-		"unknown group",      // monitors[0].group
-		"raw Slack markup",   // monitors[0].notify[0]
+		"DMs (D...)",       // channelId
+		"unknown group",    // monitors[0].group
+		"raw Slack markup", // monitors[0].notify[0]
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("expected error to mention %q, full message:\n%s", want, msg)

@@ -72,4 +72,3 @@ func runServeCLI(ctx context.Context, cfgPath, listenAddr string) error {
 		Logger:     logger,
 	})
 }
-

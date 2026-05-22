@@ -201,7 +201,7 @@ func (c *Client) do(ctx context.Context, method string, token secret.SecretStrin
 	if err != nil {
 		return fmt.Errorf("call %s: %w", method, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
 		raw, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("call %s: http %d: %s", method, resp.StatusCode, truncate(string(raw), 200))
@@ -239,7 +239,7 @@ func (c *Client) doForm(ctx context.Context, method string, token secret.SecretS
 	if err != nil {
 		return fmt.Errorf("call %s: %w", method, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
 		raw, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("call %s: http %d: %s", method, resp.StatusCode, truncate(string(raw), 200))

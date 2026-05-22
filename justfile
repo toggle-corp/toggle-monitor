@@ -65,7 +65,7 @@ clean:
 install-golangci-lint:
     @if [ ! -x "{{golangci_lint}}" ]; then \
         mkdir -p {{bin_dir}}; \
-        GOBIN="$PWD/{{bin_dir}}" {{go}} install github.com/golangci/golangci-lint/cmd/golangci-lint@latest; \
+        GOBIN="$PWD/{{bin_dir}}" {{go}} install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest; \
     fi
 
 install-templ:

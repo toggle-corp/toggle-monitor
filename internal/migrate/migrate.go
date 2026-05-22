@@ -30,7 +30,7 @@ func LatestVersion() (uint, error) {
 	if err != nil {
 		return 0, fmt.Errorf("read embedded migrations: %w", err)
 	}
-	var max uint
+	var highest uint
 	for _, e := range entries {
 		name := e.Name()
 		if !strings.HasSuffix(name, ".up.sql") {
@@ -44,14 +44,14 @@ func LatestVersion() (uint, error) {
 		if err != nil {
 			continue
 		}
-		if uint(v) > max {
-			max = uint(v)
+		if uint(v) > highest {
+			highest = uint(v)
 		}
 	}
-	if max == 0 {
+	if highest == 0 {
 		return 0, errors.New("no migration files found")
 	}
-	return max, nil
+	return highest, nil
 }
 
 // Up applies all pending migrations against the given Postgres DSN.

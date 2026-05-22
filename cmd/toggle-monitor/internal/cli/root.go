@@ -3,11 +3,7 @@
 // invoke them with an injected output writer.
 package cli
 
-import (
-	"io"
-
-	"github.com/spf13/cobra"
-)
+import "github.com/spf13/cobra"
 
 // NewRootCmd returns the configured root command. The default action
 // (no subcommand) delegates to `serve`.
@@ -32,12 +28,4 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newConfigCmd())
 	root.AddCommand(newMigrateCmd())
 	return root
-}
-
-// notImplemented writes the standard placeholder message and returns
-// nil so a stub subcommand exits 0. Used by subcommands still on the
-// roadmap (validate, config show land in Issue 6).
-func notImplemented(w io.Writer, name string) error {
-	_, err := io.WriteString(w, name+": not yet implemented\n")
-	return err
 }

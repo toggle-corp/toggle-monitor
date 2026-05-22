@@ -19,12 +19,12 @@ type DownInput struct {
 	URL          string
 	Mentions     []string // raw Slack markup, e.g. "<!here>", "<@U123>"
 	StatusCode   int
-	StatusText   string   // e.g. "Service Unavailable"; empty for transport-level errors
+	StatusText   string // e.g. "Service Unavailable"; empty for transport-level errors
 	FailureAt    time.Time
-	LastError    string   // short summary, never the full body
-	ResponseBody string   // already truncated by the caller; empty to skip inline body
-	BodyMaxChars int      // inline body only when len(ResponseBody) <= this
-	DetailURL    string   // empty omits the [View details] button
+	LastError    string // short summary, never the full body
+	ResponseBody string // already truncated by the caller; empty to skip inline body
+	BodyMaxChars int    // inline body only when len(ResponseBody) <= this
+	DetailURL    string // empty omits the [View details] button
 }
 
 // ResolveInput carries DownInput plus the resolved-at moment so the

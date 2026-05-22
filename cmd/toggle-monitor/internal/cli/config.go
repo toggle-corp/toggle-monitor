@@ -71,6 +71,6 @@ func runConfigShowCLI(path, only string, out io.Writer) error {
 func writeMonitorYAML(out io.Writer, m config.Monitor) error {
 	enc := yaml.NewEncoder(out)
 	enc.SetIndent(2)
-	defer enc.Close()
+	defer func() { _ = enc.Close() }()
 	return enc.Encode(m)
 }

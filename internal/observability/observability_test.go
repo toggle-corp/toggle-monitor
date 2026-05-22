@@ -40,7 +40,7 @@ func TestMetrics_exposesAllDocumentedSeries(t *testing.T) {
 		"toggle_monitor_slack_post_total",
 		"toggle_monitor_ingress_reconcile_total",
 		"toggle_monitor_worker_last_tick_seconds",
-		"go_goroutines", // Go runtime collector
+		"go_goroutines",             // Go runtime collector
 		"process_cpu_seconds_total", // process collector
 	} {
 		if !strings.Contains(body, want) {

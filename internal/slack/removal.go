@@ -77,9 +77,9 @@ func BuildRemovedResolveEdit(in DownInput) []Block {
 // NotifyRemoved is the public dispatch hook the lifecycle calls per
 // soft-deleted monitor. It performs whichever of the three actions
 // are applicable:
-//   1. Post a thread reply + edit the parent IF the monitor had an
-//      open uptime incident (uptime thread refs present).
-//   2. Post a standalone "Monitor removed" warning to the channel.
+//  1. Post a thread reply + edit the parent IF the monitor had an
+//     open uptime incident (uptime thread refs present).
+//  2. Post a standalone "Monitor removed" warning to the channel.
 //
 // All three sub-calls are best-effort: a Slack outage here logs and
 // continues — the DB soft-delete has already committed.

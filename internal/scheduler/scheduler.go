@@ -246,11 +246,7 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 	// the child temporary-paused. No HTTP, no DB write to last_*,
 	// no alert event.
 	if len(p.DependsOn) > 0 {
-		paused, err := s.anyParentDown(ctx, p.DependsOn)
-		if err != nil {
-			return err
-		}
-		if paused {
+		if s.anyParentDown(ctx, p.DependsOn) {
 			if s.metrics != nil {
 				s.metrics.ObserveCheck(p.Slug, "paused", 0)
 			}
@@ -398,7 +394,7 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 // currently in StatusDown. Missing parents are skipped (logged for
 // visibility) so a transient outage of a single dependency lookup
 // doesn't ripple into the wrong gating decision.
-func (s *Scheduler) anyParentDown(ctx context.Context, parents []string) (bool, error) {
+func (s *Scheduler) anyParentDown(ctx context.Context, parents []string) bool {
 	for _, slug := range parents {
 		row, err := s.repo.GetMonitor(ctx, slug)
 		if err != nil {
@@ -406,10 +402,10 @@ func (s *Scheduler) anyParentDown(ctx context.Context, parents []string) (bool, 
 			continue
 		}
 		if row.Status == alert.StatusDown {
-			return true, nil
+			return true
 		}
 	}
-	return false, nil
+	return false
 }
 
 // sleep returns false if ctx was cancelled before the duration elapsed.

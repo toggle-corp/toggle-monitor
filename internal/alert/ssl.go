@@ -8,20 +8,20 @@ import "time"
 type SSLStatus string
 
 const (
-	SSLStatusOK        SSLStatus = "ok"
-	SSLStatusExpiring  SSLStatus = "ssl-expiring"
-	SSLStatusSkipped   SSLStatus = "ssl-skipped" // HTTP-only static monitors
+	SSLStatusOK       SSLStatus = "ok"
+	SSLStatusExpiring SSLStatus = "ssl-expiring"
+	SSLStatusSkipped  SSLStatus = "ssl-skipped" // HTTP-only static monitors
 )
 
 // SSLCheck is the per-tick input to the SSL state machine. ExpiresAt
 // is zero when there's no cert (e.g. plain-HTTP probe).
 type SSLCheck struct {
-	At                    time.Time
-	ExpiresAt             time.Time // cert NotAfter; zero → no cert observed this tick
-	IsHTTPS               bool      // false → ssl-skipped (static HTTP monitors only)
-	AlertThreshold        time.Duration
-	EscalationThreshold   time.Duration
-	ReminderInterval      time.Duration
+	At                  time.Time
+	ExpiresAt           time.Time // cert NotAfter; zero → no cert observed this tick
+	IsHTTPS             bool      // false → ssl-skipped (static HTTP monitors only)
+	AlertThreshold      time.Duration
+	EscalationThreshold time.Duration
+	ReminderInterval    time.Duration
 }
 
 // SSLState is the persisted SSL-side state.

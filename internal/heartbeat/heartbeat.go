@@ -155,7 +155,7 @@ func (h *Heartbeat) post(ctx context.Context, url string, body any) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("non-2xx response: %s", resp.Status)
 	}

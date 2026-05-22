@@ -14,7 +14,7 @@ func newValidateCmd() *cobra.Command {
 		Use:   "validate <path>",
 		Short: "Validate a config file (pre-push CI check)",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			return runValidateCLI(args[0])
 		},
 	}

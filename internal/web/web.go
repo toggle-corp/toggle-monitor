@@ -262,8 +262,8 @@ func (s *Server) pagination(r *http.Request, defPer int) (page, perPage int) {
 			perPage = n
 		}
 	}
-	if max := s.pageSizes.MaxPerPage; max > 0 && perPage > max {
-		perPage = max
+	if limit := s.pageSizes.MaxPerPage; limit > 0 && perPage > limit {
+		perPage = limit
 	}
 	return page, perPage
 }
@@ -329,4 +329,3 @@ func validSlugForURL(s string) bool {
 	}
 	return true
 }
-

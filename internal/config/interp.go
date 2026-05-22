@@ -12,7 +12,7 @@ import (
 //
 // Rules (see docs/config-schema.md §"Env var interpolation"):
 //   - ${VAR}             strict; error (with line number) if VAR is unset.
-//                         A VAR that is set but empty is allowed (yields "").
+//     A VAR that is set but empty is allowed (yields "").
 //   - ${VAR:-fallback}   use fallback if VAR is unset OR empty.
 //   - $$                 escape: emits a literal "$".
 //

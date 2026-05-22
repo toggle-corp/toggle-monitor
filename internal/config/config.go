@@ -54,10 +54,10 @@ type Heartbeat struct {
 // Kube is the auto-discovery block. When nil, no informer is started
 // and no kube monitors are materialized.
 type Kube struct {
-	AnnotationDomain string        `yaml:"annotationDomain"`
-	ResyncInterval   Duration      `yaml:"resyncInterval"`
-	Pause            []KubePause   `yaml:"pause,omitempty"`
-	Presets          []KubePreset  `yaml:"presets,omitempty"`
+	AnnotationDomain string       `yaml:"annotationDomain"`
+	ResyncInterval   Duration     `yaml:"resyncInterval"`
+	Pause            []KubePause  `yaml:"pause,omitempty"`
+	Presets          []KubePreset `yaml:"presets,omitempty"`
 }
 
 // KubePause is one entry in the kube.pause list — a host or host
@@ -403,14 +403,12 @@ func (c *checker) validate(cfg *Config) {
 		if retryWindow >= interval {
 			c.errf(base, "retries × (timeout + retryBackoff) = %s must be less than interval (%s)", retryWindow, interval)
 		}
+		// Forward references are allowed (YAML order is independent of
+		// dependency order); the global pass below resolves unknown
+		// slugs. Self-dependency is rejected here.
 		for j, dep := range m.DependsOn {
 			if dep == m.Slug {
 				c.errf(append(base, "dependsOn", j), "monitor cannot depend on itself")
-				continue
-			}
-			if _, ok := seenMonitors[dep]; !ok {
-				// Forward references are valid (YAML order is independent of dep order)
-				// — defer that check to the global pass below.
 			}
 		}
 

@@ -154,7 +154,10 @@ func TestConfigShow_errorsOnUnknownSlug(t *testing.T) {
 // (--check), and validate when the config file doesn't exist.
 func TestRealSubcommandsFailGracefullyOnBogusConfig(t *testing.T) {
 	t.Parallel()
-	cases := []struct{ name string; args []string }{
+	cases := []struct {
+		name string
+		args []string
+	}{
 		{"serve", []string{"serve", "--config", "/nonexistent/toggle-monitor.yaml"}},
 		{"migrate", []string{"migrate", "--config", "/nonexistent/toggle-monitor.yaml"}},
 		{"migrate --check", []string{"migrate", "--config", "/nonexistent/toggle-monitor.yaml", "--check"}},
