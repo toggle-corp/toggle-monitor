@@ -3,6 +3,7 @@ package slack
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // RemovedInput carries the data for the non-threaded "monitor removed"
@@ -19,26 +20,25 @@ type RemovedInput struct {
 
 // BuildRemovedWarning renders the non-threaded warning that's posted
 // to the monitor's last-known Slack channel when the monitor
-// disappears from config or from the cluster. No mentions.
-func BuildRemovedWarning(in RemovedInput) []Block {
+// disappears from config or from the cluster. Amber stripe, one
+// detail per line. No mentions.
+func BuildRemovedWarning(in RemovedInput) []Attachment {
 	header := Block{
 		"type": "header",
 		"text": map[string]any{
-			"type": "plain_text",
-			"text": fmt.Sprintf("⚠️ Monitor removed: %s", in.FriendlyName),
+			"type":  "plain_text",
+			"text":  fmt.Sprintf(":warning: Monitor removed: %s", in.FriendlyName),
+			"emoji": true,
 		},
 	}
-	fields := []map[string]any{
-		{"type": "mrkdwn", "text": "*Group*\n" + in.GroupSlug},
-		{"type": "mrkdwn", "text": "*Method*\n" + in.HTTPMethod},
-		{"type": "mrkdwn", "text": "*URL*\n" + in.URL},
-		{"type": "mrkdwn", "text": "*Source*\n" + in.Source},
-		{"type": "mrkdwn", "text": "*Reason*\n" + in.Reason},
+	lines := []string{
+		"*Group:* " + in.GroupSlug,
+		"*Method:* " + in.HTTPMethod,
+		"*URL:* " + in.URL,
+		"*Source:* " + in.Source,
+		"*Reason:* " + in.Reason,
 	}
-	blocks := []Block{
-		header,
-		{"type": "section", "fields": fields},
-	}
+	blocks := []Block{header, section(strings.Join(lines, "\n"))}
 	if in.DetailURL != "" {
 		blocks = append(blocks, Block{
 			"type": "actions",
@@ -49,7 +49,7 @@ func BuildRemovedWarning(in RemovedInput) []Block {
 			}},
 		})
 	}
-	return blocks
+	return []Attachment{{Color: ColorRemoved, Blocks: blocks}}
 }
 
 // BuildRemovedClose renders the in-thread reply posted when a removed
@@ -58,20 +58,24 @@ func BuildRemovedClose() []Block {
 	return []Block{section("ℹ️ Monitor was removed. Closing incident.")}
 }
 
-// BuildRemovedResolveEdit produces the parent-edit blocks for a
-// removed monitor's uptime thread. Same shape as the normal resolve
-// edit but with a "resolved (monitor removed)" header.
-func BuildRemovedResolveEdit(in DownInput) []Block {
+// BuildRemovedResolveEdit produces the parent-edit attachments for a
+// removed monitor's uptime thread. Green stripe + :large_green_circle:
+// header, with a "Resolved: monitor removed" detail line.
+func BuildRemovedResolveEdit(in DownInput) []Attachment {
 	header := Block{
 		"type": "header",
 		"text": map[string]any{
-			"type": "plain_text",
-			"text": fmt.Sprintf("✅ %s — Resolved (monitor removed)", in.FriendlyName),
+			"type":  "plain_text",
+			"text":  fmt.Sprintf(":large_green_circle: %s — Resolved (monitor removed)", in.FriendlyName),
+			"emoji": true,
 		},
 	}
-	return buildParent(in, header, []map[string]any{
-		{"type": "mrkdwn", "text": "*Resolved at*\nmonitor removed"},
-	})
+	return []Attachment{{
+		Color: ColorResolved,
+		Blocks: buildParentBlocks(in, header, []detailLine{
+			{Label: "Resolved", Value: "monitor removed"},
+		}),
+	}}
 }
 
 // NotifyRemoved is the public dispatch hook the lifecycle calls per
@@ -112,9 +116,9 @@ func (n *Notifier) NotifyRemoved(ctx context.Context, channelSlug string, in Mon
 			DetailURL:    n.detailURL(in.Slug),
 		}
 		if err := n.client.UpdateMessage(ctx, ch.Token, UpdateMessageInput{
-			ChannelID: in.UptimeThreadChannel,
-			TS:        in.UptimeThreadTS,
-			Blocks:    BuildRemovedResolveEdit(downIn),
+			ChannelID:   in.UptimeThreadChannel,
+			TS:          in.UptimeThreadTS,
+			Attachments: BuildRemovedResolveEdit(downIn),
 		}); err != nil {
 			n.log.Warn("removal: edit parent", "monitor", in.Slug, "error", err)
 		}
@@ -132,8 +136,8 @@ func (n *Notifier) NotifyRemoved(ctx context.Context, channelSlug string, in Mon
 		DetailURL:    n.detailURL(in.Slug),
 	})
 	if _, err := n.client.PostMessage(ctx, ch.Token, PostMessageInput{
-		ChannelID: ch.ID,
-		Blocks:    warning,
+		ChannelID:   ch.ID,
+		Attachments: warning,
 	}); err != nil {
 		n.log.Warn("removal: post warning", "monitor", in.Slug, "error", err)
 	}

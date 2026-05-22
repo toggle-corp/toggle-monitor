@@ -133,8 +133,8 @@ func (n *Notifier) notifyOpen(ctx context.Context, ch ChannelInfo, mentions []st
 		DetailURL:    n.detailURL(m.Slug),
 	}
 	res, err := n.client.PostMessage(ctx, ch.Token, PostMessageInput{
-		ChannelID: ch.ID,
-		Blocks:    BuildDownParent(in),
+		ChannelID:   ch.ID,
+		Attachments: BuildDownParent(in),
 	})
 	if err != nil {
 		return err
@@ -204,9 +204,9 @@ func (n *Notifier) notifyResolve(ctx context.Context, ch ChannelInfo, mentions [
 	}
 
 	if err := n.client.UpdateMessage(ctx, ch.Token, UpdateMessageInput{
-		ChannelID: m.UptimeThreadChannel,
-		TS:        m.UptimeThreadTS,
-		Blocks:    BuildResolveEdit(resolveIn),
+		ChannelID:   m.UptimeThreadChannel,
+		TS:          m.UptimeThreadTS,
+		Attachments: BuildResolveEdit(resolveIn),
 	}); err != nil {
 		return fmt.Errorf("update parent on resolve: %w", err)
 	}
@@ -255,8 +255,8 @@ func (n *Notifier) NotifySSL(ctx context.Context, channelSlug string, mentions [
 	switch ev.Type {
 	case alert.EventSSLOpen:
 		res, err := n.client.PostMessage(ctx, ch.Token, PostMessageInput{
-			ChannelID: ch.ID,
-			Blocks:    BuildSSLParent(in),
+			ChannelID:   ch.ID,
+			Attachments: BuildSSLParent(in),
 		})
 		if err != nil {
 			return err
@@ -289,9 +289,9 @@ func (n *Notifier) NotifySSL(ctx context.Context, channelSlug string, mentions [
 			return err
 		}
 		if err := n.client.UpdateMessage(ctx, ch.Token, UpdateMessageInput{
-			ChannelID: m.SSLThreadChannel,
-			TS:        m.SSLThreadTS,
-			Blocks:    BuildSSLResolveEdit(resolveIn),
+			ChannelID:   m.SSLThreadChannel,
+			TS:          m.SSLThreadTS,
+			Attachments: BuildSSLResolveEdit(resolveIn),
 		}); err != nil {
 			return fmt.Errorf("update ssl parent: %w", err)
 		}

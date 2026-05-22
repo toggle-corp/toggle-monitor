@@ -11,8 +11,16 @@ import (
 // the result without round-tripping through JSON.
 type Block = map[string]any
 
-// DownInput carries everything Block-Kit builders need to render an
-// uptime parent (and its eventual resolved form).
+// Slack attachment left-edge stripe colors used by the parent
+// (and edited-parent) messages.
+const (
+	ColorDown     = "#df3617" // uptime parent
+	ColorResolved = "#22af64" // uptime parent on resolve
+	ColorSSLWarn  = "#f2b138" // SSL parent (expiring)
+	ColorRemoved  = "#f2b138" // monitor-removed warning
+)
+
+// DownInput carries everything the parent uptime message needs.
 type DownInput struct {
 	FriendlyName string
 	Group        string
@@ -43,26 +51,36 @@ type ReminderInput struct {
 	LastError     string
 }
 
-// BuildDownParent renders the Block Kit blocks for the initial `🔴 …
-// is DOWN` parent message.
-func BuildDownParent(in DownInput) []Block {
-	return buildParent(in, downHeader(in.FriendlyName), nil)
+// detailLine is one "*Label:* value" row in the parent's body section.
+type detailLine struct {
+	Label, Value string
 }
 
-// BuildResolveEdit renders the blocks the parent should be edited to
-// when the monitor recovers. Preserves the original content (group,
-// URL, mentions, fields) and only changes the header + appends a
-// "Resolved at" field, per docs/design-decisions.md.
-func BuildResolveEdit(in ResolveInput) []Block {
-	resolvedAt := map[string]any{
-		"type": "mrkdwn",
-		"text": fmt.Sprintf("*Resolved at*\n%s", FormatDate(in.ResolveAt)),
-	}
-	return buildParent(in.DownInput, resolvedHeader(in.FriendlyName, in.Downtime), []map[string]any{resolvedAt})
+// BuildDownParent renders the initial 🔴 parent for an uptime
+// incident. Returns a slice of attachments so the message gets a
+// red left-edge stripe.
+func BuildDownParent(in DownInput) []Attachment {
+	return []Attachment{{
+		Color:  ColorDown,
+		Blocks: buildParentBlocks(in, downHeader(in.FriendlyName), nil),
+	}}
+}
+
+// BuildResolveEdit renders the attachments the parent should be
+// edited to when the monitor recovers. The header swaps to
+// :large_green_circle:, the color stripe swaps to green, and a
+// "Resolved" line is appended to the detail block.
+func BuildResolveEdit(in ResolveInput) []Attachment {
+	return []Attachment{{
+		Color: ColorResolved,
+		Blocks: buildParentBlocks(in.DownInput, resolvedHeader(in.FriendlyName, in.Downtime),
+			[]detailLine{{Label: "Resolved", Value: FormatDate(in.ResolveAt)}}),
+	}}
 }
 
 // BuildReminderReply renders the short scannable thread reply posted
 // every reminderInterval while the monitor remains down. No mentions.
+// Stays inside a thread, so no color stripe.
 func BuildReminderReply(in ReminderInput) []Block {
 	text := fmt.Sprintf("⏰ Still down for %s. Last checked: %s.",
 		formatDowntime(in.DownDuration), FormatDate(in.LastCheckedAt))
@@ -72,18 +90,18 @@ func BuildReminderReply(in ReminderInput) []Block {
 	return []Block{section(text)}
 }
 
-// BuildResolveReply renders the thread reply emitted on resolve,
-// alongside the edit applied to the parent. No mentions.
+// BuildResolveReply renders the thread reply emitted on resolve.
+// Stays inside a thread, so no color stripe.
 func BuildResolveReply(in ResolveInput) []Block {
-	text := fmt.Sprintf("✅ Resolved at %s. Total downtime: %s.",
+	text := fmt.Sprintf(":large_green_circle: Resolved at %s. Total downtime: %s.",
 		FormatDate(in.ResolveAt), formatDowntime(in.Downtime))
 	return []Block{section(text)}
 }
 
-// buildParent is the shared parent layout. Extra optional fields go in
-// the right column of the fields section (used by BuildResolveEdit to
-// append "Resolved at").
-func buildParent(in DownInput, header Block, extraFields []map[string]any) []Block {
+// buildParentBlocks is the shared parent layout. Extra detail lines
+// are appended to the single-section bold-label body (used by
+// BuildResolveEdit to append "Resolved").
+func buildParentBlocks(in DownInput, header Block, extra []detailLine) []Block {
 	blocks := []Block{header}
 
 	// Context line: group · URL.
@@ -99,16 +117,18 @@ func buildParent(in DownInput, header Block, extraFields []map[string]any) []Blo
 		blocks = append(blocks, section(strings.Join(in.Mentions, " ")))
 	}
 
-	// Fields: status, failure time, last error (+ optional resolved-at).
-	fields := []map[string]any{
-		{"type": "mrkdwn", "text": fmt.Sprintf("*Status*\n%d %s", in.StatusCode, in.StatusText)},
-		{"type": "mrkdwn", "text": fmt.Sprintf("*Failure time*\n%s", FormatDate(in.FailureAt))},
+	// Single mrkdwn section: one *Label:* value per line.
+	lines := []string{
+		fmt.Sprintf("*Status:* %d %s", in.StatusCode, in.StatusText),
+		"*Failure:* " + FormatDate(in.FailureAt),
 	}
 	if in.LastError != "" {
-		fields = append(fields, map[string]any{"type": "mrkdwn", "text": "*Last error*\n" + in.LastError})
+		lines = append(lines, "*Error:* "+in.LastError)
 	}
-	fields = append(fields, extraFields...)
-	blocks = append(blocks, Block{"type": "section", "fields": fields})
+	for _, e := range extra {
+		lines = append(lines, "*"+e.Label+":* "+e.Value)
+	}
+	blocks = append(blocks, section(strings.Join(lines, "\n")))
 
 	// Optional inline response body.
 	if in.ResponseBody != "" && len(in.ResponseBody) <= in.BodyMaxChars {
@@ -133,7 +153,11 @@ func buildParent(in DownInput, header Block, extraFields []map[string]any) []Blo
 func downHeader(name string) Block {
 	return Block{
 		"type": "header",
-		"text": map[string]any{"type": "plain_text", "text": fmt.Sprintf("🔴 %s is DOWN", name)},
+		"text": map[string]any{
+			"type":  "plain_text",
+			"text":  fmt.Sprintf(":red_circle: %s is DOWN", name),
+			"emoji": true,
+		},
 	}
 }
 
@@ -141,8 +165,9 @@ func resolvedHeader(name string, downtime time.Duration) Block {
 	return Block{
 		"type": "header",
 		"text": map[string]any{
-			"type": "plain_text",
-			"text": fmt.Sprintf("✅ %s is UP (was down for %s)", name, formatDowntime(downtime)),
+			"type":  "plain_text",
+			"text":  fmt.Sprintf(":large_green_circle: %s is UP (was down for %s)", name, formatDowntime(downtime)),
+			"emoji": true,
 		},
 	}
 }

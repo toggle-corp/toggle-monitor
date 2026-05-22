@@ -136,6 +136,24 @@ Behavior:
 
 Omit the `heartbeat:` block to disable the loop entirely.
 
+## Slack message preview (CLI)
+
+Sanity-check the bot token, channel binding, and message rendering
+without waiting for a real monitor to flap:
+
+```bash
+# Uptime: Down → 2 reminders → prompt → Resolve
+toggle-monitor slack test uptime --channel ops-alerts
+
+# SSL: Expiring → 2 reminders → prompt → Renewed
+toggle-monitor slack test ssl --channel ops-alerts
+```
+
+Useful flags: `--name`, `--reminders N`, `--interval 5s`, `--no-prompt`
+(skip the "press Enter to resolve" pause), `--config <path>` (defaults
+to `deploy/local/config.yaml`). Both commands hit the real Slack API
+against the channel's `tokenEnv`, so pick a low-traffic channel.
+
 ## Slack workspace + userMapping health
 
 Two background checks keep the Slack integration honest:

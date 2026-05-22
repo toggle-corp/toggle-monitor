@@ -12,15 +12,18 @@ import (
 
 var t0 = time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
 
-// dump renders blocks the same way the Slack client will (json with
-// HTML escaping disabled, so <!date^...> tokens come through literally).
-func dump(t *testing.T, blocks []slack.Block) string {
+// dump renders Block Kit output the same way the Slack client will
+// (json with HTML escaping disabled, so <!date^...> tokens come
+// through literally). Accepts either []slack.Block or
+// []slack.Attachment so parent-message tests can assert on the new
+// color-stripe shape.
+func dump(t *testing.T, v any) string {
 	t.Helper()
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(blocks); err != nil {
-		t.Fatalf("marshal blocks: %v", err)
+	if err := enc.Encode(v); err != nil {
+		t.Fatalf("marshal: %v", err)
 	}
 	return buf.String()
 }
@@ -39,13 +42,16 @@ func TestBuildDownParent_includesHeaderContextFieldsAndMentions(t *testing.T) {
 	})
 	s := dump(t, out)
 	for _, want := range []string{
-		"🔴 API is DOWN",
+		":red_circle: API is DOWN",
 		"prod · http://api/health",
 		"<!here> <@U123ABC>",
-		"503 Service Unavailable",
+		"*Status:* 503 Service Unavailable",
+		"*Failure:*",
+		"*Error:* boom",
 		"View details",
 		"https://monitor.internal/monitor/api",
 		"<!date^",
+		`"color":"#df3617"`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in:\n%s", want, s)
@@ -115,19 +121,22 @@ func TestBuildResolveEdit_preservesContextAndChangesHeader(t *testing.T) {
 	}
 	s := dump(t, slack.BuildResolveEdit(in))
 
-	if !strings.Contains(s, "✅ API is UP (was down for 45m)") {
+	if !strings.Contains(s, ":large_green_circle: API is UP (was down for 45m)") {
 		t.Errorf("missing resolved header in:\n%s", s)
 	}
 	// Original context line preserved.
 	if !strings.Contains(s, "prod · http://api/health") {
 		t.Errorf("context line missing in resolve edit:\n%s", s)
 	}
-	if !strings.Contains(s, "Resolved at") {
-		t.Errorf("resolved-at field missing in:\n%s", s)
+	if !strings.Contains(s, "*Resolved:* ") {
+		t.Errorf("resolved-at line missing in:\n%s", s)
 	}
 	// Mentions preserved on the edited parent.
 	if !strings.Contains(s, "<!here>") {
 		t.Errorf("mention markup missing in resolve edit:\n%s", s)
+	}
+	if !strings.Contains(s, `"color":"#22af64"`) {
+		t.Errorf("missing green color stripe in:\n%s", s)
 	}
 }
 

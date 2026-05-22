@@ -70,11 +70,24 @@ func (c *Client) AuthTest(ctx context.Context, token secret.SecretString) (AuthT
 	return out, nil
 }
 
+// Attachment is the slim shape of a legacy chat.postMessage attachment.
+// Slack still supports `color` (the left-edge stripe) when blocks are
+// nested inside an attachment, even though attachments themselves are
+// labelled legacy. We use this exclusively for color theming the
+// parent + edited-parent messages.
+type Attachment struct {
+	Color  string  `json:"color,omitempty"`
+	Blocks []Block `json:"blocks,omitempty"`
+}
+
 // PostMessageInput is the slim shape of chat.postMessage we send.
+// Callers populate either Blocks (top-level, no color stripe) or
+// Attachments (one attachment per color stripe).
 type PostMessageInput struct {
-	ChannelID string  `json:"channel"`
-	Blocks    []Block `json:"blocks"`
-	ThreadTS  string  `json:"thread_ts,omitempty"` // empty = new parent
+	ChannelID   string       `json:"channel"`
+	Blocks      []Block      `json:"blocks,omitempty"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+	ThreadTS    string       `json:"thread_ts,omitempty"` // empty = new parent
 }
 
 // PostMessageResult mirrors the slim shape of chat.postMessage's
@@ -100,10 +113,12 @@ func (c *Client) PostMessage(ctx context.Context, token secret.SecretString, in 
 }
 
 // UpdateMessageInput is the slim shape of chat.update we send.
+// Either Blocks or Attachments may be populated; see PostMessageInput.
 type UpdateMessageInput struct {
-	ChannelID string  `json:"channel"`
-	TS        string  `json:"ts"`
-	Blocks    []Block `json:"blocks"`
+	ChannelID   string       `json:"channel"`
+	TS          string       `json:"ts"`
+	Blocks      []Block      `json:"blocks,omitempty"`
+	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
 // UpdateMessageResult mirrors the slim shape of chat.update's response.
