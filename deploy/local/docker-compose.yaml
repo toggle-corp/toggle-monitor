@@ -62,8 +62,19 @@ services:
     environment:
       DB_PASSWORD: ${DB_PASSWORD:-toggle-monitor-dev}
       SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-xoxb-dev-not-set}
+      # Set KUBECONFIG_HOST in deploy/local/.env to the absolute path
+      # of a kubeconfig on the host (e.g. ~/.kube/config). The mount
+      # below makes it available inside the container at the same path
+      # and the env var is read by `serve` when --kubeconfig is unset.
+      # Leave empty to skip the kube informer entirely (kube: block in
+      # config.yaml must also be unset / commented out).
+      KUBECONFIG: ${KUBECONFIG_HOST:-}
     volumes:
       - ./config.yaml:/etc/toggle-monitor/config.yaml:ro
+      # Mount the host's kubeconfig read-only into the container at
+      # the same path. Empty KUBECONFIG_HOST short-circuits to /dev/null
+      # so the bind doesn't error out.
+      - ${KUBECONFIG_HOST:-/dev/null}:${KUBECONFIG_HOST:-/dev/null}:ro
     ports:
       - "8080:8080"
     # Default CMD (serve) is fine; override here if you want to flip

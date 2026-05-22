@@ -19,6 +19,8 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile.dev
+    environment:
+      KUBECONFIG: ${KUBECONFIG_HOST:-}
     # Mount the entire repo so file changes on the host are visible
     # inside the container. The Go module cache is kept in a named
     # volume so warm rebuilds stay fast.
@@ -27,6 +29,7 @@ services:
       - go-modcache:/go/pkg/mod
       - go-buildcache:/root/.cache/go-build
       - ./config.yaml:/etc/toggle-monitor/config.yaml:ro
+      - ${KUBECONFIG_HOST:-/dev/null}:${KUBECONFIG_HOST:-/dev/null}:ro
     working_dir: /src
     # Override the base-image ENTRYPOINT (which is /app/toggle-monitor
     # from the production Dockerfile). The Dev image's default CMD

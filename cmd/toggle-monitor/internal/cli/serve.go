@@ -22,18 +22,22 @@ func newServeCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfgPath, _ := cmd.Flags().GetString("config")
 			listenAddr, _ := cmd.Flags().GetString("listen")
-			return runServeCLI(cmd.Context(), cfgPath, listenAddr)
+			kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
+			return runServeCLI(cmd.Context(), cfgPath, listenAddr, kubeconfig)
 		},
 	}
 	cmd.Flags().String("config", "/etc/toggle-monitor/config.yaml", "path to the YAML config")
 	cmd.Flags().String("listen", ":8080", "HTTP listen address")
+	cmd.Flags().String("kubeconfig", "",
+		"path to a kubeconfig file for auto-discovery; "+
+			"empty defaults to in-cluster ServiceAccount (use $KUBECONFIG for the host-local file)")
 	return cmd
 }
 
 // runServeCLI is the entrypoint for `toggle-monitor serve`. It reads
 // the config file, resolves the DB password from the configured env
 // var, and hands off to lifecycle.RunServe.
-func runServeCLI(ctx context.Context, cfgPath, listenAddr string) error {
+func runServeCLI(ctx context.Context, cfgPath, listenAddr, kubeconfigPath string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -65,10 +69,17 @@ func runServeCLI(ctx context.Context, cfgPath, listenAddr string) error {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{}))
 
+	// Fall back to $KUBECONFIG when --kubeconfig wasn't passed
+	// explicitly — matches what kubectl does out of the box.
+	if kubeconfigPath == "" {
+		kubeconfigPath = os.Getenv("KUBECONFIG")
+	}
+
 	return lifecycle.RunServe(ctx, lifecycle.ServeOptions{
-		Config:     cfg,
-		DBConfig:   dbCfg,
-		ListenAddr: listenAddr,
-		Logger:     logger,
+		Config:         cfg,
+		DBConfig:       dbCfg,
+		ListenAddr:     listenAddr,
+		KubeconfigPath: kubeconfigPath,
+		Logger:         logger,
 	})
 }
