@@ -151,8 +151,17 @@ toggle-monitor slack test ssl --channel ops-alerts
 
 Useful flags: `--name`, `--reminders N`, `--interval 5s`, `--no-prompt`
 (skip the "press Enter to resolve" pause), `--config <path>` (defaults
-to `deploy/local/config.yaml`). Both commands hit the real Slack API
-against the channel's `tokenEnv`, so pick a low-traffic channel.
+to `deploy/local/config.yaml`), and `--notify` (repeatable or
+comma-separated): exercise the mentions row with userMapping slugs or
+raw Slack markup, e.g.:
+
+```bash
+toggle-monitor slack test uptime --channel ops-alerts \
+    --notify oncall --notify '<!here>'
+```
+
+Both commands hit the real Slack API against the channel's `tokenEnv`,
+so pick a low-traffic channel.
 
 ## Slack workspace + userMapping health
 
