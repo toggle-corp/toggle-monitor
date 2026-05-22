@@ -324,6 +324,72 @@ func TestLoad_tlsInsecureSkipVerify_relaxesSSLThresholdsForHTTPS(t *testing.T) {
 	}
 }
 
+// kubeWith returns validMinimal with a kube: block appended, wired
+// to ops-alerts so SSL-threshold validation stays satisfied.
+func kubeWith(extra string) string {
+	return validMinimal + `
+kube:
+  annotationDomain: monitor.togglecorp.com
+  resyncInterval: 30m
+  presets:
+    - slug: internal-api
+      scheme: https
+      path: /health
+      httpMethod: GET
+      acceptedStatusCodes: [200]
+      interval: 5m
+      timeout: 10s
+      retries: 2
+      retryBackoff: 5s
+      followRedirects: false
+      reminderInterval: 3d
+      sslAlertThreshold: 30d
+      sslEscalationThreshold: 7d
+      sslReminderInterval: 3d
+      slack: ops-alerts
+` + extra
+}
+
+func TestLoad_kube_defaultPreset_acceptsKnownSlug(t *testing.T) {
+	data := []byte(kubeWith("  defaultPreset: internal-api\n"))
+	if _, err := config.Load(data); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoad_kube_defaultPreset_rejectsUnknownSlug(t *testing.T) {
+	data := []byte(kubeWith("  defaultPreset: ghost\n"))
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected validation error for unknown defaultPreset slug")
+	}
+	if !strings.Contains(err.Error(), "ghost") || !strings.Contains(err.Error(), "defaultPreset") {
+		t.Errorf("error should call out defaultPreset + the bad slug, got: %v", err)
+	}
+}
+
+func TestLoad_kube_match_rejectsUnknownPresetSlug(t *testing.T) {
+	data := []byte(kubeWith("  match:\n    - when: { namespace: foo }\n      preset: ghost\n"))
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected validation error for unknown match preset slug")
+	}
+	if !strings.Contains(err.Error(), "ghost") || !strings.Contains(err.Error(), "match") {
+		t.Errorf("error should mention match[].preset and the bad slug, got: %v", err)
+	}
+}
+
+func TestLoad_kube_match_rejectsEmptyWhen(t *testing.T) {
+	data := []byte(kubeWith("  match:\n    - when: {}\n      preset: internal-api\n"))
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected validation error for empty match[].when")
+	}
+	if !strings.Contains(err.Error(), "namespace") && !strings.Contains(err.Error(), "host") {
+		t.Errorf("error should hint at required fields, got: %v", err)
+	}
+}
+
 func TestLoad_rejectsDBBodyMaxCharsSmallerThanSlackBodyMaxChars(t *testing.T) {
 	data := withReplaced(t, "dbBodyMaxChars: 4000", "dbBodyMaxChars: 100")
 	_, err := config.Load(data)

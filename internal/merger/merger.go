@@ -6,6 +6,7 @@ package merger
 import (
 	"context"
 	"fmt"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -39,11 +40,13 @@ type MonitorStore interface {
 // (lastSeen) so Prune() can drop entries for ingresses that have
 // disappeared between reconciles.
 type Materializer struct {
-	store       MonitorStore
-	presets     map[string]config.KubePreset
-	annDomain   string
-	pause       []config.KubePause
-	staticSlugs map[string]struct{}
+	store         MonitorStore
+	presets       map[string]config.KubePreset
+	annDomain     string
+	pause         []config.KubePause
+	staticSlugs   map[string]struct{}
+	defaultPreset string
+	match         []config.KubeMatch
 
 	// httpClientUA + slack.UserMapping carry through into the Plan
 	// for each materialized kube monitor. proxies resolves preset
@@ -79,17 +82,55 @@ func New(s MonitorStore, cfg config.Config, proxies *proxypool.Pool) *Materializ
 		statics[m.Slug] = struct{}{}
 	}
 	return &Materializer{
-		store:       s,
-		presets:     presets,
-		annDomain:   cfg.Kube.AnnotationDomain,
-		pause:       cfg.Kube.Pause,
-		staticSlugs: statics,
-		userAgent:   cfg.HTTPClient.UserAgent,
-		userMapping: cfg.Slack.UserMapping,
-		bodyMaxBase: cfg.Slack.BodyMaxChars,
-		proxies:     proxies,
-		kubePlans:   map[string]planEntry{},
+		store:         s,
+		presets:       presets,
+		annDomain:     cfg.Kube.AnnotationDomain,
+		pause:         cfg.Kube.Pause,
+		staticSlugs:   statics,
+		defaultPreset: cfg.Kube.DefaultPreset,
+		match:         cfg.Kube.Match,
+		userAgent:     cfg.HTTPClient.UserAgent,
+		userMapping:   cfg.Slack.UserMapping,
+		bodyMaxBase:   cfg.Slack.BodyMaxChars,
+		proxies:       proxies,
+		kubePlans:     map[string]planEntry{},
 	}
+}
+
+// presetSource identifies how a preset slug was chosen, so the
+// snapshot reason can explain *why* this preset was applied.
+type presetSource int
+
+const (
+	presetSourceNone       presetSource = iota
+	presetSourceAnnotation              // /kube.preset annotation
+	presetSourceMatch                   // first matching match[] rule
+	presetSourceDefault                 // kube.defaultPreset fallback
+)
+
+// resolvePreset picks a preset for the given (ingress, host) pair.
+// Order: explicit annotation → first matching match[] rule →
+// defaultPreset. Returns ("", 0, -1) when none apply.
+//
+// matchIdx is the index of the winning match[] rule when source is
+// presetSourceMatch, otherwise -1.
+func (m *Materializer) resolvePreset(ing *networkingv1.Ingress, host string) (slug string, source presetSource, matchIdx int) {
+	if s := ing.Annotations[m.annDomain+"/kube.preset"]; s != "" {
+		return s, presetSourceAnnotation, -1
+	}
+	for i, r := range m.match {
+		if r.When.Namespace != "" && !matchGlob(r.When.Namespace, ing.Namespace) {
+			continue
+		}
+		if r.When.Host != "" && !matchGlob(r.When.Host, host) {
+			continue
+		}
+		return r.Preset, presetSourceMatch, i
+	}
+	if m.defaultPreset != "" {
+		return m.defaultPreset, presetSourceDefault, -1
+	}
+	return "", presetSourceNone, -1
 }
 
 // Materialize implements kube.Materializer. The row's Annotations
@@ -132,8 +173,10 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 		return base, nil
 	}
 
-	// kube.preset annotation drives opt-in.
-	presetSlug := ing.Annotations[m.annDomain+"/kube.preset"]
+	// Preset resolution: explicit annotation → match[] rules →
+	// defaultPreset. Unknown explicit annotation still flunks as
+	// kube-invalid (typos shouldn't silently fall through).
+	presetSlug, presetVia, matchIdx := m.resolvePreset(ing, host)
 	if presetSlug == "" {
 		reason := "no preset annotation"
 		base.Status, base.Reason = "kube-invalid", &reason
@@ -233,9 +276,38 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 	m.kubePlans[monSlug] = planEntry{plan: plan, lastSeen: time.Now()}
 	m.mu.Unlock()
 
-	reason := "added"
+	reason := formatAddedReason(presetVia, matchIdx, m.match)
 	base.Status, base.Reason, base.PresetSlug, base.MonitorSlug = "added", &reason, &presetSlug, &monSlug
 	return base, nil
+}
+
+// formatAddedReason explains *which* path picked the preset for the
+// /discovery UI. Helps the operator diagnose unexpected match-rule
+// assignments without cross-referencing config.yaml by eye.
+func formatAddedReason(via presetSource, matchIdx int, rules []config.KubeMatch) string {
+	switch via {
+	case presetSourceAnnotation:
+		return "added"
+	case presetSourceDefault:
+		return "added (via defaultPreset)"
+	case presetSourceMatch:
+		if matchIdx >= 0 && matchIdx < len(rules) {
+			w := rules[matchIdx].When
+			var cond string
+			switch {
+			case w.Namespace != "" && w.Host != "":
+				cond = fmt.Sprintf("namespace=%s, host=%s", w.Namespace, w.Host)
+			case w.Namespace != "":
+				cond = "namespace=" + w.Namespace
+			case w.Host != "":
+				cond = "host=" + w.Host
+			}
+			return fmt.Sprintf("added (via match[%d]: %s)", matchIdx, cond)
+		}
+		return "added (via match)"
+	default:
+		return "added"
+	}
 }
 
 // CurrentPlans returns the scheduler plans for every currently
@@ -281,6 +353,27 @@ func (m *Materializer) matchPause(host string) (reason string, matched bool) {
 		}
 	}
 	return "", false
+}
+
+// matchGlob is a permissive `*`-style matcher used by kube.match[]
+// for namespace + host conditions. `*` matches any run of non-`/`
+// characters (path.Match semantics) — so `betaco-core-backend-*`
+// matches `betaco-core-backend-1` and `*.example.com` matches
+// `alpha-2.example.com`. Intentionally more permissive than
+// hostMatchesGlob below (which is segment-strict for backward-compat
+// with the older kube.pause rules).
+func matchGlob(pattern, value string) bool {
+	if pattern == "" {
+		return false
+	}
+	if pattern == value {
+		return true
+	}
+	ok, err := path.Match(pattern, value)
+	if err != nil {
+		return false
+	}
+	return ok
 }
 
 // hostMatchesGlob supports a simple `*` wildcard (one segment) — e.g.

@@ -70,6 +70,32 @@ type Kube struct {
 	ResyncInterval   Duration     `yaml:"resyncInterval"`
 	Pause            []KubePause  `yaml:"pause,omitempty"`
 	Presets          []KubePreset `yaml:"presets,omitempty"`
+
+	// DefaultPreset is the slug of the preset used when an ingress
+	// has no kube.preset annotation and no match[] rule fires. Empty
+	// keeps the original "kube-invalid: no preset annotation"
+	// behavior. Must reference an entry in Presets when set.
+	DefaultPreset string `yaml:"defaultPreset,omitempty"`
+
+	// Match resolves an ingress to a preset by namespace/host pattern
+	// when the kube.preset annotation is absent. Rules are evaluated
+	// in declaration order; the first matching rule wins. If no rule
+	// matches, DefaultPreset is consulted next.
+	Match []KubeMatch `yaml:"match,omitempty"`
+}
+
+// KubeMatch is one conditional preset rule. The `when` conditions
+// AND together; both fields are optional but at least one must be
+// set. Globs use the same `*`-per-segment syntax as KubePause.Host.
+type KubeMatch struct {
+	When   KubeMatchWhen `yaml:"when"`
+	Preset string        `yaml:"preset"`
+}
+
+// KubeMatchWhen carries the conditions checked against an ingress.
+type KubeMatchWhen struct {
+	Namespace string `yaml:"namespace,omitempty"`
+	Host      string `yaml:"host,omitempty"`
 }
 
 // KubePause is one entry in the kube.pause list — a host or host
@@ -359,6 +385,23 @@ func (c *checker) validate(cfg *Config) {
 				if _, ok := seenProxies[p.Proxy]; !ok {
 					c.errf(append(base, "proxy"), "unknown proxy slug %q", p.Proxy)
 				}
+			}
+		}
+		if cfg.Kube.DefaultPreset != "" {
+			if _, ok := seenPresets[cfg.Kube.DefaultPreset]; !ok {
+				c.errf([]any{"kube", "defaultPreset"},
+					"references unknown preset slug %q", cfg.Kube.DefaultPreset)
+			}
+		}
+		for i, r := range cfg.Kube.Match {
+			base := []any{"kube", "match", i}
+			if r.Preset == "" {
+				c.errf(append(base, "preset"), "required")
+			} else if _, ok := seenPresets[r.Preset]; !ok {
+				c.errf(append(base, "preset"), "references unknown preset slug %q", r.Preset)
+			}
+			if r.When.Namespace == "" && r.When.Host == "" {
+				c.errf(append(base, "when"), "at least one of namespace or host is required")
 			}
 		}
 	}

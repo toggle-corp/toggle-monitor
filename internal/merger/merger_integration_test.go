@@ -166,6 +166,127 @@ func TestMaterializer_pauseMatchesGlob(t *testing.T) {
 	}
 }
 
+// presetCfgWith returns a kube block carrying two presets so the
+// resolution tests can verify which one the materializer picked.
+func presetCfgWith() *config.Kube {
+	return &config.Kube{
+		AnnotationDomain: domain,
+		ResyncInterval:   config.Duration(time.Minute),
+		Presets: []config.KubePreset{
+			{Slug: "internal-api", Scheme: "https", Path: "/health"},
+			{Slug: "catchall", Scheme: "https", Path: "/"},
+		},
+	}
+}
+
+func TestMaterializer_defaultPreset_appliedWhenNoAnnotation(t *testing.T) {
+	repo := newRepo(t)
+	kc := presetCfgWith()
+	kc.DefaultPreset = "catchall"
+	m := merger.New(repo, withKube(kc, nil), nil)
+	ing := ingress("default", "naked", nil, "naked.example.com")
+
+	row, err := m.Materialize(context.Background(), ing, "naked.example.com")
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if row.Status != "added" {
+		t.Errorf("status: got %q, want 'added'", row.Status)
+	}
+	if row.PresetSlug == nil || *row.PresetSlug != "catchall" {
+		t.Errorf("preset slug: got %v, want catchall", row.PresetSlug)
+	}
+	if row.Reason == nil || !contains(*row.Reason, "defaultPreset") {
+		t.Errorf("reason should mention defaultPreset, got %v", row.Reason)
+	}
+}
+
+func TestMaterializer_matchRule_firstMatchWins(t *testing.T) {
+	repo := newRepo(t)
+	kc := presetCfgWith()
+	kc.DefaultPreset = "catchall"
+	kc.Match = []config.KubeMatch{
+		{When: config.KubeMatchWhen{Namespace: "betaco-core-backend-*"}, Preset: "internal-api"},
+	}
+	m := merger.New(repo, withKube(kc, nil), nil)
+	ing := ingress("betaco-core-backend-1", "api", nil, "core-1.example.com")
+
+	row, _ := m.Materialize(context.Background(), ing, "core-1.example.com")
+	if row.Status != "added" {
+		t.Errorf("status: got %q", row.Status)
+	}
+	if row.PresetSlug == nil || *row.PresetSlug != "internal-api" {
+		t.Errorf("preset slug: got %v, want internal-api (via match, not defaultPreset)", row.PresetSlug)
+	}
+	if row.Reason == nil || !contains(*row.Reason, "match[0]") {
+		t.Errorf("reason should call out the match rule, got %v", row.Reason)
+	}
+}
+
+func TestMaterializer_annotationBeatsMatchAndDefault(t *testing.T) {
+	repo := newRepo(t)
+	kc := presetCfgWith()
+	kc.DefaultPreset = "catchall"
+	kc.Match = []config.KubeMatch{
+		{When: config.KubeMatchWhen{Namespace: "default"}, Preset: "catchall"},
+	}
+	m := merger.New(repo, withKube(kc, nil), nil)
+	ing := ingress("default", "api", ann(domain+"/kube.preset", "internal-api"), "api.example.com")
+
+	row, _ := m.Materialize(context.Background(), ing, "api.example.com")
+	if row.PresetSlug == nil || *row.PresetSlug != "internal-api" {
+		t.Errorf("annotation should win, got %v", row.PresetSlug)
+	}
+	if row.Reason == nil || *row.Reason != "added" {
+		t.Errorf("annotation path keeps reason 'added', got %v", row.Reason)
+	}
+}
+
+func TestMaterializer_matchRule_namespaceAndHostAND(t *testing.T) {
+	repo := newRepo(t)
+	kc := presetCfgWith()
+	kc.DefaultPreset = "catchall"
+	kc.Match = []config.KubeMatch{
+		{
+			When:   config.KubeMatchWhen{Namespace: "acme-*", Host: "*.example.com"},
+			Preset: "internal-api",
+		},
+	}
+	m := merger.New(repo, withKube(kc, nil), nil)
+
+	// Namespace matches, host doesn't → rule skipped, falls through to default.
+	ing1 := ingress("acme-api-1", "api", nil, "alpha-1.example.com")
+	row1, _ := m.Materialize(context.Background(), ing1, "alpha-1.example.com")
+	if row1.PresetSlug == nil || *row1.PresetSlug != "catchall" {
+		t.Errorf("ns match + host miss should fall through to default, got %v", row1.PresetSlug)
+	}
+
+	// Both match → rule fires.
+	ing2 := ingress("acme-api-2", "api", nil, "alpha-2.example.com")
+	row2, _ := m.Materialize(context.Background(), ing2, "alpha-2.example.com")
+	if row2.PresetSlug == nil || *row2.PresetSlug != "internal-api" {
+		t.Errorf("both conditions match → rule should fire, got %v", row2.PresetSlug)
+	}
+}
+
+func TestMaterializer_unknownExplicitPreset_stillFlags(t *testing.T) {
+	// Default + match[] do NOT rescue an explicit-but-unknown
+	// annotation. Typos should stay visible.
+	repo := newRepo(t)
+	kc := presetCfgWith()
+	kc.DefaultPreset = "catchall"
+	m := merger.New(repo, withKube(kc, nil), nil)
+	ing := ingress("default", "wrong", ann(domain+"/kube.preset", "ghost"), "wrong.example.com")
+
+	row, _ := m.Materialize(context.Background(), ing, "wrong.example.com")
+	if row.Status != "kube-invalid" {
+		t.Errorf("unknown explicit annotation should stay invalid, got %q", row.Status)
+	}
+	if row.Reason == nil || !contains(*row.Reason, "ghost") {
+		t.Errorf("reason should call out the typo, got %v", row.Reason)
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(sub) > 0 && len(s) >= len(sub) && (s == sub || indexOf(s, sub) >= 0)
 }

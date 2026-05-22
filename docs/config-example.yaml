@@ -43,6 +43,32 @@ kube:
     - host: api.foo.example.com
       reason: "Endpoint under maintenance until 2026-06-01"
     - host: "*.staging.example.com"
+
+  # defaultPreset is the catch-all used when an ingress has no
+  # `monitor.togglecorp.com/kube.preset` annotation and no match[]
+  # rule fires. Omit to keep the original "kube-invalid: no preset
+  # annotation" behavior for un-annotated ingresses.
+  defaultPreset: public-web
+
+  # Conditional preset resolution. Rules evaluated in declaration
+  # order; first match wins. Both `namespace` and `host` are optional
+  # globs (path.Match semantics — `*` matches any run of characters,
+  # so `betaco-core-backend-*` matches `betaco-core-backend-1`). When
+  # both fields are set on a rule, they AND together.
+  #
+  # Resolution order overall:
+  #   1. /kube.preset annotation (explicit)
+  #   2. first matching match[] rule
+  #   3. defaultPreset
+  #   4. otherwise → kube-invalid
+  match:
+    - when: { namespace: "betaco-core-backend-*" }
+      preset: internal-api
+    - when: { namespace: "acme-*", host: "*.example.com" }
+      preset: public-web
+    - when: { host: "*.k8s.example.com" }
+      preset: internal-api
+
   presets:
     - slug: internal-api
       scheme: https
