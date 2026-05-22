@@ -9,6 +9,10 @@ coverage.txt
 # Local-dev secrets (template lives at deploy/local/.env.example).
 deploy/local/.env
 
+# Local-dev config (template lives at deploy/local/config.sample.yaml).
+# Bootstrapped from the sample by the dev-up recipes if missing.
+deploy/local/config.yaml
+
 # air autoreload working dir (lives at the repo root, populated inside
 # the dev container too).
 .air-tmp/

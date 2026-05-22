@@ -27,8 +27,12 @@ auto-discovers Ingress resources, and posts Block Kit alerts to Slack.
 
 ```bash
 cp deploy/local/.env.example deploy/local/.env   # optional; for Slack
-just dev-watch-up                                # autoreload via air
+just dev-watch-up                                # autoreload via air;
+                                                  # bootstraps a personal
+                                                  # config.yaml from the
+                                                  # checked-in sample
 open http://localhost:8080
+just validate-config                             # sanity-check the YAML
 ```
 
 This brings up Postgres + httpbin (as a probe target) + the

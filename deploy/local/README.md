@@ -25,6 +25,15 @@ just dev-watch-logs                              # follow rebuild output
 open http://localhost:8080                       # the UI
 ```
 
+On first run the `dev-up` recipes bootstrap `deploy/local/config.yaml`
+from `config.sample.yaml` (the local copy is gitignored — edit it
+freely without polluting `git status`). Validate it any time with:
+
+```bash
+just validate-config                            # checks deploy/local/config.yaml
+just validate-config path/to/other.yaml         # or any other file
+```
+
 Touch any `.go` or `.templ` file → air rebuilds + restarts the
 binary inside the container within ~1s. The Go module + build caches
 are kept in named volumes so warm rebuilds stay fast.
@@ -41,8 +50,10 @@ are kept in named volumes so warm rebuilds stay fast.
 ## Files
 
 - `docker-compose.yaml` — the stack definition.
-- `config.yaml` — sample config mounted into both `migrate` and `app`
-  at `/etc/toggle-monitor/config.yaml`. Edit freely.
+- `config.sample.yaml` — checked-in template config.
+- `config.yaml` — your personal copy mounted into both `migrate` and
+  `app` at `/etc/toggle-monitor/config.yaml`. **Gitignored.**
+  Bootstrapped from the sample by `just dev-up` / `just dev-watch-up`.
 - `.env.example` — secrets template. Copy to `.env` and edit. Real
   values aren't checked in.
 

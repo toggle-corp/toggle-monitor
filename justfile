@@ -23,6 +23,9 @@ go             := env_var_or_default("GO", "go")
 compose        := "docker compose -f deploy/local/docker-compose.yaml"
 compose_watch  := "docker compose -f deploy/local/docker-compose.yaml -f deploy/local/docker-compose.dev.yaml"
 
+local_config        := "deploy/local/config.yaml"
+local_config_sample := "deploy/local/config.sample.yaml"
+
 # Default recipe: list all recipes.
 default:
     @just --list
@@ -81,8 +84,24 @@ install-tailwind:
 
 # --- Local development (docker-compose) ------------------------------
 
+# Bootstrap deploy/local/config.yaml from the gitignored sample if it
+# doesn't exist yet. Idempotent — only copies the first time.
+_local-config:
+    @if [ ! -f {{local_config}} ]; then \
+        cp {{local_config_sample}} {{local_config}}; \
+        echo "Bootstrapped {{local_config}} from {{local_config_sample}}. Edit it freely; it's gitignored."; \
+    fi
+
+# Validate the local config (or a path passed as the first argument).
+# Wraps the binary's `validate` subcommand so YAML errors surface with
+# line numbers before you spin the stack up.
+validate-config *args: build _local-config
+    @path="${1:-{{local_config}}}"; \
+    echo "validating $path"; \
+    {{binary}} validate "$path"
+
 # Bring up the production-like local stack (built image, no autoreload).
-dev-up:
+dev-up: _local-config
     {{compose}} up --build -d
     @echo
     @echo "UI:        http://localhost:8080"
@@ -106,7 +125,7 @@ dev-restart-app:
     {{compose}} up --build -d app
 
 # Bring up the dev stack with autoreload (air watches .go + .templ).
-dev-watch-up:
+dev-watch-up: _local-config
     {{compose_watch}} up --build -d
     @echo
     @echo "UI:        http://localhost:8080   (autoreloads on source change)"
