@@ -538,6 +538,34 @@ func (r *Repo) MarkTemporaryPaused(ctx context.Context, slug string) error {
 	return nil
 }
 
+// ListChildrenOf returns the slugs of every active monitor whose
+// depends_on list contains `parentSlug` — i.e. the monitors that would
+// be marked temporary-paused if the parent went down. Used by the
+// Slack notifier to surface a "this alert pauses X" note on the
+// parent message. Sorted by slug for stable output. Archived monitors
+// are excluded.
+func (r *Repo) ListChildrenOf(ctx context.Context, parentSlug string) ([]string, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT slug
+		FROM monitors
+		WHERE $1 = ANY(depends_on) AND archived = FALSE
+		ORDER BY slug
+	`, parentSlug)
+	if err != nil {
+		return nil, fmt.Errorf("list children of %q: %w", parentSlug, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, fmt.Errorf("scan child slug: %w", err)
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // ApplySSLCheck mirrors ApplyCheck for the SSL state machine. Updates
 // the ssl_* columns and, when event != nil, appends an alert_event of
 // the matching SSL type (ssl_open / ssl_reminder / ssl_resolve). On

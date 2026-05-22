@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/toggle-corp/toggle-monitor/internal/alert"
@@ -16,12 +17,15 @@ type ChannelInfo struct {
 	Token secret.SecretString // bot token resolved from tokenEnv
 }
 
-// ThreadStore is the slim seam the notifier uses to persist the
-// uptime thread ref after posting the parent down message. Production
-// wires this to store.Repo.SetUptimeThread; tests inject a fake.
+// ThreadStore is the slim seam the notifier uses to persist Slack
+// thread refs (uptime + SSL) after posting the parent message, and to
+// look up which monitors depend on a given one (so the parent message
+// can call out "this alert will pause X, Y"). Production wires this
+// to *store.Repo; tests inject a fake.
 type ThreadStore interface {
 	SetUptimeThread(ctx context.Context, monitorSlug, channelID, ts string) error
 	SetSSLThread(ctx context.Context, monitorSlug, channelID, ts string) error
+	ListChildrenOf(ctx context.Context, parentSlug string) ([]string, error)
 }
 
 // Notifier turns alert events into Slack API calls.
@@ -131,6 +135,7 @@ func (n *Notifier) notifyOpen(ctx context.Context, ch ChannelInfo, mentions []st
 		ResponseBody: m.ResponseBody,
 		BodyMaxChars: n.bodyMaxChars,
 		DetailURL:    n.detailURL(m.Slug),
+		Note:         n.dependentsNote(ctx, m.Slug, "⏸ Pauses dependents"),
 	}
 	res, err := n.client.PostMessage(ctx, ch.Token, PostMessageInput{
 		ChannelID:   ch.ID,
@@ -198,6 +203,7 @@ func (n *Notifier) notifyResolve(ctx context.Context, ch ChannelInfo, mentions [
 			ResponseBody: m.ResponseBody,
 			BodyMaxChars: n.bodyMaxChars,
 			DetailURL:    n.detailURL(m.Slug),
+			Note:         n.dependentsNote(ctx, m.Slug, "▶ Resumes dependents"),
 		},
 		ResolveAt: ev.At,
 		Downtime:  ev.Downtime,
@@ -225,6 +231,29 @@ func (n *Notifier) detailURL(monitorSlug string) string {
 		return ""
 	}
 	return n.publicBase + "/monitor/" + monitorSlug
+}
+
+// dependentsNote looks up the children that depend on this monitor
+// and renders the cascading-effect line that the parent message
+// surfaces just above its footer. Returns "" when the monitor has
+// no dependents (the common case — most monitors are leaves) or when
+// the lookup fails (best-effort: a DB hiccup here shouldn't block the
+// Slack post). prefix is the verb-bearing lead, e.g.
+// "⏸ Pauses dependents" or "▶ Resumes dependents".
+func (n *Notifier) dependentsNote(ctx context.Context, parentSlug, prefix string) string {
+	children, err := n.store.ListChildrenOf(ctx, parentSlug)
+	if err != nil {
+		n.log.Warn("list children of monitor", "monitor", parentSlug, "error", err)
+		return ""
+	}
+	if len(children) == 0 {
+		return ""
+	}
+	parts := make([]string, len(children))
+	for i, c := range children {
+		parts[i] = "`" + c + "`"
+	}
+	return prefix + ": " + strings.Join(parts, ", ")
 }
 
 // NotifySSL dispatches the right Slack call(s) for an SSL event:

@@ -33,6 +33,7 @@ type DownInput struct {
 	ResponseBody string // already truncated by the caller; empty to skip inline body
 	BodyMaxChars int    // inline body only when len(ResponseBody) <= this
 	DetailURL    string // empty omits the [View details] footer link
+	Note         string // small dim line rendered above the footer; "" omits
 }
 
 // ResolveInput carries DownInput plus the resolved-at moment so the
@@ -149,6 +150,13 @@ func buildParentBlocks(in DownInput, header Block, extra []detailLine, footerPre
 	// Optional inline response body.
 	if in.ResponseBody != "" && len(in.ResponseBody) <= in.BodyMaxChars {
 		blocks = append(blocks, section("```\n"+in.ResponseBody+"\n```"))
+	}
+
+	// Small dim note (e.g. "⏸ Pauses dependents: `a`, `b`"). Rendered
+	// just above the footer so cascading-effect context sits close to
+	// the timestamp.
+	if in.Note != "" {
+		blocks = append(blocks, contextBlock(in.Note))
 	}
 
 	// Footer: smaller, dimmer (Slack context block). Italics on the
