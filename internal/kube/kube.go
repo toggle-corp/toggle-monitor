@@ -20,9 +20,21 @@ import (
 
 // SnapshotStore is the slim seam the watcher uses to persist
 // discovery rows. Production wires *store.Repo; tests inject a fake.
+//
+// PruneDiscoverySnapshot now returns the slugs of materialized
+// monitors that disappeared so the watcher can hand them off to a
+// RemovalSink for soft-delete + Slack closeout.
 type SnapshotStore interface {
 	UpsertDiscoverySnapshot(ctx context.Context, row store.DiscoverySnapshotRow) error
-	PruneDiscoverySnapshot(ctx context.Context, before time.Time) (int64, error)
+	PruneDiscoverySnapshot(ctx context.Context, before time.Time) (int64, []string, error)
+}
+
+// RemovalSink is the seam the watcher calls when a kube-discovered
+// monitor's ingress disappears from the cluster. Production wires
+// lifecycle.kubeRemovalSink (which soft-deletes the monitor + posts
+// the closeout + warning via the Slack notifier).
+type RemovalSink interface {
+	OnKubeMonitorRemoved(ctx context.Context, monitorSlug string)
 }
 
 // IngressLister abstracts the informer's lister so tests can provide a
@@ -46,6 +58,10 @@ type Watcher struct {
 	// host is recorded as kube-invalid with reason
 	// "no preset annotation".
 	materialize Materializer
+
+	// Optional removal sink: invoked once per materialized monitor
+	// whose snapshot row gets pruned. Nil disables the callback.
+	onRemoval RemovalSink
 }
 
 // Materializer is the seam Issue-9 plugs in to do the real
@@ -70,6 +86,7 @@ type Options struct {
 	AnnotationDomain string
 	ResyncInterval   time.Duration
 	Materializer     Materializer
+	RemovalSink      RemovalSink
 	Logger           *slog.Logger
 }
 
@@ -91,6 +108,7 @@ func New(s SnapshotStore, lister IngressLister, opts Options) *Watcher {
 		log:              opts.Logger,
 		now:              time.Now,
 		materialize:      opts.Materializer,
+		onRemoval:        opts.RemovalSink,
 	}
 }
 
@@ -135,9 +153,18 @@ func (w *Watcher) Reconcile(ctx context.Context) error {
 			}
 		}
 	}
-	// Sweep rows we didn't observe this pass.
-	if _, err := w.store.PruneDiscoverySnapshot(ctx, startedAt); err != nil {
+	// Sweep rows we didn't observe this pass. Each removed snapshot
+	// row that pointed at a materialized monitor flows through the
+	// optional RemovalSink so the lifecycle can soft-delete + post
+	// the closeout + warning.
+	_, prunedMonitors, err := w.store.PruneDiscoverySnapshot(ctx, startedAt)
+	if err != nil {
 		w.log.Warn("prune discovery snapshot", "error", err)
+	}
+	if w.onRemoval != nil {
+		for _, slug := range prunedMonitors {
+			w.onRemoval.OnKubeMonitorRemoved(ctx, slug)
+		}
 	}
 	if p, ok := w.materialize.(Pruner); ok {
 		p.Prune(startedAt)

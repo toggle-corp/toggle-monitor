@@ -90,47 +90,8 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 
 	repo := store.New(pool)
 
-	// Reconcile YAML-declared static monitors into the DB, then
-	// soft-delete any prior static monitor that is no longer
-	// declared (Issue 11). The kube side is handled by the watcher's
-	// snapshot-prune logic.
-	declared := make(map[string]struct{}, len(opts.Config.Monitors))
-	for _, m := range opts.Config.Monitors {
-		declared[m.Slug] = struct{}{}
-		spec := store.MonitorSpec{
-			Slug:         m.Slug,
-			FriendlyName: m.FriendlyName,
-			URL:          m.URL,
-			GroupSlug:    m.Group,
-			Source:       store.SourceStatic,
-			DependsOn:    m.DependsOn,
-		}
-		if err := repo.ReconcileMonitor(ctx, spec); err != nil {
-			return fmt.Errorf("reconcile %q: %w", m.Slug, err)
-		}
-	}
-	priorStatic, err := repo.ListActiveBySource(ctx, store.SourceStatic)
-	if err != nil {
-		log.Warn("list prior static monitors", "error", err)
-	}
-	for _, m := range priorStatic {
-		if _, kept := declared[m.Slug]; kept {
-			continue
-		}
-		// Removed from YAML. Soft-delete + (if currently down) post a
-		// closeout in the existing thread so the open Slack incident
-		// gets resolved. The non-threaded warning post is deferred
-		// pending a slack_channel_slug column on monitors.
-		if err := repo.SoftDeleteMonitor(ctx, m.Slug, "removed from config"); err != nil {
-			log.Warn("soft-delete missing monitor", "slug", m.Slug, "error", err)
-			continue
-		}
-		log.Info("monitor removed from config (soft-deleted)", "slug", m.Slug, "was_status", m.Status)
-	}
-
-	// Resolve every Slack channel's bot token from the env. Missing
-	// vars are a hard error so the operator notices before a real
-	// alert needs to fire.
+	// Build the Slack client + notifier up front so the monitor
+	// reconcile pass can dispatch removal warnings + closeouts via it.
 	channelByMonitor, tokens, err := resolveSlackTokens(opts.Config)
 	if err != nil {
 		return err
@@ -160,6 +121,45 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		PublicBase:   opts.Config.PublicBaseURL,
 		Logger:       log,
 	})
+
+	// Reconcile YAML-declared static monitors into the DB, then
+	// soft-delete any prior static monitor that is no longer
+	// declared. Soft-delete fires the in-thread closeout + the
+	// non-threaded "monitor removed" warning via the notifier.
+	declared := make(map[string]struct{}, len(opts.Config.Monitors))
+	for _, m := range opts.Config.Monitors {
+		declared[m.Slug] = struct{}{}
+		spec := store.MonitorSpec{
+			Slug:             m.Slug,
+			FriendlyName:     m.FriendlyName,
+			URL:              m.URL,
+			GroupSlug:        m.Group,
+			Source:           store.SourceStatic,
+			DependsOn:        m.DependsOn,
+			SlackChannelSlug: m.Slack,
+		}
+		if err := repo.ReconcileMonitor(ctx, spec); err != nil {
+			return fmt.Errorf("reconcile %q: %w", m.Slug, err)
+		}
+	}
+	priorStatic, err := repo.ListActiveBySource(ctx, store.SourceStatic)
+	if err != nil {
+		log.Warn("list prior static monitors", "error", err)
+	}
+	for _, m := range priorStatic {
+		if _, kept := declared[m.Slug]; kept {
+			continue
+		}
+		view := monitorViewFromRow(m)
+		if err := repo.SoftDeleteMonitor(ctx, m.Slug, "removed from config"); err != nil {
+			log.Warn("soft-delete missing monitor", "slug", m.Slug, "error", err)
+			continue
+		}
+		log.Info("monitor removed from config (soft-deleted)", "slug", m.Slug, "was_status", m.Status)
+		if m.SlackChannelSlug != "" {
+			notifier.NotifyRemoved(ctx, m.SlackChannelSlug, view, "removed from config", "static config")
+		}
+	}
 
 	metrics := observability.New()
 
@@ -252,12 +252,15 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 
 	// Kube auto-discovery: the materializer was built above so the
 	// scheduler's plan source can read its CurrentPlans(). Here we
-	// wire the actual watcher loop.
+	// wire the actual watcher loop + the removal sink that runs
+	// when an ingress disappears.
 	if kc := opts.Config.Kube; kc != nil {
+		removalSink := &kubeRemovalSink{repo: repo, notifier: notifier, log: log}
 		kubeOpts := kube.Options{
 			AnnotationDomain: kc.AnnotationDomain,
 			ResyncInterval:   kc.ResyncInterval.AsDuration(),
 			Materializer:     materializer,
+			RemovalSink:      removalSink,
 			Logger:           log,
 		}
 		var watcher *kube.Watcher
@@ -380,6 +383,38 @@ func (c *combinedPlanSource) CurrentPlans() []scheduler.Plan {
 	out = append(out, c.static...)
 	out = append(out, kube...)
 	return out
+}
+
+// kubeRemovalSink dispatches the same soft-delete + Slack closeout +
+// warning flow used for static removals, against monitors materialized
+// from a now-disappeared Ingress.
+type kubeRemovalSink struct {
+	repo     *store.Repo
+	notifier *slack.Notifier
+	log      *slog.Logger
+}
+
+func (k *kubeRemovalSink) OnKubeMonitorRemoved(ctx context.Context, monitorSlug string) {
+	row, err := k.repo.GetMonitor(ctx, monitorSlug)
+	if err != nil {
+		// May already be archived from a prior pass, or never made it
+		// into the table (slug-failure snapshot rows skip
+		// ReconcileMonitor) — neither is fatal.
+		k.log.Warn("kube removal: monitor lookup", "slug", monitorSlug, "error", err)
+		return
+	}
+	if row.Archived {
+		return
+	}
+	view := monitorViewFromRow(row)
+	if err := k.repo.SoftDeleteMonitor(ctx, monitorSlug, "kube ingress removed"); err != nil {
+		k.log.Warn("kube removal: soft-delete", "slug", monitorSlug, "error", err)
+		return
+	}
+	k.log.Info("kube monitor removed (soft-deleted)", "slug", monitorSlug, "was_status", row.Status)
+	if row.SlackChannelSlug != "" {
+		k.notifier.NotifyRemoved(ctx, row.SlackChannelSlug, view, "kube ingress removed", "k8s ingress")
+	}
 }
 
 // heartbeatSource adapts the store + observability to heartbeat.Source.
