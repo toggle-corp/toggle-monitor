@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "toggle-monitor.fullname" . }}
+  labels: {{- include "toggle-monitor.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    # Generated from values.yaml at install/upgrade time.
+    # Edit `config:` in your values.yaml — never edit this directly.
+
+    displayTimezone: {{ .Values.config.displayTimezone | quote }}
+    {{- if .Values.config.publicBaseURL }}
+    publicBaseURL: {{ .Values.config.publicBaseURL | quote }}
+    {{- end }}
+    dbBodyMaxChars: {{ .Values.config.dbBodyMaxChars }}
+
+    database:
+      host: {{ .Values.postgres.host | quote }}
+      port: {{ .Values.postgres.port }}
+      user: {{ .Values.postgres.user | quote }}
+      name: {{ .Values.postgres.name | quote }}
+      sslMode: {{ .Values.postgres.sslMode | quote }}
+      passwordEnv: DB_PASSWORD
+
+    ui:
+      pageSize:
+        homepageAlerts: {{ .Values.config.ui.pageSize.homepageAlerts }}
+        monitorListing: {{ .Values.config.ui.pageSize.monitorListing }}
+        monitorHistory: {{ .Values.config.ui.pageSize.monitorHistory }}
+        discoveryListing: {{ .Values.config.ui.pageSize.discoveryListing }}
+      maxPerPage: {{ .Values.config.ui.maxPerPage }}
+
+    theme:
+      defaultGroupColor: {{ .Values.config.theme.defaultGroupColor | quote }}
+
+    httpClient:
+      userAgent: {{ .Values.config.httpClient.userAgent | quote }}
+
+    {{- with .Values.config.heartbeat }}
+    heartbeat:
+      url: {{ .url | quote }}
+      interval: {{ .interval | quote }}
+      failOnStalledWorker: {{ .failOnStalledWorker }}
+    {{- end }}
+
+    {{- with .Values.config.kube }}
+    kube:
+      annotationDomain: {{ .annotationDomain | quote }}
+      resyncInterval: {{ .resyncInterval | quote }}
+      {{- with .pause }}
+      pause:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .presets }}
+      presets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+
+    slack:
+      bodyMaxChars: {{ .Values.config.slack.bodyMaxChars }}
+      channels:
+        {{- toYaml .Values.config.slack.channels | nindent 8 }}
+      {{- with .Values.config.slack.userMapping }}
+      userMapping:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+    groups:
+      {{- toYaml .Values.config.groups | nindent 6 }}
+
+    {{- with .Values.config.monitors }}
+    monitors:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}

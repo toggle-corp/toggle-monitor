@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "toggle-monitor.fullname" . }}
+  labels: {{- include "toggle-monitor.labels" . | nindent 4 }}
+  {{- if .Values.reloader.enabled }}
+  annotations:
+    # stakater/reloader restarts the pod when the ConfigMap or referenced
+    # Secrets change. Required so a YAML config edit (or a Slack-token
+    # rotation) takes effect without a manual `kubectl rollout restart`.
+    reloader.stakater.com/auto: "true"
+  {{- end }}
+spec:
+  # v1 is single-replica by design. Recreate strategy ensures the old
+  # worker fully exits before the new one starts.
+  replicas: {{ .Values.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {{- include "toggle-monitor.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "toggle-monitor.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "toggle-monitor.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      containers:
+        - name: toggle-monitor
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - serve
+            - --config
+            - /etc/toggle-monitor/config.yaml
+            - --listen
+            - ":8080"
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "toggle-monitor.dbSecretName" . }}
+                  key: {{ include "toggle-monitor.dbSecretKey" . }}
+            - name: SLACK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "toggle-monitor.slackSecretName" . }}
+                  key: {{ include "toggle-monitor.slackSecretKey" . }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe: {{- toYaml .Values.probes.liveness | nindent 12 }}
+          readinessProbe: {{- toYaml .Values.probes.readiness | nindent 12 }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/toggle-monitor
+              readOnly: true
+          # Give the worker enough time to drain in-flight checks +
+          # emit the final shutdown heartbeat.
+          terminationGracePeriodSeconds: 30
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "toggle-monitor.fullname" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}

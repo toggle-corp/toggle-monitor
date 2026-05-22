@@ -1,0 +1,156 @@
+# Default values for toggle-monitor.
+
+image:
+  repository: ghcr.io/toggle-corp/toggle-monitor
+  tag: ""                                     # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+# v1 is single-replica by design (the worker is a single in-process loop).
+# Horizontal scale-out is deferred — keep this at 1 unless you know what
+# you're doing. The deployment uses strategy: Recreate so the old pod
+# fully exits before the new one starts (avoids two workers racing).
+replicas: 1
+
+# Restart pods when the ConfigMap or Secret changes. Requires
+# stakater/reloader to be installed cluster-wide. Set to false if you
+# don't have reloader; you'll need to roll the deployment manually
+# after a config edit.
+reloader:
+  enabled: true
+
+# The ServiceAccount the Deployment uses. With ingress auto-discovery
+# enabled, it gets a cluster-wide ClusterRole granting
+# get/list/watch on networking.k8s.io/v1 Ingress.
+serviceAccount:
+  create: true
+  name: ""                                    # defaults to fullname template
+
+rbac:
+  # When kube auto-discovery is on, the ClusterRole + ClusterRoleBinding
+  # are required. Set to false only if you scope discovery away
+  # (i.e., you've removed the kube block from config).
+  ingressWatch: true
+
+# The Postgres connection. SecretName, when set, takes precedence —
+# the chart pulls DB_PASSWORD from there. Otherwise password is the
+# inline value (NOT recommended for production).
+postgres:
+  host: cnpg-cluster-rw.cnpg-system.svc.cluster.local
+  port: 5432
+  user: toggle_monitor
+  name: toggle_monitor
+  sslMode: require
+  passwordSecret:
+    # External Secret: name + key of an existing Secret holding the DB
+    # password under `password`. Recommended.
+    name: ""                                  # e.g. "toggle-monitor-db"
+    key: password
+  # Inline fallback. NOT recommended; use passwordSecret in production.
+  password: ""
+
+# Slack workspace token. Same pattern as postgres.
+slack:
+  tokenSecret:
+    name: ""                                  # e.g. "toggle-monitor-slack"
+    key: bot-token
+  token: ""                                   # inline fallback (avoid)
+
+# The toggle-monitor YAML config, mounted into the pod at
+# /etc/toggle-monitor/config.yaml via a ConfigMap. Edit this block to
+# describe your actual monitors / groups / Slack channels.
+config:
+  displayTimezone: UTC
+  publicBaseURL: ""                           # e.g. https://monitor.internal.example.com
+  dbBodyMaxChars: 4000
+  ui:
+    pageSize:
+      homepageAlerts: 20
+      monitorListing: 50
+      monitorHistory: 50
+      discoveryListing: 50
+    maxPerPage: 200
+  theme:
+    defaultGroupColor: "#64748b"
+  httpClient:
+    userAgent: "toggle-monitor/0.1"
+  heartbeat: null                             # uncomment to enable; matches schema
+  kube:
+    annotationDomain: monitor.togglecorp.com
+    resyncInterval: 30m
+    pause: []
+    presets: []
+  slack:
+    bodyMaxChars: 200
+    channels:
+      - slug: ops-alerts
+        channelId: REPLACE_ME                 # e.g. C0123ABCD
+        tokenEnv: SLACK_BOT_TOKEN
+    userMapping: {}
+  groups:
+    - slug: kube-discovered
+      friendlyName: Kube Discovered
+  monitors: []
+
+# Container service + ingress for the UI. Restrict the ingress to your
+# internal network — there is no auth in v1.
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # Example: restrict to local network via nginx whitelist.
+    # nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8,192.168.0.0/16"
+  hosts:
+    - host: monitor.internal.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Resource requests + limits. Reasonable defaults for ~200 monitors.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# K8s probes use the binary's /healthz + /readyz endpoints.
+probes:
+  liveness:
+    httpGet:
+      path: /healthz
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  readiness:
+    httpGet:
+      path: /readyz
+      port: http
+    initialDelaySeconds: 3
+    periodSeconds: 5
+
+# Optional ServiceMonitor for kube-prometheus-stack. Off by default.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+
+# ArgoCD PreSync hook: a one-shot Job that runs `toggle-monitor migrate`
+# before the new app pod rolls out. Disable if you're not on ArgoCD —
+# you'll need to apply migrations another way (e.g. a manual job).
+migrate:
+  argoCDPreSyncHook: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

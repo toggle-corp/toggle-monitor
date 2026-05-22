@@ -1,0 +1,33 @@
+toggle-monitor {{ .Chart.AppVersion }} is installing into namespace {{ .Release.Namespace }}.
+
+The ArgoCD PreSync (or Helm pre-install) hook runs `toggle-monitor migrate`
+against {{ .Values.postgres.host }}:{{ .Values.postgres.port }}/{{ .Values.postgres.name }}
+before the app pod rolls out.
+
+Health endpoints:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "toggle-monitor.fullname" . }} 8080:{{ .Values.service.port }}
+  curl http://localhost:8080/healthz
+  curl http://localhost:8080/readyz
+  curl http://localhost:8080/metrics
+  open http://localhost:8080/
+
+{{- if not .Values.ingress.enabled }}
+
+Ingress is disabled. Either enable it (ingress.enabled=true) and gate
+access via your network policy / nginx whitelist annotations, OR keep
+the Service ClusterIP-only and reach the UI via port-forward.
+{{- end }}
+
+{{- if and (not .Values.postgres.passwordSecret.name) (not .Values.postgres.password) }}
+
+WARNING: no postgres password configured. Set either
+postgres.passwordSecret.name (recommended — external Secret) or
+postgres.password (NOT recommended — inline value).
+{{- end }}
+
+{{- if and (not .Values.slack.tokenSecret.name) (not .Values.slack.token) }}
+
+WARNING: no slack bot token configured. Slack output will fail at
+runtime; the workspace check will surface the failure in the UI but
+won't block startup.
+{{- end }}

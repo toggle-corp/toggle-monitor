@@ -1,0 +1,12 @@
+apiVersion: v2
+name: toggle-monitor
+description: Kubernetes-native uptime + SSL monitor with Slack alerts and ingress auto-discovery.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/toggle-corp/toggle-monitor
+sources:
+  - https://github.com/toggle-corp/toggle-monitor
+kubeVersion: ">=1.24-0"
+maintainers:
+  - name: toggle-corp
