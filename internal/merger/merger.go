@@ -13,6 +13,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 
 	"github.com/toggle-corp/toggle-monitor/internal/config"
+	"github.com/toggle-corp/toggle-monitor/internal/proxypool"
 	"github.com/toggle-corp/toggle-monitor/internal/scheduler"
 	"github.com/toggle-corp/toggle-monitor/internal/slack"
 	"github.com/toggle-corp/toggle-monitor/internal/slug"
@@ -45,10 +46,12 @@ type Materializer struct {
 	staticSlugs map[string]struct{}
 
 	// httpClientUA + slack.UserMapping carry through into the Plan
-	// for each materialized kube monitor.
+	// for each materialized kube monitor. proxies resolves preset
+	// proxy slugs to the pre-built socks dialers.
 	userAgent   string
 	userMapping map[string]string
 	bodyMaxBase int
+	proxies     *proxypool.Pool
 
 	mu        sync.RWMutex
 	kubePlans map[string]planEntry
@@ -61,8 +64,9 @@ type planEntry struct {
 
 // New builds a Materializer from the loaded YAML. staticSlugs is the
 // set of slugs declared in config.Monitors — used to detect kube ↔
-// static collisions.
-func New(s MonitorStore, cfg config.Config) *Materializer {
+// static collisions. proxies is the pre-resolved proxy pool; nil is
+// acceptable when no proxies are configured.
+func New(s MonitorStore, cfg config.Config, proxies *proxypool.Pool) *Materializer {
 	if cfg.Kube == nil {
 		return nil
 	}
@@ -83,6 +87,7 @@ func New(s MonitorStore, cfg config.Config) *Materializer {
 		userAgent:   cfg.HTTPClient.UserAgent,
 		userMapping: cfg.Slack.UserMapping,
 		bodyMaxBase: cfg.Slack.BodyMaxChars,
+		proxies:     proxies,
 		kubePlans:   map[string]planEntry{},
 	}
 }
@@ -213,6 +218,7 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 		RetryBackoff:           preset.RetryBackoff.AsDuration(),
 		FollowRedirects:        preset.FollowRedirects,
 		TLSInsecureSkipVerify:  preset.TLSInsecureSkipVerify,
+		ProxyDialer:            m.proxies.Get(preset.Proxy),
 		UserAgent:              m.userAgent,
 		ReminderInterval:       preset.ReminderInterval.AsDuration(),
 		ChannelSlug:            preset.Slack,

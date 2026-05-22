@@ -28,6 +28,7 @@ import (
 	"github.com/toggle-corp/toggle-monitor/internal/merger"
 	"github.com/toggle-corp/toggle-monitor/internal/migrate"
 	"github.com/toggle-corp/toggle-monitor/internal/observability"
+	"github.com/toggle-corp/toggle-monitor/internal/proxypool"
 	"github.com/toggle-corp/toggle-monitor/internal/scheduler"
 	"github.com/toggle-corp/toggle-monitor/internal/secret"
 	"github.com/toggle-corp/toggle-monitor/internal/slack"
@@ -90,6 +91,14 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	}
 
 	repo := store.New(pool)
+
+	// Resolve outbound proxies once at startup. Failures here are
+	// operator-actionable (unset env var, bad address) and warrant a
+	// clean shutdown rather than runtime surprises.
+	proxies, err := proxypool.Build(opts.Config.Proxies)
+	if err != nil {
+		return fmt.Errorf("build proxy pool: %w", err)
+	}
 
 	// Build the Slack client + notifier up front so the monitor
 	// reconcile pass can dispatch removal warnings + closeouts via it.
@@ -220,7 +229,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	// dynamic plan source below.
 	var materializer *merger.Materializer
 	if opts.Config.Kube != nil {
-		materializer = merger.New(repo, opts.Config)
+		materializer = merger.New(repo, opts.Config, proxies)
 	}
 
 	sched := scheduler.New(repo,
@@ -229,7 +238,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		scheduler.WithSSLSink(buildSSLSink(notifier)),
 		scheduler.WithMetrics(metrics),
 	)
-	staticPlans := buildPlans(opts.Config)
+	staticPlans := buildPlans(opts.Config, proxies)
 	planSource := &combinedPlanSource{
 		static:       staticPlans,
 		materializer: materializer,
@@ -353,7 +362,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	return nil
 }
 
-func buildPlans(cfg config.Config) []scheduler.Plan {
+func buildPlans(cfg config.Config, proxies *proxypool.Pool) []scheduler.Plan {
 	groupNotify := map[string][]string{}
 	for _, g := range cfg.Groups {
 		if len(g.Notify) > 0 {
@@ -381,6 +390,7 @@ func buildPlans(cfg config.Config) []scheduler.Plan {
 			RetryBackoff:           m.RetryBackoff.AsDuration(),
 			FollowRedirects:        m.FollowRedirects,
 			TLSInsecureSkipVerify:  m.TLSInsecureSkipVerify,
+			ProxyDialer:            proxies.Get(m.Proxy),
 			UserAgent:              cfg.HTTPClient.UserAgent,
 			ReminderInterval:       m.ReminderInterval.AsDuration(),
 			ChannelSlug:            m.Slack,

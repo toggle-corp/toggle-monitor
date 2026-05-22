@@ -2,13 +2,29 @@ package httpcheck_test
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/toggle-corp/toggle-monitor/internal/httpcheck"
 )
+
+// recordingDialer is a proxy.Dialer that records how many times it was
+// asked to dial. It always errors so the probe fails fast — the test
+// only needs to confirm the transport routed through our dialer
+// instead of the default direct dial.
+type recordingDialer struct {
+	calls atomic.Int32
+}
+
+func (r *recordingDialer) Dial(network, addr string) (net.Conn, error) {
+	r.calls.Add(1)
+	return nil, errors.New("recordingDialer: refusing to dial in test")
+}
 
 func TestCheck_sendsConfiguredUserAgentAndMethod(t *testing.T) {
 	var gotMethod, gotUA string
@@ -170,6 +186,28 @@ func TestCheck_TLSInsecureSkipVerify_acceptsSelfSignedCert(t *testing.T) {
 	}
 	if ok.StatusCode != 200 {
 		t.Errorf("status: got %d, want 200", ok.StatusCode)
+	}
+}
+
+// TestCheck_ProxyDialer_routesThroughDialer confirms that when a
+// ProxyDialer is set on the Config, the transport routes through it
+// instead of dialing the URL directly. The dialer refuses to connect
+// (returns an error) — the test passes if and only if it was invoked.
+func TestCheck_ProxyDialer_routesThroughDialer(t *testing.T) {
+	dialer := &recordingDialer{}
+
+	res := httpcheck.Check(context.Background(), httpcheck.Config{
+		URL:                 "http://does.not.matter.example/health",
+		Method:              "GET",
+		AcceptedStatusCodes: []int{200},
+		Timeout:             2 * time.Second,
+		ProxyDialer:         dialer,
+	})
+	if dialer.calls.Load() == 0 {
+		t.Fatal("ProxyDialer was never invoked; probe must route through it")
+	}
+	if res.Error == "" {
+		t.Errorf("expected probe to fail (dialer refuses); got no error")
 	}
 }
 

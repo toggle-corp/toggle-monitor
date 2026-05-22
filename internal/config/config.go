@@ -39,8 +39,20 @@ type Config struct {
 	Heartbeat       *Heartbeat `yaml:"heartbeat,omitempty"` // optional; nil disables the deadman loop
 	Kube            *Kube      `yaml:"kube,omitempty"`      // optional; nil disables auto-discovery
 	Slack           Slack      `yaml:"slack"`
+	Proxies         []Proxy    `yaml:"proxies,omitempty"`
 	Groups          []Group    `yaml:"groups"`
 	Monitors        []Monitor  `yaml:"monitors"`
+}
+
+// Proxy is one outbound proxy that monitors can route their probes
+// through. v1 supports SOCKS5 only.
+type Proxy struct {
+	Slug        string `yaml:"slug"`
+	Protocol    string `yaml:"protocol"` // "socks5" — only supported value in v1
+	Server      string `yaml:"server"`
+	Port        int    `yaml:"port,omitempty"`        // defaults to 1080 for socks5
+	Username    string `yaml:"username,omitempty"`    // optional; if set without passwordEnv, auth is username-only
+	PasswordEnv string `yaml:"passwordEnv,omitempty"` // env var name (env-resolved like every other secret); requires username
 }
 
 // Heartbeat is the outbound deadman heartbeat block. When nil, the
@@ -81,6 +93,7 @@ type KubePreset struct {
 	RetryBackoff           Duration `yaml:"retryBackoff"`
 	FollowRedirects        bool     `yaml:"followRedirects"`
 	TLSInsecureSkipVerify  bool     `yaml:"tlsInsecureSkipVerify,omitempty"`
+	Proxy                  string   `yaml:"proxy,omitempty"`
 	ReminderInterval       Duration `yaml:"reminderInterval"`
 	SSLAlertThreshold      Duration `yaml:"sslAlertThreshold"`
 	SSLEscalationThreshold Duration `yaml:"sslEscalationThreshold"`
@@ -165,6 +178,7 @@ type Monitor struct {
 	// "do not track SSL expiry": the monitor stays at ssl-skipped and
 	// the SSL state machine is bypassed.
 	TLSInsecureSkipVerify bool     `yaml:"tlsInsecureSkipVerify,omitempty"`
+	Proxy                 string   `yaml:"proxy,omitempty"` // proxies[].slug; routes the probe through that proxy
 	ReminderInterval      Duration `yaml:"reminderInterval"`
 	Slack                 string   `yaml:"slack"`               // channel slug
 	Notify                []string `yaml:"notify,omitempty"`    // raw <...> Slack markup or userMapping slug
@@ -214,8 +228,9 @@ func Load(data []byte) (Config, error) {
 var knownTopLevelKeys = map[string]struct{}{
 	"displayTimezone": {}, "publicBaseURL": {}, "dbBodyMaxChars": {},
 	"kube": {}, "ui": {}, "theme": {}, "httpClient": {}, "heartbeat": {}, "database": {},
-	"slack":  {},
-	"groups": {}, "monitors": {},
+	"slack":   {},
+	"proxies": {},
+	"groups":  {}, "monitors": {},
 }
 
 func checkTopLevelKeys(root *yaml.Node) error {
@@ -288,6 +303,38 @@ func (c *checker) validate(cfg *Config) {
 		}
 	}
 
+	// proxies: per-entry validation + slug uniqueness. Built early so
+	// both kube presets and static monitors can reference proxy slugs.
+	seenProxies := map[string]struct{}{}
+	for i, p := range cfg.Proxies {
+		base := []any{"proxies", i}
+		if err := slug.Validate(p.Slug); err != nil {
+			c.errf(append(base, "slug"), "%v", err)
+		}
+		if _, dup := seenProxies[p.Slug]; dup {
+			c.errf(append(base, "slug"), "duplicate slug %q", p.Slug)
+		}
+		seenProxies[p.Slug] = struct{}{}
+		if p.Protocol != "socks5" {
+			c.errf(append(base, "protocol"), "must be %q (only supported value), got %q", "socks5", p.Protocol)
+		}
+		if p.Server == "" {
+			c.errf(append(base, "server"), "required")
+		}
+		if p.Port < 0 || p.Port > 65535 {
+			c.errf(append(base, "port"), "must be in 1..65535 (or 0 for the protocol default), got %d", p.Port)
+		}
+		if p.PasswordEnv != "" {
+			if !envVarNamePattern.MatchString(p.PasswordEnv) {
+				c.errf(append(base, "passwordEnv"),
+					"%q must match ^[A-Z][A-Z0-9_]*$ (do not interpolate ${...} into this field)", p.PasswordEnv)
+			}
+			if p.Username == "" {
+				c.errf(append(base, "passwordEnv"), "requires username to be set")
+			}
+		}
+	}
+
 	if cfg.Kube != nil {
 		if cfg.Kube.AnnotationDomain == "" {
 			c.errf([]any{"kube", "annotationDomain"}, "required when kube block is set")
@@ -307,6 +354,11 @@ func (c *checker) validate(cfg *Config) {
 			seenPresets[p.Slug] = struct{}{}
 			if p.Scheme != "" && p.Scheme != "http" && p.Scheme != "https" {
 				c.errf(append(base, "scheme"), "must be http or https, got %q", p.Scheme)
+			}
+			if p.Proxy != "" {
+				if _, ok := seenProxies[p.Proxy]; !ok {
+					c.errf(append(base, "proxy"), "unknown proxy slug %q", p.Proxy)
+				}
 			}
 		}
 	}
@@ -390,6 +442,11 @@ func (c *checker) validate(cfg *Config) {
 		seenMonitors[m.Slug] = struct{}{}
 		if _, ok := seenGroups[m.Group]; !ok {
 			c.errf(append(base, "group"), "unknown group %q", m.Group)
+		}
+		if m.Proxy != "" {
+			if _, ok := seenProxies[m.Proxy]; !ok {
+				c.errf(append(base, "proxy"), "unknown proxy slug %q", m.Proxy)
+			}
 		}
 		if _, ok := seenSlackChannels[m.Slack]; !ok {
 			c.errf(append(base, "slack"), "unknown channel slug %q", m.Slack)

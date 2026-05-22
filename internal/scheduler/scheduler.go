@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/net/proxy"
+
 	"github.com/toggle-corp/toggle-monitor/internal/alert"
 	"github.com/toggle-corp/toggle-monitor/internal/httpcheck"
 	"github.com/toggle-corp/toggle-monitor/internal/store"
@@ -36,11 +38,16 @@ type Plan struct {
 	// the probe — for HTTPS endpoints with self-signed certs we
 	// intentionally trust. Implies SSL state is forced to skipped.
 	TLSInsecureSkipVerify bool
-	UserAgent             string
-	ReminderInterval      time.Duration
-	ChannelSlug           string   // slack destination slug; empty disables Slack output
-	Mentions              []string // pre-resolved raw Slack markup (parent-only)
-	DependsOn             []string // upstream static-monitor slugs; any of them down pauses this monitor
+	// ProxyDialer routes the probe through an outbound proxy
+	// (currently SOCKS5). Resolved from the YAML `proxies:` block at
+	// startup, looked up by the lifecycle per monitor's proxy slug.
+	// nil → direct dial.
+	ProxyDialer      proxy.Dialer
+	UserAgent        string
+	ReminderInterval time.Duration
+	ChannelSlug      string   // slack destination slug; empty disables Slack output
+	Mentions         []string // pre-resolved raw Slack markup (parent-only)
+	DependsOn        []string // upstream static-monitor slugs; any of them down pauses this monitor
 
 	// SSL thresholds; SSL evaluation is skipped when all are zero
 	// (which is also the case for static HTTP monitors).
@@ -265,6 +272,7 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 		Timeout:               p.Timeout,
 		FollowRedirects:       p.FollowRedirects,
 		TLSInsecureSkipVerify: p.TLSInsecureSkipVerify,
+		ProxyDialer:           p.ProxyDialer,
 		UserAgent:             p.UserAgent,
 	}
 

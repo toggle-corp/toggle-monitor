@@ -228,6 +228,76 @@ func TestLoad_acceptsGroupNotify(t *testing.T) {
 	}
 }
 
+// TestLoad_proxies_acceptsValidBlockAndMonitorReference confirms the
+// happy path: a proxies[] block + a monitor referencing one of those
+// slugs validates cleanly and ends up on the loaded config.
+func TestLoad_proxies_acceptsValidBlockAndMonitorReference(t *testing.T) {
+	data := withReplaced(t,
+		"groups:\n",
+		"proxies:\n"+
+			"  - slug: corp\n"+
+			"    protocol: socks5\n"+
+			"    server: proxy.internal.example\n"+
+			"    port: 1080\n"+
+			"groups:\n")
+	data = withReplacedBytes(t, data, "    slack: ops-alerts", "    proxy: corp\n    slack: ops-alerts")
+
+	cfg, err := config.Load(data)
+	if err != nil {
+		t.Fatalf("expected proxies block to load cleanly, got: %v", err)
+	}
+	if len(cfg.Proxies) != 1 || cfg.Proxies[0].Slug != "corp" {
+		t.Errorf("expected 1 proxy 'corp', got %+v", cfg.Proxies)
+	}
+	if cfg.Monitors[0].Proxy != "corp" {
+		t.Errorf("expected Monitors[0].Proxy == 'corp', got %q", cfg.Monitors[0].Proxy)
+	}
+}
+
+// TestLoad_proxies_rejectsMonitorReferencingUnknownProxy: forward refs
+// to undeclared proxy slugs must fail validation, with a clear error.
+func TestLoad_proxies_rejectsMonitorReferencingUnknownProxy(t *testing.T) {
+	data := withReplaced(t,
+		"    slack: ops-alerts",
+		"    proxy: ghost\n    slack: ops-alerts")
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected unknown-proxy reference to fail, got success")
+	}
+	if !strings.Contains(err.Error(), "unknown proxy slug") {
+		t.Errorf("expected 'unknown proxy slug' in error, got: %v", err)
+	}
+}
+
+// TestLoad_proxies_rejectsUnsupportedProtocol enforces the protocol
+// enum (v1: socks5 only).
+func TestLoad_proxies_rejectsUnsupportedProtocol(t *testing.T) {
+	data := withReplaced(t,
+		"groups:\n",
+		"proxies:\n"+
+			"  - slug: corp\n"+
+			"    protocol: http\n"+
+			"    server: proxy.internal.example\n"+
+			"    port: 8080\n"+
+			"groups:\n")
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected http protocol to be rejected, got success")
+	}
+	if !strings.Contains(err.Error(), "socks5") {
+		t.Errorf("expected error to mention 'socks5', got: %v", err)
+	}
+}
+
+// withReplacedBytes is the byte-slice cousin of withReplaced.
+func withReplacedBytes(t *testing.T, data []byte, old, new string) []byte {
+	t.Helper()
+	if !strings.Contains(string(data), old) {
+		t.Fatalf("test setup: data does not contain %q", old)
+	}
+	return []byte(strings.Replace(string(data), old, new, 1))
+}
+
 // TestLoad_tlsInsecureSkipVerify_relaxesSSLThresholdsForHTTPS:
 // for an HTTPS monitor with self-signed cert support, the SSL
 // thresholds must not be required (the SSL state machine is bypassed

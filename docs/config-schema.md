@@ -138,6 +138,35 @@ slack:
 
 ---
 
+## 2b. Proxies (optional)
+
+Declares outbound proxies that monitors can route their probes
+through. Currently only SOCKS5 is supported.
+
+```yaml
+proxies:
+  - slug: corp                              # referenced by monitors[].proxy / kube.presets[].proxy
+    protocol: socks5                        # only supported value in v1
+    server: proxy.internal.example
+    port: 1080                              # optional; defaults to 1080 for socks5
+    username: monitor-bot                   # optional, plain text
+    passwordEnv: PROXY_PASSWORD             # optional; env-resolved like every other secret
+```
+
+| Field | Type | Required | Constraint | Notes |
+|---|---|---|---|---|
+| `proxies[].slug` | string | ✓ | slug regex; unique across `proxies[]` | |
+| `proxies[].protocol` | string | ✓ | `socks5` (only supported in v1) | |
+| `proxies[].server` | string | ✓ | non-empty | hostname or IP |
+| `proxies[].port` | int | — | 1..65535 | `0` / omitted → protocol default (1080 for socks5) |
+| `proxies[].username` | string | — | | plain text; optional |
+| `proxies[].passwordEnv` | string | — if `username` is absent | env-var name; requires `username` | env-resolved (consistent with `tokenEnv` / `database.passwordEnv`) |
+
+Pool is built once at startup; an empty / unset env var fails the
+startup, not the runtime tick.
+
+---
+
 ## 3. Groups
 
 ```yaml
@@ -228,6 +257,7 @@ kube:
 | `kube.presets[].retryBackoff` | duration | ✓ | >= 1s | |
 | `kube.presets[].followRedirects` | bool | ✓ | | |
 | `kube.presets[].tlsInsecureSkipVerify` | bool | — | default `false` | Same semantics as `monitors[].tlsInsecureSkipVerify`. |
+| `kube.presets[].proxy` | string | — | resolves to a `proxies[].slug` | Same semantics as `monitors[].proxy`. |
 | `kube.presets[].reminderInterval` | duration | ✓ | >= 1h | |
 | `kube.presets[].sslAlertThreshold` | duration | ✓ | > `sslEscalationThreshold` | |
 | `kube.presets[].sslEscalationThreshold` | duration | ✓ | > 0 | |
@@ -298,6 +328,7 @@ monitors:
 | `monitors[].retryBackoff` | duration | ✓ | >= 1s | |
 | `monitors[].followRedirects` | bool | ✓ | | |
 | `monitors[].tlsInsecureSkipVerify` | bool | — | default `false` | Skips Go's TLS chain verification on the probe. Use only for HTTPS endpoints with self-signed certs you intentionally trust. Implies "do not track SSL expiry": SSL state stays `ssl-skipped`. |
+| `monitors[].proxy` | string | — | resolves to a `proxies[].slug` | Routes the probe through that proxy (SOCKS5). Omit / empty for direct dial. |
 | `monitors[].reminderInterval` | duration | ✓ | >= 1h | |
 | `monitors[].sslAlertThreshold` | duration | ✓ if URL is HTTPS and `tlsInsecureSkipVerify: false` | > `sslEscalationThreshold` | Conditionally required |
 | `monitors[].sslEscalationThreshold` | duration | ✓ if URL is HTTPS and `tlsInsecureSkipVerify: false` | > 0 | Conditionally required |

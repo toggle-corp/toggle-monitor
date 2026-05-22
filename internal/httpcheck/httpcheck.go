@@ -7,8 +7,11 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
+
+	"golang.org/x/net/proxy"
 )
 
 // Config describes a single check probe.
@@ -22,7 +25,10 @@ type Config struct {
 	// HTTPS probes (self-signed / private-CA endpoints we trust by
 	// configuration). Has no effect on plain HTTP URLs.
 	TLSInsecureSkipVerify bool
-	UserAgent             string
+	// ProxyDialer routes the probe through an outbound proxy
+	// (currently SOCKS5). nil → direct dial.
+	ProxyDialer proxy.Dialer
+	UserAgent   string
 }
 
 // Result is the outcome of one probe.
@@ -51,13 +57,28 @@ type TLSInfo struct {
 // state machine).
 func Check(ctx context.Context, cfg Config) Result {
 	client := &http.Client{Timeout: cfg.Timeout}
-	if cfg.TLSInsecureSkipVerify {
+	if cfg.TLSInsecureSkipVerify || cfg.ProxyDialer != nil {
 		// Clone the default transport so connection pooling and
-		// timeouts stay at Go's defaults; only override the TLS
-		// config. The caller has opted in to skipping verification
-		// per-monitor; gosec disagrees but the choice is deliberate.
+		// timeouts stay at Go's defaults; only override what we need.
 		tr := http.DefaultTransport.(*http.Transport).Clone()
-		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // per-monitor opt-in for self-signed certs
+		if cfg.TLSInsecureSkipVerify {
+			//nolint:gosec // per-monitor opt-in for self-signed certs
+			tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		}
+		if cfg.ProxyDialer != nil {
+			// Prefer the context-aware Dial when the underlying
+			// proxy.Dialer implements it (SOCKS5 from x/net/proxy
+			// does). Falls back to the legacy Dial otherwise — that
+			// loses cancel propagation but keeps the probe working.
+			if cd, ok := cfg.ProxyDialer.(proxy.ContextDialer); ok {
+				tr.DialContext = cd.DialContext
+			} else {
+				dialer := cfg.ProxyDialer
+				tr.DialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
+					return dialer.Dial(network, addr)
+				}
+			}
+		}
 		client.Transport = tr
 	}
 	if !cfg.FollowRedirects {
