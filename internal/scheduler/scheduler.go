@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"math/rand/v2"
+	"reflect"
 	"sync"
 	"time"
 
@@ -117,19 +118,104 @@ func New(repo *store.Repo, opts ...Option) *Scheduler {
 	return s
 }
 
+// PlanSource produces the current desired plan set. Called by
+// RunDynamic each refresh interval to drive add/remove decisions.
+// Implementations are expected to be cheap and safe to call from
+// any goroutine.
+type PlanSource interface {
+	CurrentPlans() []Plan
+}
+
+// staticSource is the trivial PlanSource that always returns the
+// same slice — used by Run() for back-compat.
+type staticSource struct{ plans []Plan }
+
+func (s staticSource) CurrentPlans() []Plan { return s.plans }
+
 // Run starts one goroutine per plan and blocks until ctx is cancelled
-// AND every goroutine has exited. Each goroutine performs startup
-// jitter, then ticks at the monitor's interval.
+// AND every goroutine has exited. Equivalent to RunDynamic with a
+// static source.
 func (s *Scheduler) Run(ctx context.Context, plans []Plan) {
+	s.RunDynamic(ctx, staticSource{plans: plans}, 0)
+}
+
+// RunDynamic drives a *changing* plan set: every refreshInterval (or
+// once if 0) it pulls the latest plans from source, spawns new
+// goroutines for newly-appeared slugs, cancels goroutines whose
+// slugs disappeared, and respawns the rest only when their plan
+// changed (deep equal). Blocks until ctx is cancelled AND every
+// goroutine has exited.
+func (s *Scheduler) RunDynamic(ctx context.Context, source PlanSource, refreshInterval time.Duration) {
+	type entry struct {
+		plan   Plan
+		cancel context.CancelFunc
+	}
+	running := map[string]entry{}
 	var wg sync.WaitGroup
-	for _, p := range plans {
+
+	spawn := func(p Plan) {
+		monCtx, cancel := context.WithCancel(ctx)
+		running[p.Slug] = entry{plan: p, cancel: cancel}
 		wg.Add(1)
 		go func(p Plan) {
 			defer wg.Done()
-			s.runMonitor(ctx, p)
+			s.runMonitor(monCtx, p)
 		}(p)
 	}
-	wg.Wait()
+
+	reconcile := func() {
+		plans := source.CurrentPlans()
+		desired := make(map[string]Plan, len(plans))
+		for _, p := range plans {
+			desired[p.Slug] = p
+		}
+		// Cancel removed.
+		for slug, e := range running {
+			if _, kept := desired[slug]; !kept {
+				e.cancel()
+				delete(running, slug)
+			}
+		}
+		// Spawn new + restart changed.
+		for slug, p := range desired {
+			if existing, ok := running[slug]; ok {
+				if plansEqual(existing.plan, p) {
+					continue
+				}
+				existing.cancel()
+				delete(running, slug)
+			}
+			spawn(p)
+		}
+	}
+
+	reconcile()
+
+	if refreshInterval <= 0 {
+		// Static-set fast path: wait for ctx cancel then drain.
+		<-ctx.Done()
+		wg.Wait()
+		return
+	}
+
+	t := time.NewTicker(refreshInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return
+		case <-t.C:
+			reconcile()
+		}
+	}
+}
+
+// plansEqual reports whether two Plans match on every field used by
+// the worker. Used to decide whether a slug whose entry is already
+// running needs to be respawned with the new params.
+func plansEqual(a, b Plan) bool {
+	return reflect.DeepEqual(a, b)
 }
 
 func (s *Scheduler) runMonitor(ctx context.Context, p Plan) {

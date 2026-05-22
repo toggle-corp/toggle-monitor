@@ -7,11 +7,14 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	networkingv1 "k8s.io/api/networking/v1"
 
 	"github.com/toggle-corp/toggle-monitor/internal/config"
+	"github.com/toggle-corp/toggle-monitor/internal/scheduler"
+	"github.com/toggle-corp/toggle-monitor/internal/slack"
 	"github.com/toggle-corp/toggle-monitor/internal/slug"
 	"github.com/toggle-corp/toggle-monitor/internal/store"
 )
@@ -28,35 +31,59 @@ type MonitorStore interface {
 // Materializer drives Issue-9 + Issue-10 logic: turns an
 // (ingress, host) pair into a discovery snapshot row and, when
 // appropriate, materializes an active monitor in the store.
+//
+// It also remembers the scheduler.Plan it produced for each
+// materialized monitor so the running scheduler can pick them up via
+// CurrentPlans(). Plans are stamped with a per-Materialize timestamp
+// (lastSeen) so Prune() can drop entries for ingresses that have
+// disappeared between reconciles.
 type Materializer struct {
 	store       MonitorStore
 	presets     map[string]config.KubePreset
 	annDomain   string
 	pause       []config.KubePause
 	staticSlugs map[string]struct{}
+
+	// httpClientUA + slack.UserMapping carry through into the Plan
+	// for each materialized kube monitor.
+	userAgent   string
+	userMapping map[string]string
+	bodyMaxBase int
+
+	mu        sync.RWMutex
+	kubePlans map[string]planEntry
+}
+
+type planEntry struct {
+	plan     scheduler.Plan
+	lastSeen time.Time
 }
 
 // New builds a Materializer from the loaded YAML. staticSlugs is the
 // set of slugs declared in config.Monitors — used to detect kube ↔
 // static collisions.
-func New(s MonitorStore, kc *config.Kube, staticMonitors []config.Monitor) *Materializer {
-	if kc == nil {
+func New(s MonitorStore, cfg config.Config) *Materializer {
+	if cfg.Kube == nil {
 		return nil
 	}
-	presets := make(map[string]config.KubePreset, len(kc.Presets))
-	for _, p := range kc.Presets {
+	presets := make(map[string]config.KubePreset, len(cfg.Kube.Presets))
+	for _, p := range cfg.Kube.Presets {
 		presets[p.Slug] = p
 	}
-	statics := make(map[string]struct{}, len(staticMonitors))
-	for _, m := range staticMonitors {
+	statics := make(map[string]struct{}, len(cfg.Monitors))
+	for _, m := range cfg.Monitors {
 		statics[m.Slug] = struct{}{}
 	}
 	return &Materializer{
 		store:       s,
 		presets:     presets,
-		annDomain:   kc.AnnotationDomain,
-		pause:       kc.Pause,
+		annDomain:   cfg.Kube.AnnotationDomain,
+		pause:       cfg.Kube.Pause,
 		staticSlugs: statics,
+		userAgent:   cfg.HTTPClient.UserAgent,
+		userMapping: cfg.Slack.UserMapping,
+		bodyMaxBase: cfg.Slack.BodyMaxChars,
+		kubePlans:   map[string]planEntry{},
 	}
 }
 
@@ -168,9 +195,76 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 		return base, fmt.Errorf("reconcile kube monitor: %w", err)
 	}
 
+	// Remember the plan so the scheduler's dynamic refresh loop picks
+	// it up. The `kube` tag is auto-appended per design Q5a — for now
+	// we just include it in the merged notify/tag handling further
+	// down; Plan itself doesn't carry tags.
+	notifyMerged := mergeNotify(preset.Notify, ing.Annotations[m.annDomain+"/config.notify"])
+	mentions := slack.ResolveMentions(notifyMerged, m.userMapping)
+	plan := scheduler.Plan{
+		Slug:                   monSlug,
+		FriendlyName:           defaultFriendlyName(ing, host),
+		URL:                    buildURL(scheme, host, path),
+		HTTPMethod:             preset.HTTPMethod,
+		AcceptedStatusCodes:    append([]int(nil), preset.AcceptedStatusCodes...),
+		Interval:               preset.Interval.AsDuration(),
+		Timeout:                preset.Timeout.AsDuration(),
+		Retries:                preset.Retries,
+		RetryBackoff:           preset.RetryBackoff.AsDuration(),
+		FollowRedirects:        preset.FollowRedirects,
+		UserAgent:              m.userAgent,
+		ReminderInterval:       preset.ReminderInterval.AsDuration(),
+		ChannelSlug:            preset.Slack,
+		Mentions:               mentions,
+		DependsOn:              append([]string(nil), dependsOn...),
+		IsHTTPS:                scheme == "https",
+		SSLAlertThreshold:      preset.SSLAlertThreshold.AsDuration(),
+		SSLEscalationThreshold: preset.SSLEscalationThreshold.AsDuration(),
+		SSLReminderInterval:    preset.SSLReminderInterval.AsDuration(),
+	}
+	m.mu.Lock()
+	m.kubePlans[monSlug] = planEntry{plan: plan, lastSeen: time.Now()}
+	m.mu.Unlock()
+
 	reason := "added"
 	base.Status, base.Reason, base.PresetSlug, base.MonitorSlug = "added", &reason, &presetSlug, &monSlug
 	return base, nil
+}
+
+// CurrentPlans returns the scheduler plans for every currently
+// materialized kube monitor. Called by lifecycle.planSource on each
+// scheduler refresh.
+func (m *Materializer) CurrentPlans() []scheduler.Plan {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]scheduler.Plan, 0, len(m.kubePlans))
+	for _, e := range m.kubePlans {
+		out = append(out, e.plan)
+	}
+	return out
+}
+
+// Prune drops every cached plan whose lastSeen timestamp is older
+// than `before`. The kube.Watcher calls this at the end of every
+// reconcile pass so disappeared ingresses stop being scheduled.
+func (m *Materializer) Prune(before time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for slug, e := range m.kubePlans {
+		if e.lastSeen.Before(before) {
+			delete(m.kubePlans, slug)
+		}
+	}
+}
+
+// mergeNotify is the union of preset + annotation notify entries. The
+// annotation form is a comma-separated string per docs/design-decisions.md.
+func mergeNotify(presetNotify []string, annotationCSV string) []string {
+	out := append([]string(nil), presetNotify...)
+	if annotationCSV != "" {
+		out = append(out, splitAndTrim(annotationCSV)...)
+	}
+	return out
 }
 
 func (m *Materializer) matchPause(host string) (reason string, matched bool) {

@@ -57,6 +57,14 @@ type Materializer interface {
 	Materialize(ctx context.Context, ing *networkingv1.Ingress, host string) (store.DiscoverySnapshotRow, error)
 }
 
+// Pruner is an optional interface a Materializer can implement to
+// receive a post-reconcile "drop everything you didn't see this
+// pass" signal. Mirrors the snapshot-table pruning the watcher does
+// directly.
+type Pruner interface {
+	Prune(before time.Time)
+}
+
 // Options configures a Watcher.
 type Options struct {
 	AnnotationDomain string
@@ -130,6 +138,9 @@ func (w *Watcher) Reconcile(ctx context.Context) error {
 	// Sweep rows we didn't observe this pass.
 	if _, err := w.store.PruneDiscoverySnapshot(ctx, startedAt); err != nil {
 		w.log.Warn("prune discovery snapshot", "error", err)
+	}
+	if p, ok := w.materialize.(Pruner); ok {
+		p.Prune(startedAt)
 	}
 	return nil
 }

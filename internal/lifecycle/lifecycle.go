@@ -194,13 +194,25 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		opts.OnReady(listener.Addr())
 	}
 
+	// Kube materializer (nil when Config.Kube isn't set) is built
+	// here so its CurrentPlans() is reachable from the scheduler's
+	// dynamic plan source below.
+	var materializer *merger.Materializer
+	if opts.Config.Kube != nil {
+		materializer = merger.New(repo, opts.Config)
+	}
+
 	sched := scheduler.New(repo,
 		scheduler.WithLogger(log),
 		scheduler.WithEventSink(buildSink(notifier)),
 		scheduler.WithSSLSink(buildSSLSink(notifier)),
 		scheduler.WithMetrics(metrics),
 	)
-	plans := buildPlans(opts.Config)
+	staticPlans := buildPlans(opts.Config)
+	planSource := &combinedPlanSource{
+		static:       staticPlans,
+		materializer: materializer,
+	}
 
 	var wg sync.WaitGroup
 	// HTTP server.
@@ -215,11 +227,20 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 
 	srv.MarkReady()
 
-	// Scheduler.
+	// Scheduler. RunDynamic re-evaluates the plan set every
+	// refreshInterval so newly-materialized kube monitors are picked
+	// up without restarting the worker. For all-static deployments
+	// the refresh is still cheap (no diff).
+	refresh := 30 * time.Second
+	if kc := opts.Config.Kube; kc != nil && kc.ResyncInterval.AsDuration() > 0 {
+		// Match the watcher cadence so kube monitor lifecycle and
+		// scheduling refresh stay in lockstep.
+		refresh = kc.ResyncInterval.AsDuration()
+	}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		sched.Run(ctx, plans)
+		sched.RunDynamic(ctx, planSource, refresh)
 	}()
 
 	// Hourly workspace re-check.
@@ -229,16 +250,14 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		wsWatcher.Run(ctx, time.Hour)
 	}()
 
-	// Optional kube auto-discovery. When Config.Kube is nil we don't
-	// start an informer; when set, the watcher records every
-	// observed Ingress in the snapshot table. Issue-9 plugs a
-	// Materializer in here to also produce active monitors.
+	// Kube auto-discovery: the materializer was built above so the
+	// scheduler's plan source can read its CurrentPlans(). Here we
+	// wire the actual watcher loop.
 	if kc := opts.Config.Kube; kc != nil {
-		mat := merger.New(repo, kc, opts.Config.Monitors)
 		kubeOpts := kube.Options{
 			AnnotationDomain: kc.AnnotationDomain,
 			ResyncInterval:   kc.ResyncInterval.AsDuration(),
-			Materializer:     mat,
+			Materializer:     materializer,
 			Logger:           log,
 		}
 		var watcher *kube.Watcher
@@ -341,6 +360,25 @@ func buildPlans(cfg config.Config) []scheduler.Plan {
 			SSLReminderInterval:    m.SSLReminderInterval.AsDuration(),
 		})
 	}
+	return out
+}
+
+// combinedPlanSource concatenates the static-config plans (immutable
+// for the run) with the materializer's current kube plans (changes
+// every kube reconcile).
+type combinedPlanSource struct {
+	static       []scheduler.Plan
+	materializer *merger.Materializer
+}
+
+func (c *combinedPlanSource) CurrentPlans() []scheduler.Plan {
+	if c.materializer == nil {
+		return c.static
+	}
+	kube := c.materializer.CurrentPlans()
+	out := make([]scheduler.Plan, 0, len(c.static)+len(kube))
+	out = append(out, c.static...)
+	out = append(out, kube...)
 	return out
 }
 

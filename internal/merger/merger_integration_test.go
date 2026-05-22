@@ -63,9 +63,16 @@ func presetCfg() *config.Kube {
 	}
 }
 
+// withKube constructs a minimal config.Config whose only meaningful
+// content is the kube block + static monitors, mirroring what
+// merger.New cares about.
+func withKube(kc *config.Kube, statics []config.Monitor) config.Config {
+	return config.Config{Kube: kc, Monitors: statics}
+}
+
 func TestMaterializer_addedRowForHappyPath(t *testing.T) {
 	repo := newRepo(t)
-	m := merger.New(repo, presetCfg(), nil)
+	m := merger.New(repo, withKube(presetCfg(), nil))
 	ing := ingress("default", "api", ann(domain+"/kube.preset", "internal-api"), "api.example.com")
 
 	row, err := m.Materialize(context.Background(), ing, "api.example.com")
@@ -93,7 +100,7 @@ func TestMaterializer_addedRowForHappyPath(t *testing.T) {
 
 func TestMaterializer_noPreset_reasonRecorded(t *testing.T) {
 	repo := newRepo(t)
-	m := merger.New(repo, presetCfg(), nil)
+	m := merger.New(repo, withKube(presetCfg(), nil))
 	ing := ingress("default", "naked", nil, "naked.example.com")
 
 	row, _ := m.Materialize(context.Background(), ing, "naked.example.com")
@@ -104,7 +111,7 @@ func TestMaterializer_noPreset_reasonRecorded(t *testing.T) {
 
 func TestMaterializer_unknownPreset_reasonRecorded(t *testing.T) {
 	repo := newRepo(t)
-	m := merger.New(repo, presetCfg(), nil)
+	m := merger.New(repo, withKube(presetCfg(), nil))
 	ing := ingress("default", "wrong", ann(domain+"/kube.preset", "ghost"), "wrong.example.com")
 
 	row, _ := m.Materialize(context.Background(), ing, "wrong.example.com")
@@ -118,7 +125,7 @@ func TestMaterializer_unknownPreset_reasonRecorded(t *testing.T) {
 
 func TestMaterializer_optOutViaEnabledFalse(t *testing.T) {
 	repo := newRepo(t)
-	m := merger.New(repo, presetCfg(), nil)
+	m := merger.New(repo, withKube(presetCfg(), nil))
 	ing := ingress("default", "off", ann(
 		domain+"/kube.preset", "internal-api",
 		domain+"/config.enabled", "false",
@@ -132,7 +139,7 @@ func TestMaterializer_optOutViaEnabledFalse(t *testing.T) {
 func TestMaterializer_staticCollision(t *testing.T) {
 	repo := newRepo(t)
 	statics := []config.Monitor{{Slug: "kube-default-api-api-example-com"}}
-	m := merger.New(repo, presetCfg(), statics)
+	m := merger.New(repo, withKube(presetCfg(), statics))
 	ing := ingress("default", "api", ann(domain+"/kube.preset", "internal-api"), "api.example.com")
 	row, _ := m.Materialize(context.Background(), ing, "api.example.com")
 	if row.Status != "kube-invalid" || row.Reason == nil || !contains(*row.Reason, "conflicts with static") {
@@ -144,7 +151,7 @@ func TestMaterializer_pauseMatchesGlob(t *testing.T) {
 	repo := newRepo(t)
 	kc := presetCfg()
 	kc.Pause = []config.KubePause{{Host: "*.staging.example.com", Reason: "maintenance"}}
-	m := merger.New(repo, kc, nil)
+	m := merger.New(repo, withKube(kc, nil))
 	ing := ingress("ns", "staging", ann(domain+"/kube.preset", "internal-api"), "api.staging.example.com")
 
 	row, err := m.Materialize(context.Background(), ing, "api.staging.example.com")

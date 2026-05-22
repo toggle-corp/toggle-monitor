@@ -4,6 +4,7 @@ package scheduler_test
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -198,6 +199,115 @@ func TestTick_dependsOn_pausesChildWhenParentDown(t *testing.T) {
 	events, _ := repo.ListAlertsForMonitor(ctx, "child", 10)
 	if len(events) != 1 || events[0].Type != alert.EventOpen {
 		t.Errorf("expected exactly 1 open event after resume, got %d", len(events))
+	}
+}
+
+// mutableSource lets a test swap the plan set mid-flight.
+type mutableSource struct {
+	mu    sync.Mutex
+	plans []scheduler.Plan
+}
+
+func (m *mutableSource) CurrentPlans() []scheduler.Plan {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]scheduler.Plan(nil), m.plans...)
+}
+
+func (m *mutableSource) Set(plans []scheduler.Plan) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.plans = plans
+}
+
+// TestRunDynamic_addsAndRemovesMonitorsOnRefresh: starts the
+// scheduler with a single plan, swaps in a second plan mid-flight,
+// and asserts both fire; then removes the first plan and asserts it
+// stops firing. The fake check function records per-slug call
+// counts.
+func TestRunDynamic_addsAndRemovesMonitorsOnRefresh(t *testing.T) {
+	repo := newRepo(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	for _, slug := range []string{"alpha", "beta"} {
+		if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
+			Slug: slug, FriendlyName: slug, URL: "http://x", GroupSlug: "g", Source: store.SourceStatic,
+		}); err != nil {
+			t.Fatalf("reconcile %s: %v", slug, err)
+		}
+	}
+
+	calls := map[string]*atomic.Int32{
+		"alpha": {},
+		"beta":  {},
+	}
+	check := func(_ context.Context, cfg httpcheck.Config) httpcheck.Result {
+		// Map URL → slug; tests supply distinct URLs per plan.
+		switch cfg.URL {
+		case "http://alpha":
+			calls["alpha"].Add(1)
+		case "http://beta":
+			calls["beta"].Add(1)
+		}
+		return httpcheck.Result{StatusCode: 200}
+	}
+
+	mkPlan := func(slug, url string) scheduler.Plan {
+		return scheduler.Plan{
+			Slug: slug, URL: url, HTTPMethod: "GET",
+			AcceptedStatusCodes: []int{200},
+			Interval:            80 * time.Millisecond,
+			Timeout:             50 * time.Millisecond,
+			Retries:             0,
+			RetryBackoff:        time.Second,
+		}
+	}
+
+	src := &mutableSource{plans: []scheduler.Plan{mkPlan("alpha", "http://alpha")}}
+	s := scheduler.New(repo, scheduler.WithCheck(check))
+	done := make(chan struct{})
+	go func() {
+		s.RunDynamic(ctx, src, 100*time.Millisecond)
+		close(done)
+	}()
+
+	// Let alpha tick a few times.
+	time.Sleep(350 * time.Millisecond)
+	if calls["alpha"].Load() < 1 {
+		t.Errorf("alpha should have fired at least once; got %d", calls["alpha"].Load())
+	}
+	if calls["beta"].Load() != 0 {
+		t.Errorf("beta should not have fired yet; got %d", calls["beta"].Load())
+	}
+
+	// Add beta to the plan set; the scheduler should pick it up at the
+	// next refresh tick.
+	src.Set([]scheduler.Plan{
+		mkPlan("alpha", "http://alpha"),
+		mkPlan("beta", "http://beta"),
+	})
+	time.Sleep(400 * time.Millisecond)
+	if calls["beta"].Load() < 1 {
+		t.Errorf("beta should have fired after refresh; got %d", calls["beta"].Load())
+	}
+
+	// Remove alpha. After the next refresh + a couple of intervals,
+	// alpha's call count should stop advancing.
+	src.Set([]scheduler.Plan{mkPlan("beta", "http://beta")})
+	time.Sleep(250 * time.Millisecond)
+	alphaAfter := calls["alpha"].Load()
+	time.Sleep(300 * time.Millisecond)
+	if got := calls["alpha"].Load(); got > alphaAfter+1 {
+		// allow at most one in-flight tick after cancel
+		t.Errorf("alpha should stop firing after removal; %d → %d", alphaAfter, got)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunDynamic did not exit after cancel")
 	}
 }
 
