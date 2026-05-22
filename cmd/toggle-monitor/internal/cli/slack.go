@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -47,15 +46,16 @@ func newSlackTestCmd() *cobra.Command {
 
 // slackTestFlags is the common flag set for both subcommands.
 type slackTestFlags struct {
-	ConfigPath  string
-	ChannelSlug string
-	Name        string
-	Reminders   int
-	Interval    time.Duration
-	NoPrompt    bool
-	Notify      []string // userMapping slugs and/or raw Slack markup
-	Dependents  []string // simulated dependent monitor slugs (uptime only)
-	Cleanup     bool     // delete every message this command posted on exit
+	ConfigPath    string
+	ChannelSlug   string
+	Name          string
+	Reminders     int
+	Interval      time.Duration
+	NoPrompt      bool
+	Notify        []string // userMapping slugs and/or raw Slack markup
+	Dependents    []string // simulated dependent monitor slugs (uptime only)
+	DependentsMax int      // 0 → slack.DefaultDependentsNoteMax
+	Cleanup       bool     // delete every message this command posted on exit
 }
 
 func addSlackTestFlags(cmd *cobra.Command, f *slackTestFlags) {
@@ -71,6 +71,9 @@ func addSlackTestFlags(cmd *cobra.Command, f *slackTestFlags) {
 	cmd.Flags().StringSliceVar(&f.Dependents, "dependents", nil,
 		"simulate cascading effect: dependent monitor slugs that would be paused (down) / resumed (resolve) "+
 			"while this monitor is down. Repeatable / comma-separated. Renders a small dim note above the footer.")
+	cmd.Flags().IntVar(&f.DependentsMax, "dependents-max", 0,
+		"cap on dependent slugs shown in the note (the rest collapse into '…and N more'). "+
+			"0 uses the package default (5).")
 	cmd.Flags().BoolVar(&f.Cleanup, "cleanup", false,
 		"after the workflow completes, delete every chat.postMessage this command made (uses chat.delete). "+
 			"Bots can only delete their own messages.")
@@ -218,7 +221,7 @@ func runSlackTestUptime(ctx context.Context, out io.Writer, in io.Reader, f slac
 		FailureAt:    openedAt,
 		LastError:    "simulated failure (slack test cli)",
 		BodyMaxChars: 500,
-		Note:         renderDependentsNote("⏸ Pauses dependents", f.Dependents),
+		Note:         slack.FormatDependentsNote("⏸ Pauses dependents", f.Dependents, f.DependentsMax),
 	}
 
 	posted := &postedRefs{channelID: target.ChannelID}
@@ -263,7 +266,7 @@ func runSlackTestUptime(ctx context.Context, out io.Writer, in io.Reader, f slac
 
 	resolveAt := time.Now().UTC()
 	resolveDownIn := downIn
-	resolveDownIn.Note = renderDependentsNote("▶ Resumes dependents", f.Dependents)
+	resolveDownIn.Note = slack.FormatDependentsNote("▶ Resumes dependents", f.Dependents, f.DependentsMax)
 	resolveIn := slack.ResolveInput{
 		DownInput: resolveDownIn,
 		ResolveAt: resolveAt,
@@ -381,20 +384,6 @@ func runSlackTestSSL(ctx context.Context, out io.Writer, in io.Reader, f slackTe
 	posted.add(resReply.TS)
 	_, _ = fmt.Fprintln(out, "✓ ssl workflow complete")
 	return nil
-}
-
-// renderDependentsNote mirrors Notifier.dependentsNote: builds the
-// "<prefix>: `a`, `b`" line for the small dim note above the footer.
-// Returns "" when no dependents were supplied.
-func renderDependentsNote(prefix string, slugs []string) string {
-	if len(slugs) == 0 {
-		return ""
-	}
-	parts := make([]string, len(slugs))
-	for i, s := range slugs {
-		parts[i] = "`" + s + "`"
-	}
-	return prefix + ": " + strings.Join(parts, ", ")
 }
 
 // sleep returns false if the context is cancelled before the duration

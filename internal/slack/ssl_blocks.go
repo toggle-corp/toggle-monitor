@@ -89,7 +89,7 @@ func buildSSLParentBlocks(in SSLDownInput, extra []detailLine, footerPrefix stri
 
 	var lines []string
 	if len(in.Mentions) > 0 {
-		lines = append(lines, strings.Join(in.Mentions, " "))
+		lines = append(lines, "*CC:* "+strings.Join(in.Mentions, " "))
 	}
 	if in.URL != "" {
 		lines = append(lines, "*Monitor URL:* "+in.URL)

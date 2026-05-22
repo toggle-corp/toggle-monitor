@@ -150,6 +150,85 @@ func TestNotifier_EventOpen_omitsDependentsNoteWhenNoChildren(t *testing.T) {
 	}
 }
 
+// TestFormatDependentsNote_truncatesPastMax confirms the cap kicks in
+// at `max` entries and the remainder collapses into "…and N more".
+func TestFormatDependentsNote_truncatesPastMax(t *testing.T) {
+	all := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
+
+	// max = 3 → first 3 shown, 5 collapsed.
+	line := slack.FormatDependentsNote("⏸ Pauses dependents", all, 3)
+	for _, want := range []string{"`a`", "`b`", "`c`", "…and 5 more"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("expected %q in %q", want, line)
+		}
+	}
+	for _, gone := range []string{"`d`", "`e`", "`f`", "`g`", "`h`"} {
+		if strings.Contains(line, gone) {
+			t.Errorf("did not expect %q in truncated line %q", gone, line)
+		}
+	}
+
+	// max ≥ len → no tail.
+	full := slack.FormatDependentsNote("⏸ Pauses dependents", all, 10)
+	if strings.Contains(full, "more") {
+		t.Errorf("did not expect a '…and N more' tail when max ≥ len; got %q", full)
+	}
+
+	// Empty slice → empty line.
+	if got := slack.FormatDependentsNote("⏸ Pauses dependents", nil, 3); got != "" {
+		t.Errorf("empty slugs → empty line, got %q", got)
+	}
+
+	// max=0 → falls back to DefaultDependentsNoteMax.
+	defaulted := slack.FormatDependentsNote("⏸ Pauses dependents", all, 0)
+	if !strings.Contains(defaulted, "…and") {
+		t.Errorf("expected default cap to truncate 8 entries; got %q", defaulted)
+	}
+}
+
+// TestNotifier_EventOpen_truncatesDependentsNoteAtConfiguredMax wires
+// the DependentsNoteMax option through NewNotifier and confirms the
+// posted message respects the configured cap.
+func TestNotifier_EventOpen_truncatesDependentsNoteAtConfiguredMax(t *testing.T) {
+	f, srv := newFakeSlack(t)
+	client := slack.NewClient(slack.WithBaseURL(srv.URL))
+
+	store := &fakeStore{children: map[string][]string{
+		"parent-api": {"a", "b", "c", "d", "e", "f", "g"},
+	}}
+
+	notifier := slack.NewNotifier(slack.NotifierOptions{
+		Client: client,
+		Store:  store,
+		Channels: func(string) (slack.ChannelInfo, bool) {
+			return slack.ChannelInfo{ID: "C0123", Token: secret.SecretString("xoxb-test")}, true
+		},
+		DependentsNoteMax: 2,
+	})
+
+	if err := notifier.Notify(context.Background(), "ops", nil,
+		slack.MonitorView{
+			Slug: "parent-api", FriendlyName: "parent-api",
+			GroupSlug: "core", URL: "https://api/health",
+			StatusCode: 503, StatusText: "Service Unavailable",
+		},
+		&alert.Event{Type: alert.EventOpen, At: time.Now().UTC(), StatusCode: 503, Error: "boom"},
+	); err != nil {
+		t.Fatalf("Notify(open): %v", err)
+	}
+
+	flat := flattenMrkdwn(t, findPostedMessage(t, f))
+	if !strings.Contains(flat, "`a`") || !strings.Contains(flat, "`b`") {
+		t.Errorf("expected first 2 child slugs in note; got:\n%s", flat)
+	}
+	if strings.Contains(flat, "`c`") {
+		t.Errorf("did not expect 3rd slug past the cap; got:\n%s", flat)
+	}
+	if !strings.Contains(flat, "…and 5 more") {
+		t.Errorf("expected '…and 5 more' tail; got:\n%s", flat)
+	}
+}
+
 // TestNotifier_EventResolve_includesResumesNote confirms the resolve
 // edit also carries the cascading-effect line, with the resume verb.
 func TestNotifier_EventResolve_includesResumesNote(t *testing.T) {

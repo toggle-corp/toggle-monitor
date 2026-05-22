@@ -95,9 +95,10 @@ type KubePreset struct {
 // single workspace; multiple channels can be declared and referenced
 // by slug from monitors.
 type Slack struct {
-	BodyMaxChars int               `yaml:"bodyMaxChars"`
-	Channels     []SlackChannel    `yaml:"channels"`
-	UserMapping  map[string]string `yaml:"userMapping,omitempty"` // slug → U... | S...
+	BodyMaxChars      int               `yaml:"bodyMaxChars"`
+	DependentsNoteMax int               `yaml:"dependentsNoteMax,omitempty"` // 0 → DefaultDependentsNoteMax
+	Channels          []SlackChannel    `yaml:"channels"`
+	UserMapping       map[string]string `yaml:"userMapping,omitempty"` // slug → U... | S...
 }
 
 // SlackChannel is one Slack destination.

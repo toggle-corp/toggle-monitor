@@ -118,9 +118,10 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 			info, ok := channelByMonitor[slug]
 			return info, ok
 		},
-		BodyMaxChars: opts.Config.Slack.BodyMaxChars,
-		PublicBase:   opts.Config.PublicBaseURL,
-		Logger:       log,
+		BodyMaxChars:      opts.Config.Slack.BodyMaxChars,
+		DependentsNoteMax: opts.Config.Slack.DependentsNoteMax,
+		PublicBase:        opts.Config.PublicBaseURL,
+		Logger:            log,
 	})
 
 	// userMapping validator. v1 is single-workspace so picking any of

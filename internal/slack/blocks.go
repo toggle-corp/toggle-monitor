@@ -138,11 +138,11 @@ func buildParentBlocks(in DownInput, extra []detailLine, footerPrefix string, fo
 	var blocks []Block
 
 	// Body in a context block: smaller + dimmer than a section.
-	// Mentions sit at the very top so they're the first thing the eye
-	// catches inside the colored frame.
+	// Mentions sit at the very top, prefixed with "*CC:*" so the row
+	// reads as a labeled field consistent with the rest of the body.
 	var lines []string
 	if len(in.Mentions) > 0 {
-		lines = append(lines, strings.Join(in.Mentions, " "))
+		lines = append(lines, "*CC:* "+strings.Join(in.Mentions, " "))
 	}
 	if in.URL != "" {
 		lines = append(lines, "*Monitor URL:* "+in.URL)

@@ -45,7 +45,7 @@ func TestBuildDownParent_includesHeaderContextFieldsAndMentions(t *testing.T) {
 		":red_circle: API is DOWN",
 		"*Monitor URL:* http://api/health",
 		"*Group:* `prod`",
-		"<!here> <@U123ABC>",
+		"*CC:* <!here> <@U123ABC>",
 		"*Reason:* `503 Service Unavailable`",
 		"*Error:* `boom`",
 		"_Detected ",

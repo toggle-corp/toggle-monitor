@@ -28,24 +28,31 @@ type ThreadStore interface {
 	ListChildrenOf(ctx context.Context, parentSlug string) ([]string, error)
 }
 
+// DefaultDependentsNoteMax is the fallback cap when the config leaves
+// slack.dependentsNoteMax at zero. Keeps the dependents line readable
+// when a parent monitor has many children.
+const DefaultDependentsNoteMax = 5
+
 // Notifier turns alert events into Slack API calls.
 type Notifier struct {
-	client       *Client
-	store        ThreadStore
-	channels     func(slug string) (ChannelInfo, bool)
-	bodyMaxChars int
-	publicBase   string
-	log          *slog.Logger
+	client            *Client
+	store             ThreadStore
+	channels          func(slug string) (ChannelInfo, bool)
+	bodyMaxChars      int
+	dependentsNoteMax int
+	publicBase        string
+	log               *slog.Logger
 }
 
 // NotifierOptions configures a Notifier.
 type NotifierOptions struct {
-	Client       *Client
-	Store        ThreadStore
-	Channels     func(slug string) (ChannelInfo, bool) // slug → ChannelInfo
-	BodyMaxChars int
-	PublicBase   string // empty → omit [View details] buttons
-	Logger       *slog.Logger
+	Client            *Client
+	Store             ThreadStore
+	Channels          func(slug string) (ChannelInfo, bool) // slug → ChannelInfo
+	BodyMaxChars      int
+	DependentsNoteMax int    // 0 → DefaultDependentsNoteMax
+	PublicBase        string // empty → omit [View details] buttons
+	Logger            *slog.Logger
 }
 
 // NewNotifier builds a Notifier from the resolved channel set.
@@ -54,13 +61,18 @@ func NewNotifier(opts NotifierOptions) *Notifier {
 	if log == nil {
 		log = slog.Default()
 	}
+	max := opts.DependentsNoteMax
+	if max <= 0 {
+		max = DefaultDependentsNoteMax
+	}
 	return &Notifier{
-		client:       opts.Client,
-		store:        opts.Store,
-		channels:     opts.Channels,
-		bodyMaxChars: opts.BodyMaxChars,
-		publicBase:   opts.PublicBase,
-		log:          log,
+		client:            opts.Client,
+		store:             opts.Store,
+		channels:          opts.Channels,
+		bodyMaxChars:      opts.BodyMaxChars,
+		dependentsNoteMax: max,
+		publicBase:        opts.PublicBase,
+		log:               log,
 	}
 }
 
@@ -244,20 +256,44 @@ func (n *Notifier) detailURL(monitorSlug string) string {
 // the lookup fails (best-effort: a DB hiccup here shouldn't block the
 // Slack post). prefix is the verb-bearing lead, e.g.
 // "⏸ Pauses dependents" or "▶ Resumes dependents".
+//
+// Truncates to dependentsNoteMax entries; the remainder collapses
+// into a "…and N more" tail so the line stays scannable when a
+// parent has many children.
 func (n *Notifier) dependentsNote(ctx context.Context, parentSlug, prefix string) string {
 	children, err := n.store.ListChildrenOf(ctx, parentSlug)
 	if err != nil {
 		n.log.Warn("list children of monitor", "monitor", parentSlug, "error", err)
 		return ""
 	}
-	if len(children) == 0 {
+	return FormatDependentsNote(prefix, children, n.dependentsNoteMax)
+}
+
+// FormatDependentsNote renders the "<prefix>: `a`, `b`, …and N more"
+// line. Returns "" when slugs is empty. Exported so the slack-test
+// CLI can mirror the same truncation logic without duplicating it.
+func FormatDependentsNote(prefix string, slugs []string, max int) string {
+	if len(slugs) == 0 {
 		return ""
 	}
-	parts := make([]string, len(children))
-	for i, c := range children {
+	if max <= 0 {
+		max = DefaultDependentsNoteMax
+	}
+	shown := slugs
+	extra := 0
+	if len(slugs) > max {
+		shown = slugs[:max]
+		extra = len(slugs) - max
+	}
+	parts := make([]string, len(shown))
+	for i, c := range shown {
 		parts[i] = "`" + c + "`"
 	}
-	return prefix + ": " + strings.Join(parts, ", ")
+	line := prefix + ": " + strings.Join(parts, ", ")
+	if extra > 0 {
+		line += fmt.Sprintf(", …and %d more", extra)
+	}
+	return line
 }
 
 // NotifySSL dispatches the right Slack call(s) for an SSL event:
