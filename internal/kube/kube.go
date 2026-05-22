@@ -246,6 +246,11 @@ func (w *Watcher) AnnotationDomain() string { return w.annotationDomain }
 // is responsible for calling Watcher.Run(ctx) to drive the reconcile
 // loop.
 func NewWithCluster(ctx context.Context, s SnapshotStore, opts Options, kubeconfigPath string) (*Watcher, error) {
+	log := opts.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+
 	cfg, err := loadClusterConfig(kubeconfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("load kube client config: %w", err)
@@ -254,12 +259,36 @@ func NewWithCluster(ctx context.Context, s SnapshotStore, opts Options, kubeconf
 	if err != nil {
 		return nil, fmt.Errorf("kubernetes.NewForConfig: %w", err)
 	}
-	factory := informers.NewSharedInformerFactory(cs, opts.ResyncInterval)
-	inf := factory.Networking().V1().Ingresses()
-	factory.Start(ctx.Done())
-	factory.WaitForCacheSync(ctx.Done())
 
-	w := New(s, &ingressInformerLister{lister: inf.Lister()}, opts)
+	// Connectivity probe — surface auth/network errors immediately
+	// with a clear message instead of letting them turn into a silent
+	// empty cache later. Discovery uses the same TLS + auth path as
+	// the informer; if this fails, the informer would have too.
+	ver, err := cs.Discovery().ServerVersion()
+	if err != nil {
+		return nil, fmt.Errorf("kube api unreachable (server=%s): %w", cfg.Host, err)
+	}
+	log.Info("kube api reachable", "server", cfg.Host, "version", ver.GitVersion)
+
+	factory := informers.NewSharedInformerFactory(cs, opts.ResyncInterval)
+	// IMPORTANT: register the informer with the factory BEFORE calling
+	// Start. Calling Networking().V1().Ingresses() alone returns the
+	// typed wrapper without registering — Informer() forces the
+	// SharedIndexInformer into the factory's map so Start actually
+	// runs it. Without this, Start runs nothing, the cache stays
+	// empty forever, and List() silently returns []. (#kube-empty-bug)
+	ingInformer := factory.Networking().V1().Ingresses()
+	_ = ingInformer.Informer()
+
+	factory.Start(ctx.Done())
+	synced := factory.WaitForCacheSync(ctx.Done())
+	for typ, ok := range synced {
+		if !ok {
+			return nil, fmt.Errorf("kube informer cache failed to sync for %v (RBAC denied or API unreachable?)", typ)
+		}
+	}
+
+	w := New(s, &ingressInformerLister{lister: ingInformer.Lister()}, opts)
 	return w, nil
 }
 
