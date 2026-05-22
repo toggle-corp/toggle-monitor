@@ -43,12 +43,13 @@ func TestBuildDownParent_includesHeaderContextFieldsAndMentions(t *testing.T) {
 	s := dump(t, out)
 	for _, want := range []string{
 		":red_circle: API is DOWN",
-		"prod · http://api/health",
+		"*Monitor URL:* http://api/health",
+		"*Group:* prod",
 		"<!here> <@U123ABC>",
-		"*Status:* 503 Service Unavailable",
-		"*Failure:*",
-		"*Error:* boom",
-		"View details",
+		"*Reason:* `503 Service Unavailable`",
+		"*Error:* `boom`",
+		"_Detected ",
+		"|View details>",
 		"https://monitor.internal/monitor/api",
 		"<!date^",
 		`"color":"#df3617"`,
@@ -124,12 +125,19 @@ func TestBuildResolveEdit_preservesContextAndChangesHeader(t *testing.T) {
 	if !strings.Contains(s, ":large_green_circle: API is UP (was down for 45m)") {
 		t.Errorf("missing resolved header in:\n%s", s)
 	}
-	// Original context line preserved.
-	if !strings.Contains(s, "prod · http://api/health") {
-		t.Errorf("context line missing in resolve edit:\n%s", s)
+	// Body still carries the monitor URL + group.
+	if !strings.Contains(s, "*Monitor URL:* http://api/health") {
+		t.Errorf("monitor URL line missing in resolve edit:\n%s", s)
 	}
-	if !strings.Contains(s, "*Resolved:* ") {
-		t.Errorf("resolved-at line missing in:\n%s", s)
+	if !strings.Contains(s, "*Group:* prod") {
+		t.Errorf("group line missing in resolve edit:\n%s", s)
+	}
+	// Duration line + Resolved-at footer.
+	if !strings.Contains(s, "*Duration:* `45m`") {
+		t.Errorf("duration line missing in resolve edit:\n%s", s)
+	}
+	if !strings.Contains(s, "_Resolved ") {
+		t.Errorf("resolved-at footer missing in:\n%s", s)
 	}
 	// Mentions preserved on the edited parent.
 	if !strings.Contains(s, "<!here>") {
@@ -146,10 +154,10 @@ func TestBuildReminderReply_noMentions(t *testing.T) {
 		LastCheckedAt: t0,
 		LastError:     "still 503",
 	}))
-	if !strings.Contains(s, "Still down for 3d") {
-		t.Errorf("missing 'Still down for 3d' in:\n%s", s)
+	if !strings.Contains(s, "Still down for `3d`") {
+		t.Errorf("missing 'Still down for `3d`' in:\n%s", s)
 	}
-	if !strings.Contains(s, "still 503") {
+	if !strings.Contains(s, "`still 503`") {
 		t.Errorf("missing last error in:\n%s", s)
 	}
 	if strings.Contains(s, "<!here>") || strings.Contains(s, "<@U") {
@@ -166,7 +174,7 @@ func TestBuildResolveReply_noMentionsAndCarriesDowntime(t *testing.T) {
 		ResolveAt: t0,
 		Downtime:  2*time.Hour + 15*time.Minute,
 	}))
-	if !strings.Contains(s, "Total downtime: 2h 15m") {
+	if !strings.Contains(s, "Total downtime: `2h 15m`") {
 		t.Errorf("missing downtime in:\n%s", s)
 	}
 	if strings.Contains(s, "<!here>") || strings.Contains(s, "<@U") {

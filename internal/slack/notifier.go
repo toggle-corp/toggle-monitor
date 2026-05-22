@@ -250,6 +250,7 @@ func (n *Notifier) NotifySSL(ctx context.Context, channelSlug string, mentions [
 		Subject:       m.SSLSubject,
 		DaysRemaining: daysRem,
 		DetailURL:     n.detailURL(m.Slug),
+		DetectedAt:    ev.At,
 	}
 
 	switch ev.Type {
@@ -279,7 +280,7 @@ func (n *Notifier) NotifySSL(ctx context.Context, channelSlug string, mentions [
 		return err
 
 	case alert.EventSSLResolve:
-		resolveIn := SSLResolveInput{SSLDownInput: in, NewExpiresAt: ssl.ExpiresAt}
+		resolveIn := SSLResolveInput{SSLDownInput: in, NewExpiresAt: ssl.ExpiresAt, RenewedAt: ev.At}
 		if m.SSLThreadTS == "" {
 			// No parent — fall back to a standalone resolve post.
 			_, err := n.client.PostMessage(ctx, ch.Token, PostMessageInput{

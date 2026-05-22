@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // RemovedInput carries the data for the non-threaded "monitor removed"
@@ -20,34 +21,20 @@ type RemovedInput struct {
 
 // BuildRemovedWarning renders the non-threaded warning that's posted
 // to the monitor's last-known Slack channel when the monitor
-// disappears from config or from the cluster. Amber stripe, one
-// detail per line. No mentions.
+// disappears from config or from the cluster. Amber stripe, UR-style
+// body, View-details link in the footer. No mentions.
 func BuildRemovedWarning(in RemovedInput) []Attachment {
-	header := Block{
-		"type": "header",
-		"text": map[string]any{
-			"type":  "plain_text",
-			"text":  fmt.Sprintf(":warning: Monitor removed: %s", in.FriendlyName),
-			"emoji": true,
-		},
-	}
+	header := bigHeader(fmt.Sprintf(":warning: Monitor removed: %s", in.FriendlyName))
 	lines := []string{
-		"*Group:* " + in.GroupSlug,
-		"*Method:* " + in.HTTPMethod,
-		"*URL:* " + in.URL,
+		"*Monitor URL:* " + in.URL,
+		"*Method:* `" + in.HTTPMethod + "`",
+		"*Reason:* `" + in.Reason + "`",
 		"*Source:* " + in.Source,
-		"*Reason:* " + in.Reason,
+		"*Group:* " + in.GroupSlug,
 	}
 	blocks := []Block{header, section(strings.Join(lines, "\n"))}
-	if in.DetailURL != "" {
-		blocks = append(blocks, Block{
-			"type": "actions",
-			"elements": []map[string]any{{
-				"type": "button",
-				"text": map[string]any{"type": "plain_text", "text": "View details"},
-				"url":  in.DetailURL,
-			}},
-		})
+	if footer := footerLine("", time.Time{}, in.DetailURL); footer != "" {
+		blocks = append(blocks, contextBlock(footer))
 	}
 	return []Attachment{{Color: ColorRemoved, Blocks: blocks}}
 }
@@ -60,22 +47,16 @@ func BuildRemovedClose() []Block {
 
 // BuildRemovedResolveEdit produces the parent-edit attachments for a
 // removed monitor's uptime thread. Green stripe + :large_green_circle:
-// header, with a "Resolved: monitor removed" detail line.
+// header, with a "Resolved: monitor removed" footer (no timestamp —
+// the removal isn't a real recovery moment).
 func BuildRemovedResolveEdit(in DownInput) []Attachment {
-	header := Block{
-		"type": "header",
-		"text": map[string]any{
-			"type":  "plain_text",
-			"text":  fmt.Sprintf(":large_green_circle: %s — Resolved (monitor removed)", in.FriendlyName),
-			"emoji": true,
-		},
-	}
-	return []Attachment{{
-		Color: ColorResolved,
-		Blocks: buildParentBlocks(in, header, []detailLine{
-			{Label: "Resolved", Value: "monitor removed"},
-		}),
-	}}
+	header := bigHeader(fmt.Sprintf(":large_green_circle: %s — Resolved (monitor removed)", in.FriendlyName))
+	// We use a synthetic detail line for the "monitor removed" note
+	// since there's no meaningful timestamp to attach.
+	blocks := buildParentBlocks(in, header, []detailLine{
+		{Label: "Resolved", Value: "monitor removed"},
+	}, "", time.Time{})
+	return []Attachment{{Color: ColorResolved, Blocks: blocks}}
 }
 
 // NotifyRemoved is the public dispatch hook the lifecycle calls per

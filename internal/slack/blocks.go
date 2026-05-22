@@ -32,7 +32,7 @@ type DownInput struct {
 	LastError    string // short summary, never the full body
 	ResponseBody string // already truncated by the caller; empty to skip inline body
 	BodyMaxChars int    // inline body only when len(ResponseBody) <= this
-	DetailURL    string // empty omits the [View details] button
+	DetailURL    string // empty omits the [View details] footer link
 }
 
 // ResolveInput carries DownInput plus the resolved-at moment so the
@@ -51,7 +51,7 @@ type ReminderInput struct {
 	LastError     string
 }
 
-// detailLine is one "*Label:* value" row in the parent's body section.
+// detailLine is one "*Label:* value" row appended to the parent body.
 type detailLine struct {
 	Label, Value string
 }
@@ -61,20 +61,27 @@ type detailLine struct {
 // red left-edge stripe.
 func BuildDownParent(in DownInput) []Attachment {
 	return []Attachment{{
-		Color:  ColorDown,
-		Blocks: buildParentBlocks(in, downHeader(in.FriendlyName), nil),
+		Color: ColorDown,
+		Blocks: buildParentBlocks(in,
+			bigHeader(":red_circle: "+in.FriendlyName+" is DOWN"),
+			nil,
+			"Detected", in.FailureAt),
 	}}
 }
 
 // BuildResolveEdit renders the attachments the parent should be
 // edited to when the monitor recovers. The header swaps to
-// :large_green_circle:, the color stripe swaps to green, and a
-// "Resolved" line is appended to the detail block.
+// :large_green_circle:, the color stripe swaps to green, a Duration
+// line is appended to the body, and the footer rewrites to
+// "Resolved <date>".
 func BuildResolveEdit(in ResolveInput) []Attachment {
 	return []Attachment{{
 		Color: ColorResolved,
-		Blocks: buildParentBlocks(in.DownInput, resolvedHeader(in.FriendlyName, in.Downtime),
-			[]detailLine{{Label: "Resolved", Value: FormatDate(in.ResolveAt)}}),
+		Blocks: buildParentBlocks(in.DownInput,
+			bigHeader(fmt.Sprintf(":large_green_circle: %s is UP (was down for %s)",
+				in.FriendlyName, formatDowntime(in.Downtime))),
+			[]detailLine{{Label: "Duration", Value: "`" + formatDowntime(in.Downtime) + "`"}},
+			"Resolved", in.ResolveAt),
 	}}
 }
 
@@ -82,10 +89,10 @@ func BuildResolveEdit(in ResolveInput) []Attachment {
 // every reminderInterval while the monitor remains down. No mentions.
 // Stays inside a thread, so no color stripe.
 func BuildReminderReply(in ReminderInput) []Block {
-	text := fmt.Sprintf("⏰ Still down for %s. Last checked: %s.",
+	text := fmt.Sprintf("⏰ Still down for `%s`. Last checked: %s.",
 		formatDowntime(in.DownDuration), FormatDate(in.LastCheckedAt))
 	if in.LastError != "" {
-		text += " Last error: " + in.LastError
+		text += " Last error: `" + in.LastError + "`"
 	}
 	return []Block{section(text)}
 }
@@ -93,80 +100,91 @@ func BuildReminderReply(in ReminderInput) []Block {
 // BuildResolveReply renders the thread reply emitted on resolve.
 // Stays inside a thread, so no color stripe.
 func BuildResolveReply(in ResolveInput) []Block {
-	text := fmt.Sprintf(":large_green_circle: Resolved at %s. Total downtime: %s.",
+	text := fmt.Sprintf(":large_green_circle: Resolved at %s. Total downtime: `%s`.",
 		FormatDate(in.ResolveAt), formatDowntime(in.Downtime))
 	return []Block{section(text)}
 }
 
-// buildParentBlocks is the shared parent layout. Extra detail lines
-// are appended to the single-section bold-label body (used by
-// BuildResolveEdit to append "Resolved").
-func buildParentBlocks(in DownInput, header Block, extra []detailLine) []Block {
+// buildParentBlocks is the shared parent layout in the Uptime Robot
+// style: big header, optional mentions section, single mrkdwn body
+// with `*Label:* value` rows, optional inline response body, and a
+// small dim context-block footer carrying the timestamp + View
+// details link.
+//
+// `extra` lines are appended to the body (used by BuildResolveEdit
+// to surface Duration). footerPrefix + footerTime drive the
+// "Detected <date>" / "Resolved <date>" line; either may be empty.
+func buildParentBlocks(in DownInput, header Block, extra []detailLine, footerPrefix string, footerTime time.Time) []Block {
 	blocks := []Block{header}
 
-	// Context line: group · URL.
-	blocks = append(blocks, Block{
-		"type": "context",
-		"elements": []map[string]any{
-			{"type": "mrkdwn", "text": in.Group + " · " + in.URL},
-		},
-	})
-
-	// Mentions block: parent only, never on reminders/resolves.
+	// Mentions block: parent only, never on reminders/resolves. Stays
+	// in a section because context-block mentions don't reliably fire
+	// notifications.
 	if len(in.Mentions) > 0 {
 		blocks = append(blocks, section(strings.Join(in.Mentions, " ")))
 	}
 
-	// Single mrkdwn section: one *Label:* value per line.
-	lines := []string{
-		fmt.Sprintf("*Status:* %d %s", in.StatusCode, in.StatusText),
-		"*Failure:* " + FormatDate(in.FailureAt),
+	// UR-style body: one *Label:* value per line. Group + URL fold in
+	// here so the message has a single visual cluster.
+	var lines []string
+	if in.URL != "" {
+		lines = append(lines, "*Monitor URL:* "+in.URL)
+	}
+	if in.StatusCode != 0 || in.StatusText != "" {
+		lines = append(lines, fmt.Sprintf("*Reason:* `%d %s`", in.StatusCode, in.StatusText))
 	}
 	if in.LastError != "" {
-		lines = append(lines, "*Error:* "+in.LastError)
+		lines = append(lines, "*Error:* `"+in.LastError+"`")
+	}
+	if in.Group != "" {
+		lines = append(lines, "*Group:* "+in.Group)
 	}
 	for _, e := range extra {
 		lines = append(lines, "*"+e.Label+":* "+e.Value)
 	}
-	blocks = append(blocks, section(strings.Join(lines, "\n")))
+	if len(lines) > 0 {
+		blocks = append(blocks, section(strings.Join(lines, "\n")))
+	}
 
 	// Optional inline response body.
 	if in.ResponseBody != "" && len(in.ResponseBody) <= in.BodyMaxChars {
 		blocks = append(blocks, section("```\n"+in.ResponseBody+"\n```"))
 	}
 
-	// Optional [View details] button.
-	if in.DetailURL != "" {
-		blocks = append(blocks, Block{
-			"type": "actions",
-			"elements": []map[string]any{{
-				"type": "button",
-				"text": map[string]any{"type": "plain_text", "text": "View details"},
-				"url":  in.DetailURL,
-			}},
-		})
+	// Footer: smaller, dimmer (Slack context block). Italics on the
+	// timestamp half mirrors Uptime Robot.
+	if footer := footerLine(footerPrefix, footerTime, in.DetailURL); footer != "" {
+		blocks = append(blocks, contextBlock(footer))
 	}
 
 	return blocks
 }
 
-func downHeader(name string) Block {
-	return Block{
-		"type": "header",
-		"text": map[string]any{
-			"type":  "plain_text",
-			"text":  fmt.Sprintf(":red_circle: %s is DOWN", name),
-			"emoji": true,
-		},
+// footerLine assembles the parent footer mrkdwn:
+//
+//	_<prefix> <date>_  ·  <DetailURL|View details>
+//
+// Either half is omitted when its input is empty. Returns "" when
+// nothing to render.
+func footerLine(prefix string, t time.Time, detailURL string) string {
+	var parts []string
+	if prefix != "" && !t.IsZero() {
+		parts = append(parts, fmt.Sprintf("_%s %s_", prefix, FormatDate(t)))
 	}
+	if detailURL != "" {
+		parts = append(parts, fmt.Sprintf("<%s|View details>", detailURL))
+	}
+	return strings.Join(parts, " · ")
 }
 
-func resolvedHeader(name string, downtime time.Duration) Block {
+// bigHeader is a Slack `header` block (large, bold). plain_text with
+// emoji:true so `:red_circle:` style shortcodes resolve.
+func bigHeader(text string) Block {
 	return Block{
 		"type": "header",
 		"text": map[string]any{
 			"type":  "plain_text",
-			"text":  fmt.Sprintf(":large_green_circle: %s is UP (was down for %s)", name, formatDowntime(downtime)),
+			"text":  text,
 			"emoji": true,
 		},
 	}
@@ -176,6 +194,18 @@ func section(mrkdwn string) Block {
 	return Block{
 		"type": "section",
 		"text": map[string]any{"type": "mrkdwn", "text": mrkdwn},
+	}
+}
+
+// contextBlock wraps a single mrkdwn element in a Slack context block.
+// Context blocks render at a smaller / dimmer "auxiliary text" size
+// than regular sections — used here for the parent footer.
+func contextBlock(mrkdwn string) Block {
+	return Block{
+		"type": "context",
+		"elements": []map[string]any{
+			{"type": "mrkdwn", "text": mrkdwn},
+		},
 	}
 }
 

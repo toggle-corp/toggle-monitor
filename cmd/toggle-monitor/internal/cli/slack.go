@@ -248,6 +248,7 @@ func runSlackTestSSL(ctx context.Context, out io.Writer, in io.Reader, f slackTe
 		Issuer:        "CN=Let's Encrypt Authority X3",
 		Subject:       "CN=example.invalid",
 		DaysRemaining: 7,
+		DetectedAt:    time.Now().UTC(),
 	}
 
 	_, _ = fmt.Fprintf(out, "▸ posting :warning: SSL parent to channel %s …\n", target.ChannelID)
@@ -278,7 +279,11 @@ func runSlackTestSSL(ctx context.Context, out io.Writer, in io.Reader, f slackTe
 	promptResolve(in, out, f.NoPrompt)
 
 	newExpiry := time.Now().UTC().Add(90 * 24 * time.Hour)
-	resolveIn := slack.SSLResolveInput{SSLDownInput: sslIn, NewExpiresAt: newExpiry}
+	resolveIn := slack.SSLResolveInput{
+		SSLDownInput: sslIn,
+		NewExpiresAt: newExpiry,
+		RenewedAt:    time.Now().UTC(),
+	}
 	_, _ = fmt.Fprintf(out, "▸ editing parent → :large_green_circle: renewed …\n")
 	if err := client.UpdateMessage(ctx, target.Token, slack.UpdateMessageInput{
 		ChannelID:   target.ChannelID,
