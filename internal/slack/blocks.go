@@ -126,7 +126,10 @@ func buildParentBlocks(in DownInput, header Block, extra []detailLine, footerPre
 	}
 
 	// UR-style body: one *Label:* value per line. Group + URL fold in
-	// here so the message has a single visual cluster.
+	// here so the message has a single visual cluster. Rendered as a
+	// context block so the details sit at the smaller / dimmer
+	// "auxiliary text" size — the header carries prominence, the body
+	// is reference info.
 	var lines []string
 	if in.URL != "" {
 		lines = append(lines, "*Monitor URL:* "+in.URL)
@@ -144,7 +147,7 @@ func buildParentBlocks(in DownInput, header Block, extra []detailLine, footerPre
 		lines = append(lines, "*"+e.Label+":* "+e.Value)
 	}
 	if len(lines) > 0 {
-		blocks = append(blocks, section(strings.Join(lines, "\n")))
+		blocks = append(blocks, contextBlock(strings.Join(lines, "\n")))
 	}
 
 	// Optional inline response body.

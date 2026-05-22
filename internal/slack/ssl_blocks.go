@@ -96,7 +96,8 @@ func buildSSLParentBlocks(in SSLDownInput, header Block, extra []detailLine, foo
 	for _, e := range extra {
 		lines = append(lines, "*"+e.Label+":* "+e.Value)
 	}
-	blocks = append(blocks, section(strings.Join(lines, "\n")))
+	// Body in a context block: smaller + dimmer than a regular section.
+	blocks = append(blocks, contextBlock(strings.Join(lines, "\n")))
 
 	if footer := footerLine(footerPrefix, footerTime, in.DetailURL); footer != "" {
 		blocks = append(blocks, contextBlock(footer))

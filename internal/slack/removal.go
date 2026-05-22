@@ -32,7 +32,7 @@ func BuildRemovedWarning(in RemovedInput) []Attachment {
 		"*Source:* " + in.Source,
 		"*Group:* " + in.GroupSlug,
 	}
-	blocks := []Block{header, section(strings.Join(lines, "\n"))}
+	blocks := []Block{header, contextBlock(strings.Join(lines, "\n"))}
 	if footer := footerLine("", time.Time{}, in.DetailURL); footer != "" {
 		blocks = append(blocks, contextBlock(footer))
 	}
