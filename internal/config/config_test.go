@@ -228,6 +228,32 @@ func TestLoad_acceptsGroupNotify(t *testing.T) {
 	}
 }
 
+// TestLoad_tlsInsecureSkipVerify_relaxesSSLThresholdsForHTTPS:
+// for an HTTPS monitor with self-signed cert support, the SSL
+// thresholds must not be required (the SSL state machine is bypassed
+// entirely for that monitor).
+func TestLoad_tlsInsecureSkipVerify_relaxesSSLThresholdsForHTTPS(t *testing.T) {
+	// Baseline: HTTPS URL with no SSL thresholds → must fail today.
+	bad := withReplaced(t,
+		"url: http://bastion.local/health",
+		"url: https://internal.cluster.local/health")
+	if _, err := config.Load(bad); err == nil {
+		t.Fatal("expected HTTPS-without-thresholds to fail validation, got success")
+	}
+
+	// With tlsInsecureSkipVerify=true, the same monitor should load.
+	good := withReplaced(t,
+		"url: http://bastion.local/health",
+		"url: https://internal.cluster.local/health\n    tlsInsecureSkipVerify: true")
+	cfg, err := config.Load(good)
+	if err != nil {
+		t.Fatalf("expected tlsInsecureSkipVerify to relax SSL-threshold requirement, got: %v", err)
+	}
+	if !cfg.Monitors[0].TLSInsecureSkipVerify {
+		t.Error("expected Monitors[0].TLSInsecureSkipVerify to be true")
+	}
+}
+
 func TestLoad_rejectsDBBodyMaxCharsSmallerThanSlackBodyMaxChars(t *testing.T) {
 	data := withReplaced(t, "dbBodyMaxChars: 4000", "dbBodyMaxChars: 100")
 	_, err := config.Load(data)

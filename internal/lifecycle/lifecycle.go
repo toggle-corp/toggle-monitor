@@ -380,6 +380,7 @@ func buildPlans(cfg config.Config) []scheduler.Plan {
 			Retries:                m.Retries,
 			RetryBackoff:           m.RetryBackoff.AsDuration(),
 			FollowRedirects:        m.FollowRedirects,
+			TLSInsecureSkipVerify:  m.TLSInsecureSkipVerify,
 			UserAgent:              cfg.HTTPClient.UserAgent,
 			ReminderInterval:       m.ReminderInterval.AsDuration(),
 			ChannelSlug:            m.Slack,

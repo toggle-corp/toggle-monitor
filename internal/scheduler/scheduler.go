@@ -32,11 +32,15 @@ type Plan struct {
 	Retries             int
 	RetryBackoff        time.Duration
 	FollowRedirects     bool
-	UserAgent           string
-	ReminderInterval    time.Duration
-	ChannelSlug         string   // slack destination slug; empty disables Slack output
-	Mentions            []string // pre-resolved raw Slack markup (parent-only)
-	DependsOn           []string // upstream static-monitor slugs; any of them down pauses this monitor
+	// TLSInsecureSkipVerify disables Go's TLS chain verification on
+	// the probe — for HTTPS endpoints with self-signed certs we
+	// intentionally trust. Implies SSL state is forced to skipped.
+	TLSInsecureSkipVerify bool
+	UserAgent             string
+	ReminderInterval      time.Duration
+	ChannelSlug           string   // slack destination slug; empty disables Slack output
+	Mentions              []string // pre-resolved raw Slack markup (parent-only)
+	DependsOn             []string // upstream static-monitor slugs; any of them down pauses this monitor
 
 	// SSL thresholds; SSL evaluation is skipped when all are zero
 	// (which is also the case for static HTTP monitors).
@@ -255,12 +259,13 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 	}
 
 	cfg := httpcheck.Config{
-		URL:                 p.URL,
-		Method:              p.HTTPMethod,
-		AcceptedStatusCodes: p.AcceptedStatusCodes,
-		Timeout:             p.Timeout,
-		FollowRedirects:     p.FollowRedirects,
-		UserAgent:           p.UserAgent,
+		URL:                   p.URL,
+		Method:                p.HTTPMethod,
+		AcceptedStatusCodes:   p.AcceptedStatusCodes,
+		Timeout:               p.Timeout,
+		FollowRedirects:       p.FollowRedirects,
+		TLSInsecureSkipVerify: p.TLSInsecureSkipVerify,
+		UserAgent:             p.UserAgent,
 	}
 
 	var res httpcheck.Result
@@ -357,9 +362,13 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 	// Static HTTP monitors get ssl-skipped; HTTPS monitors check
 	// against the configured thresholds when the probe captured cert
 	// info (it won't have if the probe transport-failed).
+	// tlsInsecureSkipVerify implies "don't track SSL expiry": present
+	// the SSL state machine with IsHTTPS=false so it routes to
+	// SSLStatusSkipped and emits no events.
+	isHTTPSForSSL := p.IsHTTPS && !p.TLSInsecureSkipVerify
 	sslCheck := alert.SSLCheck{
 		At:                  now,
-		IsHTTPS:             p.IsHTTPS,
+		IsHTTPS:             isHTTPSForSSL,
 		AlertThreshold:      p.SSLAlertThreshold,
 		EscalationThreshold: p.SSLEscalationThreshold,
 		ReminderInterval:    p.SSLReminderInterval,

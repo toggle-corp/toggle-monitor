@@ -221,16 +221,18 @@ monitors:
 		t.Error("expected at least one auth.test call at startup")
 	}
 
-	// --- Parent: must mention <!here>, header 🔴, button URL set
+	// --- Parent: header sits on the top-level blocks (outside the
+	// color stripe); mentions + View-details link live in the body /
+	// footer context blocks inside attachments[0].blocks.
 	parent := recorder.postMessages[0]
-	if !blocksContain(t, parent["blocks"], "🔴 API is DOWN") {
+	if !blocksContain(t, parent["blocks"], ":red_circle: API is DOWN") {
 		t.Error("parent message missing DOWN header")
 	}
-	if !blocksContain(t, parent["blocks"], "<!here>") {
-		t.Error("parent message missing <!here> mention")
+	if !blocksContain(t, parent["attachments"], "<!here>") {
+		t.Error("parent message missing <!here> mention in body attachment")
 	}
-	if !blocksContain(t, parent["blocks"], "View details") {
-		t.Error("parent message missing [View details] button")
+	if !blocksContain(t, parent["attachments"], "View details") {
+		t.Error("parent message missing View-details link in footer")
 	}
 	if _, hasThread := parent["thread_ts"]; hasThread {
 		t.Error("first post must be a parent (no thread_ts), but thread_ts is set")
@@ -241,17 +243,18 @@ monitors:
 		if _, hasThread := p["thread_ts"]; !hasThread {
 			t.Errorf("post[%d] (reminder/resolve reply) must be threaded; missing thread_ts", i+1)
 		}
-		if blocksContain(t, p["blocks"], "<!here>") {
+		if blocksContain(t, p["blocks"], "<!here>") || blocksContain(t, p["attachments"], "<!here>") {
 			t.Errorf("post[%d] (reminder/resolve reply) leaked the parent's mention", i+1)
 		}
 	}
 
-	// --- Update: parent edit must change header to ✅ … is UP …
+	// --- Update: parent edit must rewrite header to the green
+	// "is UP" form.
 	if len(recorder.updateMessages) == 0 {
 		t.Fatal("expected at least one chat.update on resolve")
 	}
 	update := recorder.updateMessages[0]
-	if !blocksContain(t, update["blocks"], "✅ API is UP") {
+	if !blocksContain(t, update["blocks"], ":large_green_circle: API is UP") {
 		t.Error("update did not rewrite header to resolved")
 	}
 }

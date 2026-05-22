@@ -227,6 +227,7 @@ kube:
 | `kube.presets[].retries` | int | ✓ | >= 0 | |
 | `kube.presets[].retryBackoff` | duration | ✓ | >= 1s | |
 | `kube.presets[].followRedirects` | bool | ✓ | | |
+| `kube.presets[].tlsInsecureSkipVerify` | bool | — | default `false` | Same semantics as `monitors[].tlsInsecureSkipVerify`. |
 | `kube.presets[].reminderInterval` | duration | ✓ | >= 1h | |
 | `kube.presets[].sslAlertThreshold` | duration | ✓ | > `sslEscalationThreshold` | |
 | `kube.presets[].sslEscalationThreshold` | duration | ✓ | > 0 | |
@@ -296,10 +297,11 @@ monitors:
 | `monitors[].retries` | int | ✓ | >= 0 | |
 | `monitors[].retryBackoff` | duration | ✓ | >= 1s | |
 | `monitors[].followRedirects` | bool | ✓ | | |
+| `monitors[].tlsInsecureSkipVerify` | bool | — | default `false` | Skips Go's TLS chain verification on the probe. Use only for HTTPS endpoints with self-signed certs you intentionally trust. Implies "do not track SSL expiry": SSL state stays `ssl-skipped`. |
 | `monitors[].reminderInterval` | duration | ✓ | >= 1h | |
-| `monitors[].sslAlertThreshold` | duration | ✓ if URL is HTTPS | > `sslEscalationThreshold` | Conditionally required |
-| `monitors[].sslEscalationThreshold` | duration | ✓ if URL is HTTPS | > 0 | Conditionally required |
-| `monitors[].sslReminderInterval` | duration | ✓ if URL is HTTPS | >= 1h | Conditionally required |
+| `monitors[].sslAlertThreshold` | duration | ✓ if URL is HTTPS and `tlsInsecureSkipVerify: false` | > `sslEscalationThreshold` | Conditionally required |
+| `monitors[].sslEscalationThreshold` | duration | ✓ if URL is HTTPS and `tlsInsecureSkipVerify: false` | > 0 | Conditionally required |
+| `monitors[].sslReminderInterval` | duration | ✓ if URL is HTTPS and `tlsInsecureSkipVerify: false` | >= 1h | Conditionally required |
 | `monitors[].slack` | string | ✓ | resolves to a `slack.channels[].slug` | |
 | `monitors[].notify` | list[string] | — | each entry: a `slack.userMapping` slug OR `<...>` raw markup | |
 | `monitors[].tags` | list[string] | — | each: slug regex | |

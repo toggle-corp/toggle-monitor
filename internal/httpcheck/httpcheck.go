@@ -4,6 +4,7 @@ package httpcheck
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,7 +18,11 @@ type Config struct {
 	AcceptedStatusCodes []int
 	Timeout             time.Duration
 	FollowRedirects     bool
-	UserAgent           string
+	// TLSInsecureSkipVerify disables certificate verification on
+	// HTTPS probes (self-signed / private-CA endpoints we trust by
+	// configuration). Has no effect on plain HTTP URLs.
+	TLSInsecureSkipVerify bool
+	UserAgent             string
 }
 
 // Result is the outcome of one probe.
@@ -45,8 +50,15 @@ type TLSInfo struct {
 // into a single tick before handing the final Result to the alert
 // state machine).
 func Check(ctx context.Context, cfg Config) Result {
-	client := &http.Client{
-		Timeout: cfg.Timeout,
+	client := &http.Client{Timeout: cfg.Timeout}
+	if cfg.TLSInsecureSkipVerify {
+		// Clone the default transport so connection pooling and
+		// timeouts stay at Go's defaults; only override the TLS
+		// config. The caller has opted in to skipping verification
+		// per-monitor; gosec disagrees but the choice is deliberate.
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // per-monitor opt-in for self-signed certs
+		client.Transport = tr
 	}
 	if !cfg.FollowRedirects {
 		client.CheckRedirect = func(*http.Request, []*http.Request) error {

@@ -134,6 +134,45 @@ func TestCheck_unexpectedStatusCode_fails(t *testing.T) {
 	}
 }
 
+// TestCheck_TLSInsecureSkipVerify_acceptsSelfSignedCert is the
+// motivating case: probing an HTTPS endpoint that presents a
+// self-signed cert. Without the flag the TLS handshake fails;
+// with it set the probe should complete and report status 200.
+func TestCheck_TLSInsecureSkipVerify_acceptsSelfSignedCert(t *testing.T) {
+	// httptest.NewTLSServer issues a self-signed cert that's not in
+	// any trust store — exactly the scenario this flag exists for.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	// Baseline: verification ON → handshake fails.
+	fail := httpcheck.Check(context.Background(), httpcheck.Config{
+		URL:                 srv.URL,
+		Method:              "GET",
+		AcceptedStatusCodes: []int{200},
+		Timeout:             2 * time.Second,
+	})
+	if fail.Error == "" {
+		t.Fatal("expected TLS handshake to fail without TLSInsecureSkipVerify, got no error")
+	}
+
+	// With the flag: handshake skipped → probe succeeds.
+	ok := httpcheck.Check(context.Background(), httpcheck.Config{
+		URL:                   srv.URL,
+		Method:                "GET",
+		AcceptedStatusCodes:   []int{200},
+		Timeout:               2 * time.Second,
+		TLSInsecureSkipVerify: true,
+	})
+	if ok.Error != "" {
+		t.Fatalf("expected success with TLSInsecureSkipVerify, got: %q", ok.Error)
+	}
+	if ok.StatusCode != 200 {
+		t.Errorf("status: got %d, want 200", ok.StatusCode)
+	}
+}
+
 func TestCheck_acceptedStatusCode_succeeds(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

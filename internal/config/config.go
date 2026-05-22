@@ -80,6 +80,7 @@ type KubePreset struct {
 	Retries                int      `yaml:"retries"`
 	RetryBackoff           Duration `yaml:"retryBackoff"`
 	FollowRedirects        bool     `yaml:"followRedirects"`
+	TLSInsecureSkipVerify  bool     `yaml:"tlsInsecureSkipVerify,omitempty"`
 	ReminderInterval       Duration `yaml:"reminderInterval"`
 	SSLAlertThreshold      Duration `yaml:"sslAlertThreshold"`
 	SSLEscalationThreshold Duration `yaml:"sslEscalationThreshold"`
@@ -158,10 +159,16 @@ type Monitor struct {
 	Retries             int      `yaml:"retries"`
 	RetryBackoff        Duration `yaml:"retryBackoff"`
 	FollowRedirects     bool     `yaml:"followRedirects"`
-	ReminderInterval    Duration `yaml:"reminderInterval"`
-	Slack               string   `yaml:"slack"`               // channel slug
-	Notify              []string `yaml:"notify,omitempty"`    // raw <...> Slack markup or userMapping slug
-	DependsOn           []string `yaml:"dependsOn,omitempty"` // upstream static-monitor slugs that gate this one
+	// TLSInsecureSkipVerify disables Go's TLS verification for this
+	// monitor — needed when probing HTTPS endpoints that present a
+	// self-signed cert or any chain we don't want to trust. Implies
+	// "do not track SSL expiry": the monitor stays at ssl-skipped and
+	// the SSL state machine is bypassed.
+	TLSInsecureSkipVerify bool     `yaml:"tlsInsecureSkipVerify,omitempty"`
+	ReminderInterval      Duration `yaml:"reminderInterval"`
+	Slack                 string   `yaml:"slack"`               // channel slug
+	Notify                []string `yaml:"notify,omitempty"`    // raw <...> Slack markup or userMapping slug
+	DependsOn             []string `yaml:"dependsOn,omitempty"` // upstream static-monitor slugs that gate this one
 
 	// SSL thresholds — required when URL is HTTPS, allowed but
 	// ignored for HTTP URLs (so anchored defaults can be shared).
@@ -415,7 +422,10 @@ func (c *checker) validate(cfg *Config) {
 
 		// SSL thresholds: required for HTTPS URLs, allowed but ignored
 		// for HTTP. When required and present, alert > escalation > 0.
-		if strings.HasPrefix(m.URL, "https://") {
+		// tlsInsecureSkipVerify implies "don't track SSL expiry": the
+		// thresholds aren't required (and would be ignored anyway since
+		// the SSL state machine is bypassed for that monitor).
+		if strings.HasPrefix(m.URL, "https://") && !m.TLSInsecureSkipVerify {
 			if m.SSLAlertThreshold.AsDuration() <= 0 {
 				c.errf(append(base, "sslAlertThreshold"), "required for HTTPS monitors")
 			}
