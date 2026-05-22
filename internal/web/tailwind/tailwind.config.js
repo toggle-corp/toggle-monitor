@@ -3,6 +3,7 @@
 // Run via `make tailwind`.
 /** @type {import('tailwindcss').Config} */
 module.exports = {
+  darkMode: "class",
   content: [
     "internal/web/templates/**/*.templ",
     "internal/web/templates/**/*_templ.go",

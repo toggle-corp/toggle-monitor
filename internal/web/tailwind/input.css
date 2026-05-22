@@ -1,3 +1,19 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Highlight the currently-selected theme button. Driven by the
+   `data-theme` attribute set on <html> by the themeBoot + themeToggle
+   scripts in layout.templ. */
+html[data-theme="light"] [data-theme-set="light"],
+html[data-theme="dark"]  [data-theme-set="dark"],
+html[data-theme="system"] [data-theme-set="system"] {
+  background-color: rgb(15 23 42); /* slate-900 */
+  color: rgb(255 255 255);
+}
+html.dark[data-theme="light"] [data-theme-set="light"],
+html.dark[data-theme="dark"]  [data-theme-set="dark"],
+html.dark[data-theme="system"] [data-theme-set="system"] {
+  background-color: rgb(226 232 240); /* slate-200 */
+  color: rgb(15 23 42);
+}

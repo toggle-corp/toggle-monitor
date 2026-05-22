@@ -23,12 +23,12 @@ templ Paginator(basePath string, page, perPage, total int, extraParams url.Value
 		// Nothing to paginate.
 	} else {
 		<div class="mt-3 flex items-center gap-3 text-sm">
-			<span class="text-slate-500">Page { fmt.Sprint(page) } of { fmt.Sprint(pageCount(total, perPage)) } · { fmt.Sprint(total) } total</span>
+			<span class="text-slate-500 dark:text-slate-400">Page { fmt.Sprint(page) } of { fmt.Sprint(pageCount(total, perPage)) } · { fmt.Sprint(total) } total</span>
 			if page > 1 {
-				<a class="text-blue-700 hover:underline" href={ paginatorLink(basePath, extraParams, page-1) }>← Prev</a>
+				<a class="text-blue-700 dark:text-blue-400 hover:underline" href={ paginatorLink(basePath, extraParams, page-1) }>← Prev</a>
 			}
 			if page*perPage < total {
-				<a class="text-blue-700 hover:underline" href={ paginatorLink(basePath, extraParams, page+1) }>Next →</a>
+				<a class="text-blue-700 dark:text-blue-400 hover:underline" href={ paginatorLink(basePath, extraParams, page+1) }>Next →</a>
 			}
 		</div>
 	}
@@ -43,15 +43,15 @@ templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, groups [
 			hx-push-url="true"
 			method="get"
 			action="/monitors"
-			class="flex flex-wrap items-end gap-3 mb-4 bg-white rounded border border-slate-200 p-3"
+			class="flex flex-wrap items-end gap-3 mb-4 bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-3"
 		>
 			<div>
-				<label class="block text-xs text-slate-500 mb-1" for="q">Search</label>
-				<input id="q" name="q" value={ filter.Search } class="border border-slate-300 rounded px-2 py-1 text-sm" placeholder="name or slug"/>
+				<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="q">Search</label>
+				<input id="q" name="q" value={ filter.Search } class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm" placeholder="name or slug"/>
 			</div>
 			<div>
-				<label class="block text-xs text-slate-500 mb-1" for="status">Status</label>
-				<select id="status" name="status" class="border border-slate-300 rounded px-2 py-1 text-sm">
+				<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="status">Status</label>
+				<select id="status" name="status" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
 					<option value="" selected?={ filter.Status == "" }>(any)</option>
 					<option value="up" selected?={ filter.Status == "up" }>up</option>
 					<option value="down" selected?={ filter.Status == "down" }>down</option>
@@ -59,29 +59,29 @@ templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, groups [
 				</select>
 			</div>
 			<div>
-				<label class="block text-xs text-slate-500 mb-1" for="group">Group</label>
-				<select id="group" name="group" class="border border-slate-300 rounded px-2 py-1 text-sm">
+				<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="group">Group</label>
+				<select id="group" name="group" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
 					<option value="" selected?={ filter.Group == "" }>(any)</option>
 					for _, g := range knownGroups {
 						<option value={ g } selected?={ filter.Group == g }>{ g }</option>
 					}
 				</select>
 			</div>
-			<button class="bg-slate-900 text-white text-sm px-3 py-1.5 rounded">Apply</button>
+			<button class="bg-slate-900 dark:bg-slate-200 dark:text-slate-900 text-white text-sm px-3 py-1.5 rounded">Apply</button>
 			if filter.Search != "" || filter.Status != "" || filter.Group != "" {
-				<a class="text-sm text-slate-500 hover:text-slate-900" href="/monitors">Clear filters</a>
+				<a class="text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100" href="/monitors">Clear filters</a>
 			}
 		</form>
 
 		if len(listing.Items) == 0 {
-			<div class="bg-white rounded border border-slate-200 p-6 text-center text-sm text-slate-500">
+			<div class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-6 text-center text-sm text-slate-500 dark:text-slate-400">
 				<p>No monitors match your filters.</p>
-				<a class="text-blue-700 hover:underline" href="/monitors">Clear filters</a>
+				<a class="text-blue-700 dark:text-blue-400 hover:underline" href="/monitors">Clear filters</a>
 			</div>
 		} else {
-			<table class="w-full bg-white rounded border border-slate-200 overflow-hidden">
+			<table class="w-full bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 overflow-hidden">
 				<thead>
-					<tr class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+					<tr class="bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
 						<th class="py-2 px-3">Name</th>
 						<th class="py-2 px-3">Group</th>
 						<th class="py-2 px-3">Status</th>
@@ -103,16 +103,16 @@ templ GroupPage(slug string, listing store.MonitorListing, page, perPage int) {
 	@Layout("Group: "+slug) {
 		<div class="flex items-center gap-3 mb-3">
 			<h1 class="text-xl font-semibold">Group: { slug }</h1>
-			<a class="text-sm text-slate-500 hover:text-slate-900" href="/monitors">All monitors →</a>
+			<a class="text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100" href="/monitors">All monitors →</a>
 		</div>
 		if len(listing.Items) == 0 {
-			<div class="bg-white rounded border border-slate-200 p-6 text-center text-sm text-slate-500">
+			<div class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-6 text-center text-sm text-slate-500 dark:text-slate-400">
 				<p>No monitors in this group.</p>
 			</div>
 		} else {
-			<table class="w-full bg-white rounded border border-slate-200 overflow-hidden">
+			<table class="w-full bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 overflow-hidden">
 				<thead>
-					<tr class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+					<tr class="bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
 						<th class="py-2 px-3">Name</th>
 						<th class="py-2 px-3">Status</th>
 						<th class="py-2 px-3">URL</th>
@@ -120,10 +120,10 @@ templ GroupPage(slug string, listing store.MonitorListing, page, perPage int) {
 				</thead>
 				<tbody>
 					for _, m := range listing.Items {
-						<tr class="border-b border-slate-100">
-							<td class="py-2 px-3"><a class="text-blue-700 hover:underline" href={ templ.URL("/monitor/" + m.Slug) }>{ m.FriendlyName }</a></td>
+						<tr class="border-b border-slate-100 dark:border-slate-800">
+							<td class="py-2 px-3"><a class="text-blue-700 dark:text-blue-400 hover:underline" href={ templ.URL("/monitor/" + m.Slug) }>{ m.FriendlyName }</a></td>
 							<td class="py-2 px-3">@StatusBadge(string(m.Status))</td>
-							<td class="py-2 px-3 text-sm text-slate-500">{ m.URL }</td>
+							<td class="py-2 px-3 text-sm text-slate-500 dark:text-slate-400">{ m.URL }</td>
 						</tr>
 					}
 				</tbody>

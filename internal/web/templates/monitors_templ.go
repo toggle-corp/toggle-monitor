@@ -49,14 +49,14 @@ func Paginator(basePath string, page, perPage, total int, extraParams url.Values
 		ctx = templ.ClearChildren(ctx)
 		if total <= perPage && page == 1 {
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"mt-3 flex items-center gap-3 text-sm\"><span class=\"text-slate-500\">Page ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"mt-3 flex items-center gap-3 text-sm\"><span class=\"text-slate-500 dark:text-slate-400\">Page ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var2 string
 			templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprint(page))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 26, Col: 55}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 26, Col: 75}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 			if templ_7745c5c3_Err != nil {
@@ -69,7 +69,7 @@ func Paginator(basePath string, page, perPage, total int, extraParams url.Values
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprint(pageCount(total, perPage)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 26, Col: 100}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 26, Col: 120}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 			if templ_7745c5c3_Err != nil {
@@ -82,7 +82,7 @@ func Paginator(basePath string, page, perPage, total int, extraParams url.Values
 			var templ_7745c5c3_Var4 string
 			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprint(total))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 26, Col: 125}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 26, Col: 145}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 			if templ_7745c5c3_Err != nil {
@@ -93,14 +93,14 @@ func Paginator(basePath string, page, perPage, total int, extraParams url.Values
 				return templ_7745c5c3_Err
 			}
 			if page > 1 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<a class=\"text-blue-700 hover:underline\" href=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<a class=\"text-blue-700 dark:text-blue-400 hover:underline\" href=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var5 templ.SafeURL
 				templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinURLErrs(paginatorLink(basePath, extraParams, page-1))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 28, Col: 96}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 28, Col: 115}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 				if templ_7745c5c3_Err != nil {
@@ -112,14 +112,14 @@ func Paginator(basePath string, page, perPage, total int, extraParams url.Values
 				}
 			}
 			if page*perPage < total {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "<a class=\"text-blue-700 hover:underline\" href=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "<a class=\"text-blue-700 dark:text-blue-400 hover:underline\" href=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var6 templ.SafeURL
 				templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinURLErrs(paginatorLink(basePath, extraParams, page+1))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 31, Col: 96}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 31, Col: 115}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 				if templ_7745c5c3_Err != nil {
@@ -172,7 +172,7 @@ func MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, groups []
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "<h1 class=\"text-xl font-semibold mb-3\">Monitors</h1><form hx-get=\"/monitors\" hx-target=\"body\" hx-push-url=\"true\" method=\"get\" action=\"/monitors\" class=\"flex flex-wrap items-end gap-3 mb-4 bg-white rounded border border-slate-200 p-3\"><div><label class=\"block text-xs text-slate-500 mb-1\" for=\"q\">Search</label> <input id=\"q\" name=\"q\" value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "<h1 class=\"text-xl font-semibold mb-3\">Monitors</h1><form hx-get=\"/monitors\" hx-target=\"body\" hx-push-url=\"true\" method=\"get\" action=\"/monitors\" class=\"flex flex-wrap items-end gap-3 mb-4 bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-3\"><div><label class=\"block text-xs text-slate-500 dark:text-slate-400 mb-1\" for=\"q\">Search</label> <input id=\"q\" name=\"q\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -185,7 +185,7 @@ func MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, groups []
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "\" class=\"border border-slate-300 rounded px-2 py-1 text-sm\" placeholder=\"name or slug\"></div><div><label class=\"block text-xs text-slate-500 mb-1\" for=\"status\">Status</label> <select id=\"status\" name=\"status\" class=\"border border-slate-300 rounded px-2 py-1 text-sm\"><option value=\"\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "\" class=\"border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm\" placeholder=\"name or slug\"></div><div><label class=\"block text-xs text-slate-500 dark:text-slate-400 mb-1\" for=\"status\">Status</label> <select id=\"status\" name=\"status\" class=\"border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm\"><option value=\"\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -225,7 +225,7 @@ func MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, groups []
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, ">temporary-paused</option></select></div><div><label class=\"block text-xs text-slate-500 mb-1\" for=\"group\">Group</label> <select id=\"group\" name=\"group\" class=\"border border-slate-300 rounded px-2 py-1 text-sm\"><option value=\"\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, ">temporary-paused</option></select></div><div><label class=\"block text-xs text-slate-500 dark:text-slate-400 mb-1\" for=\"group\">Group</label> <select id=\"group\" name=\"group\" class=\"border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm\"><option value=\"\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -281,12 +281,12 @@ func MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, groups []
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 27, "</select></div><button class=\"bg-slate-900 text-white text-sm px-3 py-1.5 rounded\">Apply</button> ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 27, "</select></div><button class=\"bg-slate-900 dark:bg-slate-200 dark:text-slate-900 text-white text-sm px-3 py-1.5 rounded\">Apply</button> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			if filter.Search != "" || filter.Status != "" || filter.Group != "" {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 28, "<a class=\"text-sm text-slate-500 hover:text-slate-900\" href=\"/monitors\">Clear filters</a>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 28, "<a class=\"text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100\" href=\"/monitors\">Clear filters</a>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -296,12 +296,12 @@ func MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, groups []
 				return templ_7745c5c3_Err
 			}
 			if len(listing.Items) == 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 30, "<div class=\"bg-white rounded border border-slate-200 p-6 text-center text-sm text-slate-500\"><p>No monitors match your filters.</p><a class=\"text-blue-700 hover:underline\" href=\"/monitors\">Clear filters</a></div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 30, "<div class=\"bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-6 text-center text-sm text-slate-500 dark:text-slate-400\"><p>No monitors match your filters.</p><a class=\"text-blue-700 dark:text-blue-400 hover:underline\" href=\"/monitors\">Clear filters</a></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 31, "<table class=\"w-full bg-white rounded border border-slate-200 overflow-hidden\"><thead><tr class=\"bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500\"><th class=\"py-2 px-3\">Name</th><th class=\"py-2 px-3\">Group</th><th class=\"py-2 px-3\">Status</th><th class=\"py-2 px-3\">URL</th></tr></thead> <tbody>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 31, "<table class=\"w-full bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 overflow-hidden\"><thead><tr class=\"bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400\"><th class=\"py-2 px-3\">Name</th><th class=\"py-2 px-3\">Group</th><th class=\"py-2 px-3\">Status</th><th class=\"py-2 px-3\">URL</th></tr></thead> <tbody>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -376,29 +376,29 @@ func GroupPage(slug string, listing store.MonitorListing, page, perPage int) tem
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 34, "</h1><a class=\"text-sm text-slate-500 hover:text-slate-900\" href=\"/monitors\">All monitors →</a></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 34, "</h1><a class=\"text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100\" href=\"/monitors\">All monitors →</a></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			if len(listing.Items) == 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 35, "<div class=\"bg-white rounded border border-slate-200 p-6 text-center text-sm text-slate-500\"><p>No monitors in this group.</p></div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 35, "<div class=\"bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-6 text-center text-sm text-slate-500 dark:text-slate-400\"><p>No monitors in this group.</p></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 36, "<table class=\"w-full bg-white rounded border border-slate-200 overflow-hidden\"><thead><tr class=\"bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500\"><th class=\"py-2 px-3\">Name</th><th class=\"py-2 px-3\">Status</th><th class=\"py-2 px-3\">URL</th></tr></thead> <tbody>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 36, "<table class=\"w-full bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 overflow-hidden\"><thead><tr class=\"bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400\"><th class=\"py-2 px-3\">Name</th><th class=\"py-2 px-3\">Status</th><th class=\"py-2 px-3\">URL</th></tr></thead> <tbody>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				for _, m := range listing.Items {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 37, "<tr class=\"border-b border-slate-100\"><td class=\"py-2 px-3\"><a class=\"text-blue-700 hover:underline\" href=\"")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 37, "<tr class=\"border-b border-slate-100 dark:border-slate-800\"><td class=\"py-2 px-3\"><a class=\"text-blue-700 dark:text-blue-400 hover:underline\" href=\"")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 					var templ_7745c5c3_Var15 templ.SafeURL
 					templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL("/monitor/" + m.Slug))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 124, Col: 108}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 124, Col: 127}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 					if templ_7745c5c3_Err != nil {
@@ -411,7 +411,7 @@ func GroupPage(slug string, listing store.MonitorListing, page, perPage int) tem
 					var templ_7745c5c3_Var16 string
 					templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(m.FriendlyName)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 124, Col: 127}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 124, Col: 146}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 					if templ_7745c5c3_Err != nil {
@@ -425,14 +425,14 @@ func GroupPage(slug string, listing store.MonitorListing, page, perPage int) tem
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 40, "</td><td class=\"py-2 px-3 text-sm text-slate-500\">")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 40, "</td><td class=\"py-2 px-3 text-sm text-slate-500 dark:text-slate-400\">")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 					var templ_7745c5c3_Var17 string
 					templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(m.URL)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 126, Col: 59}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 126, Col: 79}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 					if templ_7745c5c3_Err != nil {

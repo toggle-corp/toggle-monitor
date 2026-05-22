@@ -48,30 +48,30 @@ func DiscoveryListing(rows []store.DiscoverySnapshotRow) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			if len(rows) == 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "<p class=\"text-sm text-slate-500\">No ingresses observed yet. (Auto-discovery is enabled only when the kube block is set in config.)</p>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "<p class=\"text-sm text-slate-500 dark:text-slate-400\">No ingresses observed yet. (Auto-discovery is enabled only when the kube block is set in config.)</p>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div class=\"mb-3 text-sm text-slate-600\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div class=\"mb-3 text-sm text-slate-600 dark:text-slate-400\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var3 string
 				templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(summary(rows))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/discovery.templ`, Line: 11, Col: 59}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/discovery.templ`, Line: 11, Col: 79}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "</div><table class=\"w-full bg-white rounded border border-slate-200 overflow-hidden\"><thead><tr class=\"bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500\"><th class=\"py-2 px-3\">Namespace</th><th class=\"py-2 px-3\">Ingress</th><th class=\"py-2 px-3\">Host</th><th class=\"py-2 px-3\">Status</th><th class=\"py-2 px-3\">Reason</th><th class=\"py-2 px-3\">Monitor</th></tr></thead> <tbody>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "</div><table class=\"w-full bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 overflow-hidden\"><thead><tr class=\"bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400\"><th class=\"py-2 px-3\">Namespace</th><th class=\"py-2 px-3\">Ingress</th><th class=\"py-2 px-3\">Host</th><th class=\"py-2 px-3\">Status</th><th class=\"py-2 px-3\">Reason</th><th class=\"py-2 px-3\">Monitor</th></tr></thead> <tbody>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				for _, r := range rows {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<tr class=\"border-b border-slate-100\"><td class=\"py-2 px-3 text-sm\">")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<tr class=\"border-b border-slate-100 dark:border-slate-800\"><td class=\"py-2 px-3 text-sm\">")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -123,7 +123,7 @@ func DiscoveryListing(rows []store.DiscoverySnapshotRow) templ.Component {
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "</td><td class=\"py-2 px-3 text-sm text-slate-500\">")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "</td><td class=\"py-2 px-3 text-sm text-slate-500 dark:text-slate-400\">")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -143,14 +143,14 @@ func DiscoveryListing(rows []store.DiscoverySnapshotRow) templ.Component {
 						return templ_7745c5c3_Err
 					}
 					if r.MonitorSlug != nil {
-						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "<a class=\"text-blue-700 hover:underline\" href=\"")
+						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "<a class=\"text-blue-700 dark:text-blue-400 hover:underline\" href=\"")
 						if templ_7745c5c3_Err != nil {
 							return templ_7745c5c3_Err
 						}
 						var templ_7745c5c3_Var9 templ.SafeURL
 						templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL("/monitor/" + *r.MonitorSlug))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/discovery.templ`, Line: 37, Col: 96}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/discovery.templ`, Line: 37, Col: 115}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 						if templ_7745c5c3_Err != nil {
@@ -163,7 +163,7 @@ func DiscoveryListing(rows []store.DiscoverySnapshotRow) templ.Component {
 						var templ_7745c5c3_Var10 string
 						templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(*r.MonitorSlug)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/discovery.templ`, Line: 37, Col: 115}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/discovery.templ`, Line: 37, Col: 134}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 						if templ_7745c5c3_Err != nil {
@@ -266,7 +266,7 @@ func DiscoveryDetail(row store.DiscoverySnapshotRow) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, "</h1><section class=\"bg-white rounded border border-slate-200 p-4 mb-6\"><h2 class=\"text-sm uppercase tracking-wide text-slate-500 mb-2\">Snapshot</h2><dl>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, "</h1><section class=\"bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6\"><h2 class=\"text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2\">Snapshot</h2><dl>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -292,12 +292,12 @@ func DiscoveryDetail(row store.DiscoverySnapshotRow) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "</dl></section><section class=\"bg-white rounded border border-slate-200 p-4\"><h2 class=\"text-sm uppercase tracking-wide text-slate-500 mb-2\">Annotations</h2>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "</dl></section><section class=\"bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4\"><h2 class=\"text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2\">Annotations</h2>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			if len(row.Annotations) == 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 21, "<p class=\"text-sm text-slate-500\">No annotations.</p>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 21, "<p class=\"text-sm text-slate-500 dark:text-slate-400\">No annotations.</p>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
