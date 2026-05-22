@@ -22,20 +22,30 @@ type SSLDownInput struct {
 }
 
 // BuildSSLParent renders the initial ⚠️ SSL parent. Amber stripe.
-func BuildSSLParent(in SSLDownInput) []Attachment {
-	return []Attachment{{
-		Color: ColorSSLWarn,
-		Blocks: buildSSLParentBlocks(in,
-			bigHeader(fmt.Sprintf(":warning: %s — SSL expiring in %d days", in.FriendlyName, in.DaysRemaining)),
-			nil,
-			"Detected", in.DetectedAt),
-	}}
+// Header sits outside the attachment so the stripe wraps only the
+// quieter body.
+func BuildSSLParent(in SSLDownInput) ParentMessage {
+	return ParentMessage{
+		Blocks: []Block{bigHeader(fmt.Sprintf(":warning: %s — SSL expiring in %d days",
+			in.FriendlyName, in.DaysRemaining))},
+		Attachments: []Attachment{{
+			Color:  ColorSSLWarn,
+			Blocks: buildSSLParentBlocks(in, nil, "Detected", in.DetectedAt),
+		}},
+	}
 }
 
 // BuildSSLReminderReply renders the cadence reminder thread reply.
+// One *Label:* value per line for consistency with the parent body.
 func BuildSSLReminderReply(in SSLDownInput) []Block {
-	text := fmt.Sprintf("⚠️ Still expiring — `%d` days remaining. Renewal needed.", in.DaysRemaining)
-	return []Block{section(text)}
+	lines := []string{
+		fmt.Sprintf("⚠️ *Days remaining:* `%d`", in.DaysRemaining),
+	}
+	if !in.ExpiresAt.IsZero() {
+		lines = append(lines, "*Expires:* "+FormatDate(in.ExpiresAt))
+	}
+	lines = append(lines, "_Renewal needed._")
+	return []Block{section(strings.Join(lines, "\n"))}
 }
 
 // SSLResolveInput carries the data needed for the resolve-edit
@@ -50,15 +60,18 @@ type SSLResolveInput struct {
 // edited to after the cert is renewed. Green stripe, header swap, a
 // "New expiry" line appended to the body, and the footer rewrites
 // to "Renewed <date>".
-func BuildSSLResolveEdit(in SSLResolveInput) []Attachment {
+func BuildSSLResolveEdit(in SSLResolveInput) ParentMessage {
 	days := int(time.Until(in.NewExpiresAt).Hours() / 24)
-	header := bigHeader(fmt.Sprintf(":large_green_circle: %s — Certificate renewed (in %d days expiry)", in.FriendlyName, days))
-	return []Attachment{{
-		Color: ColorResolved,
-		Blocks: buildSSLParentBlocks(in.SSLDownInput, header,
-			[]detailLine{{Label: "New expiry", Value: FormatDate(in.NewExpiresAt)}},
-			"Renewed", in.RenewedAt),
-	}}
+	return ParentMessage{
+		Blocks: []Block{bigHeader(fmt.Sprintf(":large_green_circle: %s — Certificate renewed (in %d days expiry)",
+			in.FriendlyName, days))},
+		Attachments: []Attachment{{
+			Color: ColorResolved,
+			Blocks: buildSSLParentBlocks(in.SSLDownInput,
+				[]detailLine{{Label: "New expiry", Value: FormatDate(in.NewExpiresAt)}},
+				"Renewed", in.RenewedAt),
+		}},
+	}
 }
 
 // BuildSSLResolveReply is the thread reply emitted on cert renewal.
@@ -68,17 +81,16 @@ func BuildSSLResolveReply(in SSLResolveInput) []Block {
 	return []Block{section(text)}
 }
 
-// buildSSLParentBlocks mirrors buildParentBlocks: big header +
-// optional mentions + UR-style body in a section + small dim
-// context-block footer. Group + URL fold into the body so the
-// message has a single visual cluster.
-func buildSSLParentBlocks(in SSLDownInput, header Block, extra []detailLine, footerPrefix string, footerTime time.Time) []Block {
-	blocks := []Block{header}
-	if len(in.Mentions) > 0 {
-		blocks = append(blocks, section(strings.Join(in.Mentions, " ")))
-	}
+// buildSSLParentBlocks mirrors buildParentBlocks: a single context
+// block carrying mentions + UR-style fields, then optional footer.
+// No header — that's a top-level block outside this attachment.
+func buildSSLParentBlocks(in SSLDownInput, extra []detailLine, footerPrefix string, footerTime time.Time) []Block {
+	var blocks []Block
 
 	var lines []string
+	if len(in.Mentions) > 0 {
+		lines = append(lines, strings.Join(in.Mentions, " "))
+	}
 	if in.URL != "" {
 		lines = append(lines, "*Monitor URL:* "+in.URL)
 	}
@@ -91,12 +103,11 @@ func buildSSLParentBlocks(in SSLDownInput, header Block, extra []detailLine, foo
 		lines = append(lines, "*Subject:* `"+in.Subject+"`")
 	}
 	if in.Group != "" {
-		lines = append(lines, "*Group:* "+in.Group)
+		lines = append(lines, "*Group:* `"+in.Group+"`")
 	}
 	for _, e := range extra {
 		lines = append(lines, "*"+e.Label+":* "+e.Value)
 	}
-	// Body in a context block: smaller + dimmer than a regular section.
 	blocks = append(blocks, contextBlock(strings.Join(lines, "\n")))
 
 	if footer := footerLine(footerPrefix, footerTime, in.DetailURL); footer != "" {

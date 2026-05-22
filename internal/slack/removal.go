@@ -21,22 +21,24 @@ type RemovedInput struct {
 
 // BuildRemovedWarning renders the non-threaded warning that's posted
 // to the monitor's last-known Slack channel when the monitor
-// disappears from config or from the cluster. Amber stripe, UR-style
-// body, View-details link in the footer. No mentions.
-func BuildRemovedWarning(in RemovedInput) []Attachment {
-	header := bigHeader(fmt.Sprintf(":warning: Monitor removed: %s", in.FriendlyName))
+// disappears from config or from the cluster. Amber stripe wraps the
+// body only — the header rides outside it.
+func BuildRemovedWarning(in RemovedInput) ParentMessage {
 	lines := []string{
 		"*Monitor URL:* " + in.URL,
 		"*Method:* `" + in.HTTPMethod + "`",
 		"*Reason:* `" + in.Reason + "`",
 		"*Source:* " + in.Source,
-		"*Group:* " + in.GroupSlug,
+		"*Group:* `" + in.GroupSlug + "`",
 	}
-	blocks := []Block{header, contextBlock(strings.Join(lines, "\n"))}
+	blocks := []Block{contextBlock(strings.Join(lines, "\n"))}
 	if footer := footerLine("", time.Time{}, in.DetailURL); footer != "" {
 		blocks = append(blocks, contextBlock(footer))
 	}
-	return []Attachment{{Color: ColorRemoved, Blocks: blocks}}
+	return ParentMessage{
+		Blocks:      []Block{bigHeader(fmt.Sprintf(":warning: Monitor removed: %s", in.FriendlyName))},
+		Attachments: []Attachment{{Color: ColorRemoved, Blocks: blocks}},
+	}
 }
 
 // BuildRemovedClose renders the in-thread reply posted when a removed
@@ -47,16 +49,17 @@ func BuildRemovedClose() []Block {
 
 // BuildRemovedResolveEdit produces the parent-edit attachments for a
 // removed monitor's uptime thread. Green stripe + :large_green_circle:
-// header, with a "Resolved: monitor removed" footer (no timestamp —
-// the removal isn't a real recovery moment).
-func BuildRemovedResolveEdit(in DownInput) []Attachment {
-	header := bigHeader(fmt.Sprintf(":large_green_circle: %s — Resolved (monitor removed)", in.FriendlyName))
-	// We use a synthetic detail line for the "monitor removed" note
-	// since there's no meaningful timestamp to attach.
-	blocks := buildParentBlocks(in, header, []detailLine{
+// header (outside the stripe), with a "Resolved: monitor removed"
+// detail line (no timestamp — the removal isn't a real recovery
+// moment).
+func BuildRemovedResolveEdit(in DownInput) ParentMessage {
+	blocks := buildParentBlocks(in, []detailLine{
 		{Label: "Resolved", Value: "monitor removed"},
 	}, "", time.Time{})
-	return []Attachment{{Color: ColorResolved, Blocks: blocks}}
+	return ParentMessage{
+		Blocks:      []Block{bigHeader(fmt.Sprintf(":large_green_circle: %s — Resolved (monitor removed)", in.FriendlyName))},
+		Attachments: []Attachment{{Color: ColorResolved, Blocks: blocks}},
+	}
 }
 
 // NotifyRemoved is the public dispatch hook the lifecycle calls per
@@ -96,10 +99,12 @@ func (n *Notifier) NotifyRemoved(ctx context.Context, channelSlug string, in Mon
 			LastError:    in.LastError,
 			DetailURL:    n.detailURL(in.Slug),
 		}
+		resolveMsg := BuildRemovedResolveEdit(downIn)
 		if err := n.client.UpdateMessage(ctx, ch.Token, UpdateMessageInput{
 			ChannelID:   in.UptimeThreadChannel,
 			TS:          in.UptimeThreadTS,
-			Attachments: BuildRemovedResolveEdit(downIn),
+			Blocks:      resolveMsg.Blocks,
+			Attachments: resolveMsg.Attachments,
 		}); err != nil {
 			n.log.Warn("removal: edit parent", "monitor", in.Slug, "error", err)
 		}
@@ -118,7 +123,8 @@ func (n *Notifier) NotifyRemoved(ctx context.Context, channelSlug string, in Mon
 	})
 	if _, err := n.client.PostMessage(ctx, ch.Token, PostMessageInput{
 		ChannelID:   ch.ID,
-		Attachments: warning,
+		Blocks:      warning.Blocks,
+		Attachments: warning.Attachments,
 	}); err != nil {
 		n.log.Warn("removal: post warning", "monitor", in.Slug, "error", err)
 	}

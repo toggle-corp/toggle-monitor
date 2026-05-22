@@ -44,7 +44,7 @@ func TestBuildDownParent_includesHeaderContextFieldsAndMentions(t *testing.T) {
 	for _, want := range []string{
 		":red_circle: API is DOWN",
 		"*Monitor URL:* http://api/health",
-		"*Group:* prod",
+		"*Group:* `prod`",
 		"<!here> <@U123ABC>",
 		"*Reason:* `503 Service Unavailable`",
 		"*Error:* `boom`",
@@ -129,7 +129,7 @@ func TestBuildResolveEdit_preservesContextAndChangesHeader(t *testing.T) {
 	if !strings.Contains(s, "*Monitor URL:* http://api/health") {
 		t.Errorf("monitor URL line missing in resolve edit:\n%s", s)
 	}
-	if !strings.Contains(s, "*Group:* prod") {
+	if !strings.Contains(s, "*Group:* `prod`") {
 		t.Errorf("group line missing in resolve edit:\n%s", s)
 	}
 	// Duration line + Resolved-at footer.
@@ -154,11 +154,11 @@ func TestBuildReminderReply_noMentions(t *testing.T) {
 		LastCheckedAt: t0,
 		LastError:     "still 503",
 	}))
-	if !strings.Contains(s, "Still down for `3d`") {
-		t.Errorf("missing 'Still down for `3d`' in:\n%s", s)
+	if !strings.Contains(s, "*Still down for:* `3d`") {
+		t.Errorf("missing 'Still down for: `3d`' in:\n%s", s)
 	}
-	if !strings.Contains(s, "`still 503`") {
-		t.Errorf("missing last error in:\n%s", s)
+	if !strings.Contains(s, "*Last error:* `still 503`") {
+		t.Errorf("missing last error line in:\n%s", s)
 	}
 	if strings.Contains(s, "<!here>") || strings.Contains(s, "<@U") {
 		t.Errorf("reminder should have NO mentions, got:\n%s", s)

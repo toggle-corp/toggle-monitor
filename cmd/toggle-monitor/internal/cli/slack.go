@@ -55,6 +55,7 @@ type slackTestFlags struct {
 	NoPrompt    bool
 	Notify      []string // userMapping slugs and/or raw Slack markup
 	Dependents  []string // simulated dependent monitor slugs (uptime only)
+	Cleanup     bool     // delete every message this command posted on exit
 }
 
 func addSlackTestFlags(cmd *cobra.Command, f *slackTestFlags) {
@@ -70,7 +71,51 @@ func addSlackTestFlags(cmd *cobra.Command, f *slackTestFlags) {
 	cmd.Flags().StringSliceVar(&f.Dependents, "dependents", nil,
 		"simulate cascading effect: dependent monitor slugs that would be paused (down) / resumed (resolve) "+
 			"while this monitor is down. Repeatable / comma-separated. Renders a small dim note above the footer.")
+	cmd.Flags().BoolVar(&f.Cleanup, "cleanup", false,
+		"after the workflow completes, delete every chat.postMessage this command made (uses chat.delete). "+
+			"Bots can only delete their own messages.")
 	_ = cmd.MarkFlagRequired("channel")
+}
+
+// postedRefs tracks every chat.postMessage TS this run created so
+// --cleanup can issue chat.delete for each at the end.
+type postedRefs struct {
+	channelID string
+	ts        []string
+}
+
+func (p *postedRefs) add(ts string) {
+	if ts == "" {
+		return
+	}
+	p.ts = append(p.ts, ts)
+}
+
+// cleanup deletes every recorded message (in reverse posting order so
+// thread replies go before their parent). Prompts before deleting
+// unless `noPrompt` is set, so the operator gets a chance to inspect
+// the rendered messages first. Best-effort: log + continue on
+// per-message failures so the user gets feedback even when some
+// deletes fail (e.g. message older than retention).
+func (p *postedRefs) cleanup(ctx context.Context, in io.Reader, out io.Writer, client *slack.Client, token secret.SecretString, noPrompt bool) {
+	if len(p.ts) == 0 {
+		return
+	}
+	if !noPrompt {
+		_, _ = fmt.Fprintf(out, "→ press Enter to delete the %d posted message(s) (or Ctrl-C to keep them)…\n", len(p.ts))
+		_, _ = bufio.NewReader(in).ReadString('\n')
+	}
+	_, _ = fmt.Fprintf(out, "▸ cleanup: deleting %d posted message(s)…\n", len(p.ts))
+	for i := len(p.ts) - 1; i >= 0; i-- {
+		ts := p.ts[i]
+		if err := client.DeleteMessage(ctx, token, slack.DeleteMessageInput{
+			ChannelID: p.channelID, TS: ts,
+		}); err != nil {
+			_, _ = fmt.Fprintf(out, "  ✗ ts=%s: %v\n", ts, err)
+			continue
+		}
+		_, _ = fmt.Fprintf(out, "  ✓ ts=%s deleted\n", ts)
+	}
 }
 
 func newSlackTestUptimeCmd() *cobra.Command {
@@ -176,14 +221,22 @@ func runSlackTestUptime(ctx context.Context, out io.Writer, in io.Reader, f slac
 		Note:         renderDependentsNote("⏸ Pauses dependents", f.Dependents),
 	}
 
+	posted := &postedRefs{channelID: target.ChannelID}
+	if f.Cleanup {
+		defer posted.cleanup(ctx, in, out, client, target.Token, f.NoPrompt)
+	}
+
 	_, _ = fmt.Fprintf(out, "▸ posting :red_circle: parent to channel %s …\n", target.ChannelID)
+	downMsg := slack.BuildDownParent(downIn)
 	parent, err := client.PostMessage(ctx, target.Token, slack.PostMessageInput{
 		ChannelID:   target.ChannelID,
-		Attachments: slack.BuildDownParent(downIn),
+		Blocks:      downMsg.Blocks,
+		Attachments: downMsg.Attachments,
 	})
 	if err != nil {
 		return fmt.Errorf("post parent: %w", err)
 	}
+	posted.add(parent.TS)
 	_, _ = fmt.Fprintf(out, "  parent ts=%s\n", parent.TS)
 
 	for i := 1; i <= f.Reminders; i++ {
@@ -191,7 +244,7 @@ func runSlackTestUptime(ctx context.Context, out io.Writer, in io.Reader, f slac
 			return ctx.Err()
 		}
 		_, _ = fmt.Fprintf(out, "▸ posting reminder %d/%d…\n", i, f.Reminders)
-		_, err := client.PostMessage(ctx, target.Token, slack.PostMessageInput{
+		res, err := client.PostMessage(ctx, target.Token, slack.PostMessageInput{
 			ChannelID: target.ChannelID,
 			ThreadTS:  parent.TS,
 			Blocks: slack.BuildReminderReply(slack.ReminderInput{
@@ -203,6 +256,7 @@ func runSlackTestUptime(ctx context.Context, out io.Writer, in io.Reader, f slac
 		if err != nil {
 			return fmt.Errorf("post reminder %d: %w", i, err)
 		}
+		posted.add(res.TS)
 	}
 
 	promptResolve(in, out, f.NoPrompt)
@@ -216,21 +270,25 @@ func runSlackTestUptime(ctx context.Context, out io.Writer, in io.Reader, f slac
 		Downtime:  resolveAt.Sub(openedAt),
 	}
 	_, _ = fmt.Fprintf(out, "▸ editing parent → :large_green_circle: resolved …\n")
+	resolveMsg := slack.BuildResolveEdit(resolveIn)
 	if err := client.UpdateMessage(ctx, target.Token, slack.UpdateMessageInput{
 		ChannelID:   target.ChannelID,
 		TS:          parent.TS,
-		Attachments: slack.BuildResolveEdit(resolveIn),
+		Blocks:      resolveMsg.Blocks,
+		Attachments: resolveMsg.Attachments,
 	}); err != nil {
 		return fmt.Errorf("edit parent on resolve: %w", err)
 	}
 	_, _ = fmt.Fprintf(out, "▸ posting resolve reply in thread…\n")
-	if _, err := client.PostMessage(ctx, target.Token, slack.PostMessageInput{
+	resReply, err := client.PostMessage(ctx, target.Token, slack.PostMessageInput{
 		ChannelID: target.ChannelID,
 		ThreadTS:  parent.TS,
 		Blocks:    slack.BuildResolveReply(resolveIn),
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("post resolve reply: %w", err)
 	}
+	posted.add(resReply.TS)
 	_, _ = fmt.Fprintln(out, "✓ uptime workflow complete")
 	return nil
 }
@@ -259,14 +317,22 @@ func runSlackTestSSL(ctx context.Context, out io.Writer, in io.Reader, f slackTe
 		DetectedAt:    time.Now().UTC(),
 	}
 
+	posted := &postedRefs{channelID: target.ChannelID}
+	if f.Cleanup {
+		defer posted.cleanup(ctx, in, out, client, target.Token, f.NoPrompt)
+	}
+
 	_, _ = fmt.Fprintf(out, "▸ posting :warning: SSL parent to channel %s …\n", target.ChannelID)
+	sslMsg := slack.BuildSSLParent(sslIn)
 	parent, err := client.PostMessage(ctx, target.Token, slack.PostMessageInput{
 		ChannelID:   target.ChannelID,
-		Attachments: slack.BuildSSLParent(sslIn),
+		Blocks:      sslMsg.Blocks,
+		Attachments: sslMsg.Attachments,
 	})
 	if err != nil {
 		return fmt.Errorf("post ssl parent: %w", err)
 	}
+	posted.add(parent.TS)
 	_, _ = fmt.Fprintf(out, "  parent ts=%s\n", parent.TS)
 
 	for i := 1; i <= f.Reminders; i++ {
@@ -274,7 +340,7 @@ func runSlackTestSSL(ctx context.Context, out io.Writer, in io.Reader, f slackTe
 			return ctx.Err()
 		}
 		_, _ = fmt.Fprintf(out, "▸ posting ssl reminder %d/%d…\n", i, f.Reminders)
-		_, err := client.PostMessage(ctx, target.Token, slack.PostMessageInput{
+		res, err := client.PostMessage(ctx, target.Token, slack.PostMessageInput{
 			ChannelID: target.ChannelID,
 			ThreadTS:  parent.TS,
 			Blocks:    slack.BuildSSLReminderReply(sslIn),
@@ -282,6 +348,7 @@ func runSlackTestSSL(ctx context.Context, out io.Writer, in io.Reader, f slackTe
 		if err != nil {
 			return fmt.Errorf("post ssl reminder %d: %w", i, err)
 		}
+		posted.add(res.TS)
 	}
 
 	promptResolve(in, out, f.NoPrompt)
@@ -293,21 +360,25 @@ func runSlackTestSSL(ctx context.Context, out io.Writer, in io.Reader, f slackTe
 		RenewedAt:    time.Now().UTC(),
 	}
 	_, _ = fmt.Fprintf(out, "▸ editing parent → :large_green_circle: renewed …\n")
+	sslResolveMsg := slack.BuildSSLResolveEdit(resolveIn)
 	if err := client.UpdateMessage(ctx, target.Token, slack.UpdateMessageInput{
 		ChannelID:   target.ChannelID,
 		TS:          parent.TS,
-		Attachments: slack.BuildSSLResolveEdit(resolveIn),
+		Blocks:      sslResolveMsg.Blocks,
+		Attachments: sslResolveMsg.Attachments,
 	}); err != nil {
 		return fmt.Errorf("edit ssl parent on resolve: %w", err)
 	}
 	_, _ = fmt.Fprintf(out, "▸ posting ssl resolve reply in thread…\n")
-	if _, err := client.PostMessage(ctx, target.Token, slack.PostMessageInput{
+	resReply, err := client.PostMessage(ctx, target.Token, slack.PostMessageInput{
 		ChannelID: target.ChannelID,
 		ThreadTS:  parent.TS,
 		Blocks:    slack.BuildSSLResolveReply(resolveIn),
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("post ssl resolve reply: %w", err)
 	}
+	posted.add(resReply.TS)
 	_, _ = fmt.Fprintln(out, "✓ ssl workflow complete")
 	return nil
 }

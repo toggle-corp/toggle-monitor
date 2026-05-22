@@ -112,6 +112,30 @@ func (c *Client) PostMessage(ctx context.Context, token secret.SecretString, in 
 	return out, nil
 }
 
+// DeleteMessageInput is the slim shape of chat.delete we send. Used
+// by the `slack test --cleanup` flow to wipe simulated messages after
+// the workflow renders.
+type DeleteMessageInput struct {
+	ChannelID string `json:"channel"`
+	TS        string `json:"ts"`
+}
+
+// DeleteMessage calls slack.chat.delete on a single message TS in a
+// channel. Bots can only delete messages they themselves posted.
+func (c *Client) DeleteMessage(ctx context.Context, token secret.SecretString, in DeleteMessageInput) error {
+	var out struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := c.do(ctx, "chat.delete", token, in, &out); err != nil {
+		return err
+	}
+	if !out.OK {
+		return fmt.Errorf("slack chat.delete failed: %s", out.Error)
+	}
+	return nil
+}
+
 // UpdateMessageInput is the slim shape of chat.update we send.
 // Either Blocks or Attachments may be populated; see PostMessageInput.
 type UpdateMessageInput struct {
