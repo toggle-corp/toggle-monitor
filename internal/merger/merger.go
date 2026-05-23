@@ -45,7 +45,6 @@ type Materializer struct {
 	annDomain         string
 	pause             []config.KubePause
 	staticSlugs       map[string]struct{}
-	defaultPreset     string
 	match             []config.KubeMatch
 	friendlyNameStyle string
 
@@ -92,7 +91,6 @@ func New(s MonitorStore, cfg config.Config, proxies *proxypool.Pool) *Materializ
 		annDomain:         cfg.Kube.AnnotationDomain,
 		pause:             cfg.Kube.Pause,
 		staticSlugs:       statics,
-		defaultPreset:     cfg.Kube.DefaultPreset,
 		match:             cfg.Kube.Match,
 		friendlyNameStyle: style,
 		userAgent:         cfg.HTTPClient.UserAgent,
@@ -111,13 +109,14 @@ const (
 	presetSourceNone       presetSource = iota
 	presetSourceAnnotation              // /kube.preset annotation
 	presetSourceMatch                   // first matching match[] rule
-	presetSourceDefault                 // kube.defaultPreset fallback
 	presetSourceIgnore                  // matching match[] rule with ignore: true
 )
 
 // resolvePreset picks a preset for the given (ingress, host) pair.
-// Order: explicit annotation → first matching match[] rule →
-// defaultPreset. Returns ("", 0, -1) when none apply.
+// Order: explicit annotation → first matching match[] rule.
+// A match rule with no when conditions acts as the wildcard
+// fallback (validation ensures it's the last rule). Returns
+// ("", 0, -1) when nothing applies.
 //
 // matchIdx is the index of the winning match[] rule when source is
 // presetSourceMatch, otherwise -1.
@@ -136,9 +135,6 @@ func (m *Materializer) resolvePreset(ing *networkingv1.Ingress, host string) (sl
 			return "", presetSourceIgnore, i
 		}
 		return r.Preset, presetSourceMatch, i
-	}
-	if m.defaultPreset != "" {
-		return m.defaultPreset, presetSourceDefault, -1
 	}
 	return "", presetSourceNone, -1
 }
@@ -302,6 +298,21 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 	return base, nil
 }
 
+// matchCond renders the when-conditions of one match rule. Empty
+// when (the wildcard-fallback case) returns "fallback".
+func matchCond(w config.KubeMatchWhen) string {
+	switch {
+	case w.Namespace != "" && w.Host != "":
+		return fmt.Sprintf("namespace=%s, host=%s", w.Namespace, w.Host)
+	case w.Namespace != "":
+		return "namespace=" + w.Namespace
+	case w.Host != "":
+		return "host=" + w.Host
+	default:
+		return "fallback"
+	}
+}
+
 // formatIgnoredReason explains *which* match[] rule caused the
 // ingress to be skipped — same conditions-string shape as
 // formatAddedReason so /discovery reads consistently.
@@ -309,17 +320,7 @@ func formatIgnoredReason(matchIdx int, rules []config.KubeMatch) string {
 	if matchIdx < 0 || matchIdx >= len(rules) {
 		return "ignored"
 	}
-	w := rules[matchIdx].When
-	var cond string
-	switch {
-	case w.Namespace != "" && w.Host != "":
-		cond = fmt.Sprintf("namespace=%s, host=%s", w.Namespace, w.Host)
-	case w.Namespace != "":
-		cond = "namespace=" + w.Namespace
-	case w.Host != "":
-		cond = "host=" + w.Host
-	}
-	return fmt.Sprintf("ignored (via match[%d]: %s)", matchIdx, cond)
+	return fmt.Sprintf("ignored (via match[%d]: %s)", matchIdx, matchCond(rules[matchIdx].When))
 }
 
 // formatAddedReason explains *which* path picked the preset for the
@@ -329,21 +330,9 @@ func formatAddedReason(via presetSource, matchIdx int, rules []config.KubeMatch)
 	switch via {
 	case presetSourceAnnotation:
 		return "added"
-	case presetSourceDefault:
-		return "added (via defaultPreset)"
 	case presetSourceMatch:
 		if matchIdx >= 0 && matchIdx < len(rules) {
-			w := rules[matchIdx].When
-			var cond string
-			switch {
-			case w.Namespace != "" && w.Host != "":
-				cond = fmt.Sprintf("namespace=%s, host=%s", w.Namespace, w.Host)
-			case w.Namespace != "":
-				cond = "namespace=" + w.Namespace
-			case w.Host != "":
-				cond = "host=" + w.Host
-			}
-			return fmt.Sprintf("added (via match[%d]: %s)", matchIdx, cond)
+			return fmt.Sprintf("added (via match[%d]: %s)", matchIdx, matchCond(rules[matchIdx].When))
 		}
 		return "added (via match)"
 	default:

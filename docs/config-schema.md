@@ -214,7 +214,7 @@ kube:
       ignore: true
     - when: { namespace: "prod-*" }
       preset: internal-api
-  defaultPreset: public-web                         # optional fallback
+    - preset: public-web                            # wildcard fallback (no when:)
   presets:
     - slug: internal-api
       # URL construction
@@ -251,12 +251,11 @@ kube:
 | `kube.pause` | list | — | optional | Hard-pause kube-discovered monitors by host; matched monitors get `kube-paused` status |
 | `kube.pause[].host` | string | ✓ | non-empty; may include `*` glob | Matched against `ingress.spec.rules[].host` |
 | `kube.pause[].reason` | string | — | | Surfaces in the auto-discovery UI |
-| `kube.match` | list | — | optional | Conditional preset/ignore rules; evaluated in order, first match wins |
-| `kube.match[].when.namespace` | string | — | glob (path.Match) | At least one of `namespace`/`host` is required per rule |
+| `kube.match` | list | — | optional | Conditional preset/ignore rules; evaluated in order, first match wins. A rule with no `when:` is the wildcard fallback (must be last). |
+| `kube.match[].when.namespace` | string | — | glob (path.Match) | Both `namespace`/`host` are optional; an empty `when` (no namespace, no host) marks the rule as the wildcard fallback |
 | `kube.match[].when.host` | string | — | glob (path.Match) | AND-ed with `namespace` when both set |
 | `kube.match[].preset` | string | — | resolves to a `kube.presets[].slug` | **Exactly one** of `preset` or `ignore` must be set per rule |
 | `kube.match[].ignore` | bool | — | default `false` | When `true`, the ingress is skipped entirely (no monitor); a `kube-ignored` snapshot row still lands on `/discovery` so the rule remains visible/filterable |
-| `kube.defaultPreset` | string | — | resolves to a `kube.presets[].slug` | Fallback preset when no `kube.preset` annotation and no `kube.match[]` rule fires |
 | `kube.presets` | list | — | optional (no kube auto-discovery if absent) | Each preset materializes when an ingress carries `<base>/kube.preset: <slug>` |
 | `kube.presets[].slug` | string | ✓ | slug regex; unique across `kube.presets:` | |
 | `kube.presets[].scheme` | enum | ✓ | `https` or `http` | URL scheme for built URL |

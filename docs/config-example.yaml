@@ -57,17 +57,13 @@ kube:
   #   title   → (Betaco Core Backend 1) Api
   friendlyName: compact
 
-  # defaultPreset is the catch-all used when an ingress has no
-  # `monitor.togglecorp.com/kube.preset` annotation and no match[]
-  # rule fires. Omit to keep the original "kube-invalid: no preset
-  # annotation" behavior for un-annotated ingresses.
-  defaultPreset: public-web
-
   # Conditional preset resolution. Rules evaluated in declaration
   # order; first match wins. Both `namespace` and `host` are optional
   # globs (path.Match semantics — `*` matches any run of characters,
   # so `betaco-core-backend-*` matches `betaco-core-backend-1`). When
-  # both fields are set on a rule, they AND together.
+  # both fields are set on a rule, they AND together. A rule with
+  # no `when:` clause is the wildcard fallback (must be the last
+  # rule — anything after it is unreachable).
   #
   # Each rule must specify either `preset: <slug>` (materialize the
   # ingress with that preset) OR `ignore: true` (skip the ingress
@@ -77,8 +73,7 @@ kube:
   # Resolution order overall:
   #   1. /kube.preset annotation (explicit)
   #   2. first matching match[] rule (preset OR ignore)
-  #   3. defaultPreset
-  #   4. otherwise → kube-invalid
+  #   3. otherwise → kube-invalid
   match:
     # Skip short-lived test namespaces entirely — they churn the UI on
     # every push and don't merit alerting.
@@ -90,6 +85,10 @@ kube:
       preset: public-web
     - when: { host: "*.k8s.example.com" }
       preset: internal-api
+    # Wildcard fallback — un-annotated ingresses that didn't match
+    # any rule above land here. Omit this rule to keep the original
+    # "kube-invalid: no preset annotation" behavior.
+    - preset: public-web
 
   presets:
     - slug: internal-api

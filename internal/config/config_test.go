@@ -350,21 +350,42 @@ kube:
 ` + extra
 }
 
-func TestLoad_kube_defaultPreset_acceptsKnownSlug(t *testing.T) {
+// defaultPreset is removed — the operator should be told to write a
+// trailing match rule instead, and the error should call out the
+// removed key explicitly so a config carried over from an older
+// version fails loudly.
+func TestLoad_kube_defaultPreset_isRemoved(t *testing.T) {
 	data := []byte(kubeWith("  defaultPreset: internal-api\n"))
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected validation error for the removed defaultPreset field")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "defaultPreset") {
+		t.Errorf("error should call out defaultPreset, got: %v", err)
+	}
+	if !strings.Contains(msg, "match") {
+		t.Errorf("error should point operators at the match-rule replacement, got: %v", err)
+	}
+}
+
+// A wildcard match rule (no when:) is the new replacement for
+// defaultPreset; rules after it are unreachable.
+func TestLoad_kube_match_acceptsWildcardFallback(t *testing.T) {
+	data := []byte(kubeWith("  match:\n    - when: { namespace: prod }\n      preset: internal-api\n    - preset: internal-api\n"))
 	if _, err := config.Load(data); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestLoad_kube_defaultPreset_rejectsUnknownSlug(t *testing.T) {
-	data := []byte(kubeWith("  defaultPreset: ghost\n"))
+func TestLoad_kube_match_rejectsRulesAfterWildcard(t *testing.T) {
+	data := []byte(kubeWith("  match:\n    - preset: internal-api\n    - when: { namespace: prod }\n      preset: internal-api\n"))
 	_, err := config.Load(data)
 	if err == nil {
-		t.Fatal("expected validation error for unknown defaultPreset slug")
+		t.Fatal("expected unreachable-after-wildcard error")
 	}
-	if !strings.Contains(err.Error(), "ghost") || !strings.Contains(err.Error(), "defaultPreset") {
-		t.Errorf("error should call out defaultPreset + the bad slug, got: %v", err)
+	if !strings.Contains(err.Error(), "unreachable") {
+		t.Errorf("error should call out the unreachable rule, got: %v", err)
 	}
 }
 
@@ -433,14 +454,12 @@ func TestLoad_kube_friendlyName_rejectsUnknownValue(t *testing.T) {
 	}
 }
 
-func TestLoad_kube_match_rejectsEmptyWhen(t *testing.T) {
+// Empty when: now means "wildcard fallback" and is valid (used to be
+// rejected because there was no concept of a fallback rule).
+func TestLoad_kube_match_acceptsEmptyWhenAsFallback(t *testing.T) {
 	data := []byte(kubeWith("  match:\n    - when: {}\n      preset: internal-api\n"))
-	_, err := config.Load(data)
-	if err == nil {
-		t.Fatal("expected validation error for empty match[].when")
-	}
-	if !strings.Contains(err.Error(), "namespace") && !strings.Contains(err.Error(), "host") {
-		t.Errorf("error should hint at required fields, got: %v", err)
+	if _, err := config.Load(data); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

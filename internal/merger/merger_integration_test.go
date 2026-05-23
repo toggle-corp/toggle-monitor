@@ -179,10 +179,10 @@ func presetCfgWith() *config.Kube {
 	}
 }
 
-func TestMaterializer_defaultPreset_appliedWhenNoAnnotation(t *testing.T) {
+func TestMaterializer_wildcardFallback_appliedWhenNoAnnotation(t *testing.T) {
 	repo := newRepo(t)
 	kc := presetCfgWith()
-	kc.DefaultPreset = "catchall"
+	kc.Match = []config.KubeMatch{{Preset: "catchall"}} // wildcard
 	m := merger.New(repo, withKube(kc, nil), nil)
 	ing := ingress("default", "naked", nil, "naked.example.com")
 
@@ -196,17 +196,17 @@ func TestMaterializer_defaultPreset_appliedWhenNoAnnotation(t *testing.T) {
 	if row.PresetSlug == nil || *row.PresetSlug != "catchall" {
 		t.Errorf("preset slug: got %v, want catchall", row.PresetSlug)
 	}
-	if row.Reason == nil || !contains(*row.Reason, "defaultPreset") {
-		t.Errorf("reason should mention defaultPreset, got %v", row.Reason)
+	if row.Reason == nil || !contains(*row.Reason, "fallback") {
+		t.Errorf("reason should mention fallback, got %v", row.Reason)
 	}
 }
 
 func TestMaterializer_matchRule_firstMatchWins(t *testing.T) {
 	repo := newRepo(t)
 	kc := presetCfgWith()
-	kc.DefaultPreset = "catchall"
 	kc.Match = []config.KubeMatch{
 		{When: config.KubeMatchWhen{Namespace: "betaco-core-backend-*"}, Preset: "internal-api"},
+		{Preset: "catchall"}, // wildcard fallback
 	}
 	m := merger.New(repo, withKube(kc, nil), nil)
 	ing := ingress("betaco-core-backend-1", "api", nil, "core-1.example.com")
@@ -216,19 +216,19 @@ func TestMaterializer_matchRule_firstMatchWins(t *testing.T) {
 		t.Errorf("status: got %q", row.Status)
 	}
 	if row.PresetSlug == nil || *row.PresetSlug != "internal-api" {
-		t.Errorf("preset slug: got %v, want internal-api (via match, not defaultPreset)", row.PresetSlug)
+		t.Errorf("preset slug: got %v, want internal-api (specific rule should win over wildcard)", row.PresetSlug)
 	}
 	if row.Reason == nil || !contains(*row.Reason, "match[0]") {
 		t.Errorf("reason should call out the match rule, got %v", row.Reason)
 	}
 }
 
-func TestMaterializer_annotationBeatsMatchAndDefault(t *testing.T) {
+func TestMaterializer_annotationBeatsMatchAndFallback(t *testing.T) {
 	repo := newRepo(t)
 	kc := presetCfgWith()
-	kc.DefaultPreset = "catchall"
 	kc.Match = []config.KubeMatch{
 		{When: config.KubeMatchWhen{Namespace: "default"}, Preset: "catchall"},
+		{Preset: "catchall"}, // wildcard fallback
 	}
 	m := merger.New(repo, withKube(kc, nil), nil)
 	ing := ingress("default", "api", ann(domain+"/kube.preset", "internal-api"), "api.example.com")
@@ -245,20 +245,20 @@ func TestMaterializer_annotationBeatsMatchAndDefault(t *testing.T) {
 func TestMaterializer_matchRule_namespaceAndHostAND(t *testing.T) {
 	repo := newRepo(t)
 	kc := presetCfgWith()
-	kc.DefaultPreset = "catchall"
 	kc.Match = []config.KubeMatch{
 		{
 			When:   config.KubeMatchWhen{Namespace: "acme-*", Host: "*.example.com"},
 			Preset: "internal-api",
 		},
+		{Preset: "catchall"}, // wildcard fallback
 	}
 	m := merger.New(repo, withKube(kc, nil), nil)
 
-	// Namespace matches, host doesn't → rule skipped, falls through to default.
+	// Namespace matches, host doesn't → rule skipped, falls through to wildcard.
 	ing1 := ingress("acme-api-1", "api", nil, "alpha-1.example.com")
 	row1, _ := m.Materialize(context.Background(), ing1, "alpha-1.example.com")
 	if row1.PresetSlug == nil || *row1.PresetSlug != "catchall" {
-		t.Errorf("ns match + host miss should fall through to default, got %v", row1.PresetSlug)
+		t.Errorf("ns match + host miss should fall through to wildcard, got %v", row1.PresetSlug)
 	}
 
 	// Both match → rule fires.
@@ -272,9 +272,9 @@ func TestMaterializer_matchRule_namespaceAndHostAND(t *testing.T) {
 func TestMaterializer_matchRule_ignoreSkipsMaterialization(t *testing.T) {
 	repo := newRepo(t)
 	kc := presetCfgWith()
-	kc.DefaultPreset = "catchall"
 	kc.Match = []config.KubeMatch{
 		{When: config.KubeMatchWhen{Namespace: "test-*"}, Ignore: true},
+		{Preset: "catchall"}, // wildcard fallback
 	}
 	m := merger.New(repo, withKube(kc, nil), nil)
 	ing := ingress("test-ephemeral", "api", nil, "ephemeral.example.com")
@@ -306,11 +306,11 @@ func TestMaterializer_matchRule_ignoreSkipsMaterialization(t *testing.T) {
 }
 
 func TestMaterializer_unknownExplicitPreset_stillFlags(t *testing.T) {
-	// Default + match[] do NOT rescue an explicit-but-unknown
+	// Wildcard fallback + match[] do NOT rescue an explicit-but-unknown
 	// annotation. Typos should stay visible.
 	repo := newRepo(t)
 	kc := presetCfgWith()
-	kc.DefaultPreset = "catchall"
+	kc.Match = []config.KubeMatch{{Preset: "catchall"}} // wildcard fallback
 	m := merger.New(repo, withKube(kc, nil), nil)
 	ing := ingress("default", "wrong", ann(domain+"/kube.preset", "ghost"), "wrong.example.com")
 
