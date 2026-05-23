@@ -56,6 +56,7 @@ type Server struct {
 	pageSizes       PageSizes
 	knownGroups     []string
 	mapping         MappingHealthReader
+	missingParents  MissingParentReader
 	configLookup    ConfigLookup
 	statusConfig    *templates.StatusConfig
 	discoveryStatus templates.DiscoveryStatus
@@ -79,6 +80,22 @@ type MappingHealthReader interface {
 	Snapshot() (entries []MappingEntry, lastRun time.Time)
 }
 
+// MissingParentReader exposes the scheduler's in-memory record of
+// dependsOn references that didn't resolve to a known monitor.
+// Production wires *scheduler.Scheduler; tests can pass nil or a
+// fake.
+type MissingParentReader interface {
+	MissingParents() []MissingParent
+}
+
+// MissingParent mirrors scheduler.MissingParent — web doesn't import
+// scheduler to keep the dependency arrow pointing the right way.
+type MissingParent struct {
+	Parent   string
+	Children []string
+	LastSeen time.Time
+}
+
 // MappingEntry is the slim shape the homepage panel renders. Mirrors
 // slack.MappingEntryState; web doesn't import slack to keep the
 // dependency arrow pointing the right way.
@@ -93,6 +110,10 @@ type MappingEntry struct {
 // SetMappingReader plugs in the userMapping validator. When nil
 // (tests), the homepage panel is suppressed.
 func (s *Server) SetMappingReader(r MappingHealthReader) { s.mapping = r }
+
+// SetMissingParentReader plugs in the scheduler so /issues can list
+// dependsOn references that didn't resolve to a known monitor.
+func (s *Server) SetMissingParentReader(r MissingParentReader) { s.missingParents = r }
 
 // SetStatusConfig wires the public /status page's selector config.
 // Nil keeps /status at the empty placeholder.
@@ -260,6 +281,9 @@ func (s *Server) issueCount(ctx context.Context) int {
 	if n, err := s.repo.CountKubeInvalid(ctx); err == nil {
 		count += n
 	}
+	if s.missingParents != nil {
+		count += len(s.missingParents.MissingParents())
+	}
 	return count
 }
 
@@ -328,8 +352,16 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	var missing []templates.MissingParent
+	if s.missingParents != nil {
+		for _, mp := range s.missingParents.MissingParents() {
+			missing = append(missing, templates.MissingParent{
+				Parent: mp.Parent, Children: mp.Children, LastSeen: mp.LastSeen,
+			})
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.IssuesPage(mapping, invalidDiscovery).Render(ctx, w)
+	_ = templates.IssuesPage(mapping, invalidDiscovery, missing).Render(ctx, w)
 }
 
 func (s *Server) handleGroupsIndex(w http.ResponseWriter, r *http.Request) {

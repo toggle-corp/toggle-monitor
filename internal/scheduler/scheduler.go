@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"reflect"
+	"sort"
 	"sync"
 	"time"
 
@@ -98,6 +99,20 @@ type Scheduler struct {
 	metrics Metrics
 	log     *slog.Logger
 	now     func() time.Time
+
+	// missingParents tracks dependsOn references that didn't resolve
+	// to a known monitor at lookup time. Surfaced on /issues so the
+	// operator notices a typo or drift between config and DB without
+	// having to grep the logs.
+	missingMu      sync.RWMutex
+	missingParents map[string]map[string]time.Time // parent slug → child slug → last-seen
+}
+
+// MissingParent is one entry in the dependsOn-failure listing.
+type MissingParent struct {
+	Parent   string    // the slug that didn't resolve
+	Children []string  // monitors that reference it
+	LastSeen time.Time // most recent time the lookup failed
 }
 
 // Option configures a Scheduler. Used by tests to inject a deterministic
@@ -266,7 +281,7 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 	// the child temporary-paused. No HTTP, no DB write to last_*,
 	// no alert event.
 	if len(p.DependsOn) > 0 {
-		if s.anyParentDown(ctx, p.DependsOn) {
+		if s.anyParentDown(ctx, p.Slug, p.DependsOn) {
 			if s.metrics != nil {
 				s.metrics.ObserveCheck(p.Slug, "paused", 0)
 			}
@@ -421,21 +436,84 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 }
 
 // anyParentDown reports whether any of the listed monitor slugs is
-// currently in StatusDown. Missing parents are skipped (logged for
-// visibility) so a transient outage of a single dependency lookup
-// doesn't ripple into the wrong gating decision.
-func (s *Scheduler) anyParentDown(ctx context.Context, parents []string) bool {
+// currently in StatusDown. Missing parents are skipped (recorded
+// in-memory for the /issues page, and logged at most once per
+// (parent, child) pair to avoid hammering stdout on every check)
+// so a transient outage of a single dependency lookup doesn't
+// ripple into the wrong gating decision.
+func (s *Scheduler) anyParentDown(ctx context.Context, child string, parents []string) bool {
 	for _, slug := range parents {
 		row, err := s.repo.GetMonitor(ctx, slug)
 		if err != nil {
-			s.log.Warn("dependsOn parent lookup failed", "parent", slug, "error", err)
+			if s.recordMissingParent(slug, child) {
+				s.log.Warn("dependsOn parent lookup failed", "parent", slug, "child", child, "error", err)
+			}
 			continue
 		}
+		// Successful lookup → drop any stale missing-parent entry
+		// so the operator stops seeing the issue once they've
+		// reconciled the config (no restart needed).
+		s.ClearMissingParent(slug)
 		if row.Status == alert.StatusDown {
 			return true
 		}
 	}
 	return false
+}
+
+// recordMissingParent stamps the (parent, child) pair into the
+// in-memory map. Returns true the first time we see this pair (so
+// the caller can log it once) and false on subsequent ticks.
+func (s *Scheduler) recordMissingParent(parent, child string) bool {
+	s.missingMu.Lock()
+	defer s.missingMu.Unlock()
+	if s.missingParents == nil {
+		s.missingParents = map[string]map[string]time.Time{}
+	}
+	kids, ok := s.missingParents[parent]
+	if !ok {
+		kids = map[string]time.Time{}
+		s.missingParents[parent] = kids
+	}
+	_, seen := kids[child]
+	kids[child] = s.now()
+	return !seen
+}
+
+// MissingParents returns a snapshot of dependsOn references that
+// didn't resolve. Sorted by parent slug for stable rendering. The
+// returned slice is safe to read without holding any scheduler lock.
+func (s *Scheduler) MissingParents() []MissingParent {
+	s.missingMu.RLock()
+	defer s.missingMu.RUnlock()
+	if len(s.missingParents) == 0 {
+		return nil
+	}
+	out := make([]MissingParent, 0, len(s.missingParents))
+	for parent, kids := range s.missingParents {
+		children := make([]string, 0, len(kids))
+		var last time.Time
+		for child, t := range kids {
+			children = append(children, child)
+			if t.After(last) {
+				last = t
+			}
+		}
+		sort.Strings(children)
+		out = append(out, MissingParent{Parent: parent, Children: children, LastSeen: last})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Parent < out[j].Parent })
+	return out
+}
+
+// ClearMissingParent drops the entry for `parent` from the in-memory
+// map. Called when a fresh plan reconciliation observes the parent
+// is now present, so a resolved typo stops showing on /issues
+// without an operator restart.
+func (s *Scheduler) ClearMissingParent(parent string) {
+	s.missingMu.Lock()
+	defer s.missingMu.Unlock()
+	delete(s.missingParents, parent)
 }
 
 // sleep returns false if ctx was cancelled before the duration elapsed.

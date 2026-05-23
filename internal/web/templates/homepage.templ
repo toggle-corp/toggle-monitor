@@ -2,6 +2,7 @@ package templates
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/toggle-corp/toggle-monitor/internal/store"
@@ -32,6 +33,16 @@ type MappingEntry struct {
 type MappingHealth struct {
 	Invalid []MappingEntry
 	LastRun time.Time
+}
+
+// MissingParent is one dependsOn reference that didn't resolve to a
+// known monitor at lookup time. Surfaced on the /issues page so a
+// typo or post-startup drift between config and DB doesn't stay
+// buried in app logs.
+type MissingParent struct {
+	Parent   string
+	Children []string
+	LastSeen time.Time
 }
 
 templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page, perPage int, mapping MappingHealth) {
@@ -110,15 +121,15 @@ templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page
 // stuck at "kube-invalid". Neither requires new storage; each links
 // out to the page where the operator already acts on that class of
 // problem (the homepage mapping panel / the /discovery listing).
-templ IssuesPage(mapping MappingHealth, invalidDiscovery []store.DiscoverySnapshotRow) {
+templ IssuesPage(mapping MappingHealth, invalidDiscovery []store.DiscoverySnapshotRow, missingParents []MissingParent) {
 	@Layout("Issues") {
 		<h1 class="text-xl font-semibold mb-4 inline-flex items-center gap-2">
 			Issues
-			if total := len(mapping.Invalid) + len(invalidDiscovery); total > 0 {
+			if total := len(mapping.Invalid) + len(invalidDiscovery) + len(missingParents); total > 0 {
 				<span class="inline-flex items-center justify-center min-w-[1.5rem] px-2 py-0.5 rounded-full text-sm font-medium bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300 tabular-nums">{ fmt.Sprint(total) }</span>
 			}
 		</h1>
-		if len(mapping.Invalid) == 0 && len(invalidDiscovery) == 0 {
+		if len(mapping.Invalid) == 0 && len(invalidDiscovery) == 0 && len(missingParents) == 0 {
 			<div class="bg-white dark:bg-slate-900 rounded border border-emerald-200 dark:border-emerald-800 p-6 text-center text-sm text-slate-500 dark:text-slate-400">
 				<p>No issues detected.</p>
 				<p class="text-xs mt-1">Slack mapping is healthy and no kube ingresses are in an invalid state.</p>
@@ -164,6 +175,30 @@ templ IssuesPage(mapping MappingHealth, invalidDiscovery []store.DiscoverySnapsh
 								<span class="text-slate-500 dark:text-slate-400">{ row.Host }</span>
 								if row.Reason != nil {
 									<span class="text-rose-700 dark:text-rose-400">{ *row.Reason }</span>
+								}
+							</li>
+						}
+					</ul>
+				</div>
+			</section>
+		}
+		if len(missingParents) > 0 {
+			<section class="mb-6">
+				<h2 class="text-lg font-semibold mb-2 text-rose-700 dark:text-rose-400">
+					Missing dependsOn parents ({ fmt.Sprint(len(missingParents)) })
+				</h2>
+				<div class="bg-white dark:bg-slate-900 rounded border border-rose-200 dark:border-rose-800 p-4">
+					<p class="text-sm text-slate-500 dark:text-slate-400 mb-2">
+						Monitors reference these slugs in <code class="font-mono">dependsOn</code> but no such monitor exists in the DB. The dependent monitor still runs (the gate is skipped), but the typo silently bypasses the intended pause behavior.
+					</p>
+					<ul class="text-sm divide-y divide-slate-100 dark:divide-slate-800">
+						for _, mp := range missingParents {
+							<li class="py-2 flex flex-wrap gap-3">
+								<code class="font-mono text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">{ mp.Parent }</code>
+								<span class="text-slate-500 dark:text-slate-400">referenced by</span>
+								<span class="font-medium">{ strings.Join(mp.Children, ", ") }</span>
+								if !mp.LastSeen.IsZero() {
+									<span class="ml-auto text-xs text-slate-400 dark:text-slate-500">last seen @Timestamp(mp.LastSeen)</span>
 								}
 							</li>
 						}

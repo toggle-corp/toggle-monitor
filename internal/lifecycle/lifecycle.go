@@ -266,6 +266,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		scheduler.WithSSLSink(buildSSLSink(notifier)),
 		scheduler.WithMetrics(metrics),
 	)
+	srv.SetMissingParentReader(&missingParentAdapter{s: sched})
 	staticPlans := buildPlans(opts.Config, proxies)
 	idToSlug := make(map[string]string, len(opts.Config.Slack.UserMapping))
 	for slug, id := range opts.Config.Slack.UserMapping {
@@ -542,6 +543,25 @@ func (a *mappingAdapter) Snapshot() (entries []web.MappingEntry, lastRun time.Ti
 		})
 	}
 	return out, run
+}
+
+// missingParentAdapter converts scheduler.Scheduler.MissingParents()
+// into the web.MissingParentReader shape. Keeps the web package free
+// of a hard scheduler import.
+type missingParentAdapter struct{ s *scheduler.Scheduler }
+
+func (a *missingParentAdapter) MissingParents() []web.MissingParent {
+	if a == nil || a.s == nil {
+		return nil
+	}
+	src := a.s.MissingParents()
+	out := make([]web.MissingParent, 0, len(src))
+	for _, mp := range src {
+		out = append(out, web.MissingParent{
+			Parent: mp.Parent, Children: mp.Children, LastSeen: mp.LastSeen,
+		})
+	}
+	return out
 }
 
 // kubeRemovalSink dispatches the same soft-delete + Slack closeout +

@@ -459,6 +459,34 @@ func TestStatusPage_sectionsAndMatching(t *testing.T) {
 	}
 }
 
+// fakeMissingParents implements web.MissingParentReader for the
+// /issues-page test. Lives here (not in the issues test below) so
+// the existing test stays focused on discovery-side issues.
+type fakeMissingParents []web.MissingParent
+
+func (f fakeMissingParents) MissingParents() []web.MissingParent { return f }
+
+func TestIssuesPage_missingParentsSection(t *testing.T) {
+	srv, _ := newServer(t)
+	srv.SetMissingParentReader(fakeMissingParents{
+		{Parent: "bastion-proxy", Children: []string{"api", "web"}, LastSeen: time.Now()},
+	})
+	_, body := get(t, srv.Routes(), "/issues")
+	for _, want := range []string{
+		"Missing dependsOn parents",
+		">bastion-proxy<",
+		"api, web",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q; first 600:\n%s", want, firstN(body, 600))
+		}
+	}
+	// Nav badge picks up the missing parent in the count.
+	if !strings.Contains(body, "bg-rose-100") {
+		t.Errorf("nav should show issue chip when missing parents exist; first 600:\n%s", firstN(body, 600))
+	}
+}
+
 func TestIssuesPage_emptyAndKubeInvalid(t *testing.T) {
 	srv, repo := newServer(t)
 	ctx := context.Background()
