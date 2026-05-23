@@ -221,7 +221,7 @@ monitors:
 # selector and OR across selectors. Same DSL shape kube.match[] uses
 # for host globs, extended with `group` (exact slug) and `tags` (set
 # overlap against monitors.tags).
-status:
+statusPage:
   title: "Toggle status"
   showSections: true            # toggle the section headings on/off
   showIncidents: false          # off by default — recent alerts are sensitive

@@ -220,7 +220,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		}
 		srv.SetDiscoveryStatus(ds)
 	}
-	if sc := opts.Config.Status; sc != nil {
+	if sc := opts.Config.StatusPage; sc != nil {
 		tc := &templates.StatusConfig{
 			Title:         sc.Title,
 			ShowSections:  sc.ShowSectionsEnabled(),

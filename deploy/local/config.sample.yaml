@@ -96,7 +96,7 @@ monitors:
 # selector and OR across selectors; same host-glob syntax as
 # kube.match[].when.host, extended with `group` (exact slug) and
 # `tags` (set overlap against monitors.tags).
-status:
+statusPage:
   title: "Toggle Monitor — local dev"
   showSections: true       # render the section headings
   showIncidents: true      # opt in; surfaces the last few alert events

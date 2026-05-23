@@ -42,7 +42,7 @@ type Config struct {
 	Proxies         []Proxy    `yaml:"proxies,omitempty"`
 	Groups          []Group    `yaml:"groups"`
 	Monitors        []Monitor  `yaml:"monitors"`
-	Status          *Status    `yaml:"status,omitempty"` // optional; nil → /status renders empty placeholder
+	StatusPage      *StatusPage `yaml:"statusPage,omitempty"` // optional; nil → /status renders empty placeholder
 }
 
 // Proxy is one outbound proxy that monitors can route their probes
@@ -219,35 +219,36 @@ type Group struct {
 	Notify       []string `yaml:"notify,omitempty"` // userMapping slugs or raw <…> markup; merged union with monitor.notify
 }
 
-// Status is the public-page block. nil → /status renders an empty
-// placeholder. When set, the page lists monitors selected by the
-// per-section match rules.
-type Status struct {
-	Title         string          `yaml:"title,omitempty"`
-	ShowSections  *bool           `yaml:"showSections,omitempty"`  // default true
-	ShowIncidents *bool           `yaml:"showIncidents,omitempty"` // default false (privacy)
-	Sections      []StatusSection `yaml:"sections,omitempty"`
+// StatusPage is the public-page block. nil → /status renders an
+// empty placeholder. When set, the page lists monitors selected by
+// the per-section match rules.
+type StatusPage struct {
+	Title         string              `yaml:"title,omitempty"`
+	ShowSections  *bool               `yaml:"showSections,omitempty"`  // default true
+	ShowIncidents *bool               `yaml:"showIncidents,omitempty"` // default false (privacy)
+	Sections      []StatusPageSection `yaml:"sections,omitempty"`
 }
 
-// StatusSection is one named block on the status page. The match
+// StatusPageSection is one named block on the status page. The match
 // list is OR: a monitor lands in the section if any one selector
 // matches. Within a selector the fields AND together.
-type StatusSection struct {
-	Title string        `yaml:"title"`
-	Match []StatusMatch `yaml:"match"`
+type StatusPageSection struct {
+	Title string            `yaml:"title"`
+	Match []StatusPageMatch `yaml:"match"`
 }
 
-// StatusMatch is the per-monitor selector. host is a glob (path.Match,
-// same as kube.match[].when.host); group is an exact slug match; tags
-// matches if the monitor carries any of the listed labels.
-type StatusMatch struct {
+// StatusPageMatch is the per-monitor selector. host is a glob
+// (path.Match, same as kube.match[].when.host); group is an exact
+// slug match; tags matches if the monitor carries any of the listed
+// labels.
+type StatusPageMatch struct {
 	Host  string   `yaml:"host,omitempty"`
 	Group string   `yaml:"group,omitempty"`
 	Tags  []string `yaml:"tags,omitempty"`
 }
 
 // ShowSectionsEnabled returns the flag value, defaulting to true.
-func (s Status) ShowSectionsEnabled() bool {
+func (s StatusPage) ShowSectionsEnabled() bool {
 	if s.ShowSections == nil {
 		return true
 	}
@@ -257,7 +258,7 @@ func (s Status) ShowSectionsEnabled() bool {
 // ShowIncidentsEnabled returns the flag value, defaulting to false —
 // the public page errs on the side of less data exposure unless the
 // operator explicitly opts in.
-func (s Status) ShowIncidentsEnabled() bool {
+func (s StatusPage) ShowIncidentsEnabled() bool {
 	if s.ShowIncidents == nil {
 		return false
 	}
@@ -336,7 +337,7 @@ var knownTopLevelKeys = map[string]struct{}{
 	"slack":   {},
 	"proxies": {},
 	"groups":  {}, "monitors": {},
-	"status": {},
+	"statusPage": {},
 }
 
 func checkTopLevelKeys(root *yaml.Node) error {
@@ -676,15 +677,15 @@ func (c *checker) validate(cfg *Config) {
 		c.errf([]any{"monitors"}, "dependsOn graph contains a cycle: %s", cycle)
 	}
 
-	// Status block validation. Per-section: title + non-empty match;
-	// each selector must specify at least one of host/group/tags, and
-	// any referenced group must exist.
-	if cfg.Status != nil {
-		if len(cfg.Status.Sections) == 0 {
-			c.errf([]any{"status", "sections"}, "at least one section is required when status block is set")
+	// StatusPage block validation. Per-section: title + non-empty
+	// match; each selector must specify at least one of host/group/
+	// tags, and any referenced group must exist.
+	if cfg.StatusPage != nil {
+		if len(cfg.StatusPage.Sections) == 0 {
+			c.errf([]any{"statusPage", "sections"}, "at least one section is required when statusPage block is set")
 		}
-		for i, sec := range cfg.Status.Sections {
-			sbase := []any{"status", "sections", i}
+		for i, sec := range cfg.StatusPage.Sections {
+			sbase := []any{"statusPage", "sections", i}
 			if strings.TrimSpace(sec.Title) == "" {
 				c.errf(append(sbase, "title"), "required")
 			}
