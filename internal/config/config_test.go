@@ -492,6 +492,101 @@ func TestLoad_kube_match_rejectsBothPresetAndIgnore(t *testing.T) {
 	}
 }
 
+func TestLoad_kube_preset_acceptsKnownDependsOn(t *testing.T) {
+	// bastion is the static monitor declared in validMinimal.
+	data := []byte(kubeWith("      dependsOn: [bastion]\n"))
+	if _, err := config.Load(data); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoad_kube_preset_rejectsUnknownDependsOn(t *testing.T) {
+	data := []byte(kubeWith("      dependsOn: [ghost-parent]\n"))
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected validation error for unknown preset dependsOn slug")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "ghost-parent") {
+		t.Errorf("error should echo the bad slug, got: %v", err)
+	}
+	if !strings.Contains(msg, "presets") || !strings.Contains(msg, "dependsOn") {
+		t.Errorf("error should point at presets[].dependsOn, got: %v", err)
+	}
+}
+
+func TestLoad_kube_preset_rejectsUnknownSlackChannel(t *testing.T) {
+	// Override only the preset's slack with an undeclared channel slug.
+	// kubeWith's preset is the second `slack: ops-alerts` in the
+	// payload; the first belongs to validMinimal's monitor.
+	src := kubeWith("")
+	idx := strings.LastIndex(src, "slack: ops-alerts")
+	if idx < 0 {
+		t.Fatalf("test fixture changed: kubeWith no longer contains the preset slack line")
+	}
+	data := []byte(src[:idx] + "slack: ghost-channel" + src[idx+len("slack: ops-alerts"):])
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected validation error for unknown preset slack channel")
+	}
+	if !strings.Contains(err.Error(), "ghost-channel") || !strings.Contains(err.Error(), "presets") {
+		t.Errorf("error should point at presets[].slack and echo the bad slug, got: %v", err)
+	}
+}
+
+func TestLoad_kube_preset_rejectsInvalidNotifyEntry(t *testing.T) {
+	// "bare-text" is neither a userMapping slug nor wrapped in <…>.
+	data := []byte(kubeWith("      notify: [bare-text]\n"))
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected validation error for invalid preset notify entry")
+	}
+	if !strings.Contains(err.Error(), "notify") || !strings.Contains(err.Error(), "presets") {
+		t.Errorf("error should point at presets[].notify, got: %v", err)
+	}
+}
+
+func TestLoad_kube_preset_rejectsTimeoutGreaterEqInterval(t *testing.T) {
+	// Bump timeout to >= interval (5m) by swapping in 10m via withReplaced
+	// on the kube preset block. Use a fresh literal to be unambiguous.
+	data := []byte(strings.Replace(kubeWith(""), "timeout: 10s", "timeout: 10m", 1))
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected timing validation error on preset")
+	}
+	if !strings.Contains(err.Error(), "timeout") || !strings.Contains(err.Error(), "interval") {
+		t.Errorf("error should mention timeout and interval, got: %v", err)
+	}
+}
+
+func TestLoad_kube_preset_partialTimingDoesNotErrorSpuriously(t *testing.T) {
+	// A preset that supplies no timing fields at all must not trip the
+	// timeout-vs-interval check. We strip the existing timing fields
+	// out of kubeWith's preset to simulate a thin preset.
+	thin := strings.NewReplacer(
+		"      interval: 5m\n", "",
+		"      timeout: 10s\n", "",
+		"      retries: 2\n", "",
+		"      retryBackoff: 5s\n", "",
+	).Replace(kubeWith(""))
+	if _, err := config.Load([]byte(thin)); err != nil {
+		t.Fatalf("partial preset should validate, got: %v", err)
+	}
+}
+
+func TestLoad_kube_preset_rejectsAlertNotGreaterThanEscalation(t *testing.T) {
+	// alert=7d, escalation=7d → alert is not strictly greater.
+	data := []byte(strings.Replace(kubeWith(""),
+		"sslAlertThreshold: 30d", "sslAlertThreshold: 7d", 1))
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected SSL-threshold ordering error on preset")
+	}
+	if !strings.Contains(err.Error(), "sslAlertThreshold") {
+		t.Errorf("error should point at sslAlertThreshold, got: %v", err)
+	}
+}
+
 func TestLoad_rejectsDBBodyMaxCharsSmallerThanSlackBodyMaxChars(t *testing.T) {
 	data := withReplaced(t, "dbBodyMaxChars: 4000", "dbBodyMaxChars: 100")
 	_, err := config.Load(data)

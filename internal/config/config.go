@@ -588,6 +588,55 @@ func (c *checker) validate(cfg *Config) {
 		}
 	}
 
+	// Second-pass preset validation: fields whose validators need
+	// state built above (slack channels, userMapping). Presets are
+	// partial overlays — required-ness isn't enforced here, but any
+	// value that IS set must be valid.
+	if cfg.Kube != nil {
+		for i, p := range cfg.Kube.Presets {
+			base := []any{"kube", "presets", i}
+			if p.Slack != "" {
+				if _, ok := seenSlackChannels[p.Slack]; !ok {
+					c.errf(append(base, "slack"), "unknown channel slug %q", p.Slack)
+				}
+			}
+			for j, n := range p.Notify {
+				if !c.isValidNotifyEntry(cfg.Slack.UserMapping, n) {
+					c.errf(append(base, "notify", j),
+						"%q must be a userMapping slug or raw Slack markup wrapped in <…>", n)
+				}
+			}
+			// Timing constraints: only when both interval and timeout
+			// are set on the preset — otherwise the preset is leaving
+			// the timing to defaults the operator manages elsewhere
+			// (annotation overrides do not touch these fields today,
+			// but checking only what's set keeps the "validate defined
+			// values" contract honest).
+			interval := p.Interval.AsDuration()
+			timeout := p.Timeout.AsDuration()
+			backoff := p.RetryBackoff.AsDuration()
+			if interval > 0 && timeout > 0 {
+				if timeout >= interval {
+					c.errf(base, "timeout (%s) must be less than interval (%s)", timeout, interval)
+				}
+				retryWindow := time.Duration(p.Retries) * (timeout + backoff)
+				if retryWindow >= interval {
+					c.errf(base, "retries × (timeout + retryBackoff) = %s must be less than interval (%s)", retryWindow, interval)
+				}
+			}
+			// SSL threshold ordering: when both alert and escalation
+			// are set, alert must be strictly greater than escalation.
+			// The HTTPS-required check that the static-monitor side
+			// applies doesn't translate here — presets have no URL.
+			alert := p.SSLAlertThreshold.AsDuration()
+			esc := p.SSLEscalationThreshold.AsDuration()
+			if alert > 0 && esc > 0 && alert <= esc {
+				c.errf(append(base, "sslAlertThreshold"),
+					"must be strictly greater than sslEscalationThreshold (%s)", esc)
+			}
+		}
+	}
+
 	// Monitor validation.
 	seenMonitors := map[string]struct{}{}
 	for i, m := range cfg.Monitors {
@@ -680,6 +729,23 @@ func (c *checker) validate(cfg *Config) {
 	}
 	if cycle := detectDependsOnCycle(cfg.Monitors); cycle != "" {
 		c.errf([]any{"monitors"}, "dependsOn graph contains a cycle: %s", cycle)
+	}
+
+	// Kube preset dependsOn resolution. Same rule as the static-side
+	// pass: every parent must be a declared static monitor. No cycle
+	// check is needed beyond the static one — preset deps can only
+	// point at static monitors (kube monitors can't be parents), so
+	// any cycle is fully contained in the static graph already.
+	if cfg.Kube != nil {
+		for i, p := range cfg.Kube.Presets {
+			base := []any{"kube", "presets", i}
+			for j, dep := range p.DependsOn {
+				if _, ok := monitorByIdx[dep]; !ok {
+					c.errf(append(base, "dependsOn", j),
+						"unknown monitor slug %q (parents must be declared static monitors)", dep)
+				}
+			}
+		}
 	}
 
 	// statusPages validation. Per page: slug required + unique across
