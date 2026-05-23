@@ -746,9 +746,13 @@ func (r *Repo) SetUptimeThread(ctx context.Context, slug, channel, ts string) er
 }
 
 // AlertEventRow is the read-side projection of one alert_events row.
+// FriendlyName is only populated by queries that join monitors (the
+// homepage latest-alerts feed); per-monitor history leaves it empty
+// because the caller already knows which monitor it's on.
 type AlertEventRow struct {
 	ID              int64
 	MonitorSlug     string
+	FriendlyName    string
 	Type            alert.EventType
 	At              time.Time
 	StatusCode      *int
@@ -797,9 +801,12 @@ func (r *Repo) ListLatestAlerts(ctx context.Context, limit, offset int) (LatestA
 		return LatestAlertsListing{}, fmt.Errorf("count latest alerts: %w", err)
 	}
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, monitor_slug, type, at, status_code, error, downtime_seconds
-		FROM alert_events
-		ORDER BY at DESC, id DESC
+		SELECT ae.id, ae.monitor_slug,
+		       COALESCE(m.friendly_name, ae.monitor_slug) AS friendly_name,
+		       ae.type, ae.at, ae.status_code, ae.error, ae.downtime_seconds
+		FROM alert_events ae
+		LEFT JOIN monitors m ON m.slug = ae.monitor_slug
+		ORDER BY ae.at DESC, ae.id DESC
 		LIMIT $1 OFFSET $2
 	`, limit, offset)
 	if err != nil {
@@ -810,7 +817,7 @@ func (r *Repo) ListLatestAlerts(ctx context.Context, limit, offset int) (LatestA
 	for rows.Next() {
 		var ev AlertEventRow
 		var typ string
-		if err := rows.Scan(&ev.ID, &ev.MonitorSlug, &typ, &ev.At, &ev.StatusCode, &ev.Error, &ev.DowntimeSeconds); err != nil {
+		if err := rows.Scan(&ev.ID, &ev.MonitorSlug, &ev.FriendlyName, &typ, &ev.At, &ev.StatusCode, &ev.Error, &ev.DowntimeSeconds); err != nil {
 			return LatestAlertsListing{}, err
 		}
 		ev.Type = alert.EventType(typ)

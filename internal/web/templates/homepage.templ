@@ -84,7 +84,7 @@ templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page
 					for _, ev := range alerts.Items {
 						<li class="py-2 px-3 text-sm flex flex-wrap items-center gap-3">
 							<span class="w-24">@EventTypeBadge(string(ev.Type))</span>
-							<a class="text-blue-700 dark:text-blue-400 hover:underline w-40" href={ templ.URL("/monitor/" + ev.MonitorSlug) }>{ ev.MonitorSlug }</a>
+							<a class="text-blue-700 dark:text-blue-400 hover:underline w-40 truncate" href={ templ.URL("/monitor/" + ev.MonitorSlug) }>{ ev.FriendlyName }</a>
 							<span class="text-slate-500 dark:text-slate-400">@Timestamp(ev.At)</span>
 							if ev.StatusCode != nil {
 								@HTTPStatusBadge(*ev.StatusCode)
