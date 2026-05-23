@@ -133,6 +133,17 @@ dev-clean:
 dev-logs:
     {{compose}} logs -f app
 
+# Apply pending schema migrations against the local-stack Postgres.
+# Runs the one-shot migrate service from docker-compose with --build
+# so the image picks up the latest source. Use after pulling a change
+# that bumped the schema and the app refuses to start.
+migrate: _local-config
+    {{compose}} up --build --exit-code-from migrate migrate
+
+# Check the schema is at the latest version without applying anything.
+migrate-check: _local-config
+    {{compose}} run --rm --build migrate migrate --config /etc/toggle-monitor/config.yaml --check
+
 # Rebuild + restart only the app after a config edit.
 dev-restart-app:
     {{compose}} up --build -d app
