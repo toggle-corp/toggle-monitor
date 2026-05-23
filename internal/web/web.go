@@ -159,6 +159,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /monitor/{slug}", s.handleMonitorDetail)
 	mux.HandleFunc("GET /groups", s.handleGroupsIndex)
 	mux.HandleFunc("GET /group/{slug}", s.handleGroupPage)
+	mux.HandleFunc("GET /issues", s.handleIssues)
 	mux.HandleFunc("GET /discovery", s.handleDiscoveryListing)
 	mux.HandleFunc("GET /discovery/{ns}/{name}/{host}", s.handleDiscoveryDetail)
 
@@ -223,6 +224,35 @@ func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = templates.MonitorsPage(listing, filter, nil, s.knownGroups, page, perPage).Render(ctx, w)
+}
+
+func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	rows, err := s.repo.ListDiscoverySnapshot(ctx)
+	if err != nil {
+		s.renderDBUnavailable(ctx, w, err)
+		return
+	}
+	var invalidDiscovery []store.DiscoverySnapshotRow
+	for _, row := range rows {
+		if row.Status == "kube-invalid" {
+			invalidDiscovery = append(invalidDiscovery, row)
+		}
+	}
+	var mapping templates.MappingHealth
+	if s.mapping != nil {
+		entries, lastRun := s.mapping.Snapshot()
+		mapping.LastRun = lastRun
+		for _, e := range entries {
+			if !e.OK {
+				mapping.Invalid = append(mapping.Invalid, templates.MappingEntry{
+					Slug: e.Slug, ID: e.ID, Reason: e.Reason, Checked: e.Checked,
+				})
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = templates.IssuesPage(mapping, invalidDiscovery).Render(ctx, w)
 }
 
 func (s *Server) handleGroupsIndex(w http.ResponseWriter, r *http.Request) {

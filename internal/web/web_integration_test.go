@@ -362,6 +362,41 @@ func TestGroupLink_clickableInMonitorsListing(t *testing.T) {
 	}
 }
 
+func TestIssuesPage_emptyAndKubeInvalid(t *testing.T) {
+	srv, repo := newServer(t)
+	ctx := context.Background()
+
+	// Empty state: no mapping issues, no invalid discovery.
+	resp, body := get(t, srv.Routes(), "/issues")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/issues status: got %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(body, "No issues detected.") {
+		t.Errorf("empty state should say 'No issues detected.'; first 400:\n%s", firstN(body, 400))
+	}
+
+	// Insert a kube-invalid row and verify it surfaces.
+	reason := "no preset annotation"
+	if err := repo.UpsertDiscoverySnapshot(ctx, store.DiscoverySnapshotRow{
+		Namespace: "prod", IngressName: "api", Host: "api.example.com",
+		Status: "kube-invalid", Reason: &reason,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	_, body = get(t, srv.Routes(), "/issues")
+	for _, want := range []string{
+		"Kube-invalid ingresses",
+		"prod",
+		"api.example.com",
+		"no preset annotation",
+		"/discovery?status=kube-invalid",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("issues body missing %q; first 600:\n%s", want, firstN(body, 600))
+		}
+	}
+}
+
 func TestMonitorDetail_notFound(t *testing.T) {
 	srv, _ := newServer(t)
 	resp, _ := get(t, srv.Routes(), "/monitor/does-not-exist")
