@@ -208,14 +208,14 @@ templ configDialog(m store.MonitorRow, cfg MonitorConfig) {
 					@kvHTTPCodes("Accepted status codes", cfg.AcceptedStatusCodes)
 				}
 				if cfg.Interval > 0 {
-					@kv("Interval", cfg.Interval.String())
+					@kv("Interval", humanInterval(cfg.Interval))
 				}
 				if cfg.Timeout > 0 {
-					@kv("Timeout", cfg.Timeout.String())
+					@kv("Timeout", humanInterval(cfg.Timeout))
 				}
 				@kv("Retries", strconv.Itoa(cfg.Retries))
 				if cfg.RetryBackoff > 0 {
-					@kv("Retry backoff", cfg.RetryBackoff.String())
+					@kv("Retry backoff", humanInterval(cfg.RetryBackoff))
 				}
 				@kv("Follow redirects", boolYesNo(cfg.FollowRedirects))
 				if cfg.IsHTTPS {
@@ -225,7 +225,7 @@ templ configDialog(m store.MonitorRow, cfg MonitorConfig) {
 					@kv("Proxy", cfg.Proxy)
 				}
 				if cfg.ReminderInterval > 0 {
-					@kv("Reminder interval", cfg.ReminderInterval.String())
+					@kv("Reminder interval", humanInterval(cfg.ReminderInterval))
 				}
 				if cfg.SlackChannelSlug != "" {
 					@kv("Slack channel", cfg.SlackChannelSlug)
@@ -234,13 +234,13 @@ templ configDialog(m store.MonitorRow, cfg MonitorConfig) {
 					@kv("Mentions", strings.Join(cfg.Mentions, " "))
 				}
 				if cfg.IsHTTPS && cfg.SSLAlertThreshold > 0 {
-					@kv("SSL alert threshold", cfg.SSLAlertThreshold.String())
+					@kv("SSL alert threshold", humanInterval(cfg.SSLAlertThreshold))
 				}
 				if cfg.IsHTTPS && cfg.SSLEscalationThreshold > 0 {
-					@kv("SSL escalation threshold", cfg.SSLEscalationThreshold.String())
+					@kv("SSL escalation threshold", humanInterval(cfg.SSLEscalationThreshold))
 				}
 				if cfg.IsHTTPS && cfg.SSLReminderInterval > 0 {
-					@kv("SSL reminder interval", cfg.SSLReminderInterval.String())
+					@kv("SSL reminder interval", humanInterval(cfg.SSLReminderInterval))
 				}
 				if cfg.UserAgent != "" {
 					@kv("User agent", cfg.UserAgent)

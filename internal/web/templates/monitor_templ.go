@@ -701,13 +701,13 @@ func configDialog(m store.MonitorRow, cfg MonitorConfig) templ.Component {
 			}
 		}
 		if cfg.Interval > 0 {
-			templ_7745c5c3_Err = kv("Interval", cfg.Interval.String()).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = kv("Interval", humanInterval(cfg.Interval)).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
 		if cfg.Timeout > 0 {
-			templ_7745c5c3_Err = kv("Timeout", cfg.Timeout.String()).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = kv("Timeout", humanInterval(cfg.Timeout)).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -717,7 +717,7 @@ func configDialog(m store.MonitorRow, cfg MonitorConfig) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		if cfg.RetryBackoff > 0 {
-			templ_7745c5c3_Err = kv("Retry backoff", cfg.RetryBackoff.String()).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = kv("Retry backoff", humanInterval(cfg.RetryBackoff)).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -739,7 +739,7 @@ func configDialog(m store.MonitorRow, cfg MonitorConfig) templ.Component {
 			}
 		}
 		if cfg.ReminderInterval > 0 {
-			templ_7745c5c3_Err = kv("Reminder interval", cfg.ReminderInterval.String()).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = kv("Reminder interval", humanInterval(cfg.ReminderInterval)).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -757,19 +757,19 @@ func configDialog(m store.MonitorRow, cfg MonitorConfig) templ.Component {
 			}
 		}
 		if cfg.IsHTTPS && cfg.SSLAlertThreshold > 0 {
-			templ_7745c5c3_Err = kv("SSL alert threshold", cfg.SSLAlertThreshold.String()).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = kv("SSL alert threshold", humanInterval(cfg.SSLAlertThreshold)).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
 		if cfg.IsHTTPS && cfg.SSLEscalationThreshold > 0 {
-			templ_7745c5c3_Err = kv("SSL escalation threshold", cfg.SSLEscalationThreshold.String()).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = kv("SSL escalation threshold", humanInterval(cfg.SSLEscalationThreshold)).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
 		if cfg.IsHTTPS && cfg.SSLReminderInterval > 0 {
-			templ_7745c5c3_Err = kv("SSL reminder interval", cfg.SSLReminderInterval.String()).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = kv("SSL reminder interval", humanInterval(cfg.SSLReminderInterval)).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
