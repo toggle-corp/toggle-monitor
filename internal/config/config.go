@@ -397,6 +397,34 @@ func (c *checker) validate(cfg *Config) {
 		}
 	}
 
+	// Group validation: kube-discovered required; slugs unique and valid.
+	// Done before kube + monitors so both can validate the slug references
+	// they make into the groups set.
+	seenGroups := map[string]struct{}{}
+	hasKubeDiscovered := false
+	for i, g := range cfg.Groups {
+		base := []any{"groups", i}
+		if err := slug.Validate(g.Slug); err != nil {
+			c.errf(append(base, "slug"), "%v", err)
+		}
+		if _, dup := seenGroups[g.Slug]; dup {
+			c.errf(append(base, "slug"), "duplicate slug %q", g.Slug)
+		}
+		seenGroups[g.Slug] = struct{}{}
+		if g.Slug == "kube-discovered" {
+			hasKubeDiscovered = true
+		}
+		for j, n := range g.Notify {
+			if !c.isValidNotifyEntry(cfg.Slack.UserMapping, n) {
+				c.errf(append(base, "notify", j),
+					"%q must be a userMapping slug or raw Slack markup wrapped in <…>", n)
+			}
+		}
+	}
+	if !hasKubeDiscovered {
+		c.errf([]any{"groups"}, "a group with slug %q is required", "kube-discovered")
+	}
+
 	if cfg.Kube != nil {
 		if cfg.Kube.AnnotationDomain == "" {
 			c.errf([]any{"kube", "annotationDomain"}, "required when kube block is set")
@@ -420,6 +448,11 @@ func (c *checker) validate(cfg *Config) {
 			if p.Proxy != "" {
 				if _, ok := seenProxies[p.Proxy]; !ok {
 					c.errf(append(base, "proxy"), "unknown proxy slug %q", p.Proxy)
+				}
+			}
+			if p.Group != "" {
+				if _, ok := seenGroups[p.Group]; !ok {
+					c.errf(append(base, "group"), "unknown group %q", p.Group)
 				}
 			}
 		}
@@ -498,32 +531,6 @@ func (c *checker) validate(cfg *Config) {
 			c.errf([]any{"slack", "userMapping", slugName},
 				"%q must match %s (U... = user, S... = subteam)", id, userOrSubteamIDPattern.String())
 		}
-	}
-
-	// Group validation: kube-discovered required; slugs unique and valid.
-	seenGroups := map[string]struct{}{}
-	hasKubeDiscovered := false
-	for i, g := range cfg.Groups {
-		base := []any{"groups", i}
-		if err := slug.Validate(g.Slug); err != nil {
-			c.errf(append(base, "slug"), "%v", err)
-		}
-		if _, dup := seenGroups[g.Slug]; dup {
-			c.errf(append(base, "slug"), "duplicate slug %q", g.Slug)
-		}
-		seenGroups[g.Slug] = struct{}{}
-		if g.Slug == "kube-discovered" {
-			hasKubeDiscovered = true
-		}
-		for j, n := range g.Notify {
-			if !c.isValidNotifyEntry(cfg.Slack.UserMapping, n) {
-				c.errf(append(base, "notify", j),
-					"%q must be a userMapping slug or raw Slack markup wrapped in <…>", n)
-			}
-		}
-	}
-	if !hasKubeDiscovered {
-		c.errf([]any{"groups"}, "a group with slug %q is required", "kube-discovered")
 	}
 
 	// Monitor validation.

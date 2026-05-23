@@ -368,6 +368,29 @@ func TestLoad_kube_defaultPreset_rejectsUnknownSlug(t *testing.T) {
 	}
 }
 
+func TestLoad_kube_preset_acceptsKnownGroup(t *testing.T) {
+	// gateways is declared in validMinimal so this should pass.
+	data := []byte(kubeWith("      group: gateways\n"))
+	if _, err := config.Load(data); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoad_kube_preset_rejectsUnknownGroup(t *testing.T) {
+	data := []byte(kubeWith("      group: ghost-group\n"))
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected validation error for unknown preset group slug")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "ghost-group") {
+		t.Errorf("error should echo the bad group slug, got: %v", err)
+	}
+	if !strings.Contains(msg, "unknown group") || !strings.Contains(msg, "presets") {
+		t.Errorf("error should point at presets[].group, got: %v", err)
+	}
+}
+
 func TestLoad_kube_match_rejectsUnknownPresetSlug(t *testing.T) {
 	data := []byte(kubeWith("  match:\n    - when: { namespace: foo }\n      preset: ghost\n"))
 	_, err := config.Load(data)
