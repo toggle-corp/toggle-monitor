@@ -82,7 +82,24 @@ type Kube struct {
 	// in declaration order; the first matching rule wins. If no rule
 	// matches, DefaultPreset is consulted next.
 	Match []KubeMatch `yaml:"match,omitempty"`
+
+	// FriendlyName picks the auto-generated monitor name style. One of:
+	//   "plain"   — `(ns) ingress-name` (host appended)
+	//   "compact" — same, with the `-ingress` suffix stripped (default)
+	//   "dedupe"  — also strips the namespace prefix from the name
+	//   "title"   — dedupe + title-case with spaces
+	// Empty defaults to "compact".
+	FriendlyName string `yaml:"friendlyName,omitempty"`
 }
+
+// KubeFriendlyNameStyle constants — the allowed values of
+// kube.friendlyName. The empty string is treated as compact.
+const (
+	KubeFriendlyNamePlain   = "plain"
+	KubeFriendlyNameCompact = "compact"
+	KubeFriendlyNameDedupe  = "dedupe"
+	KubeFriendlyNameTitle   = "title"
+)
 
 // KubeMatch is one conditional preset rule. The `when` conditions
 // AND together; both fields are optional but at least one must be
@@ -392,6 +409,13 @@ func (c *checker) validate(cfg *Config) {
 				c.errf([]any{"kube", "defaultPreset"},
 					"references unknown preset slug %q", cfg.Kube.DefaultPreset)
 			}
+		}
+		switch cfg.Kube.FriendlyName {
+		case "", KubeFriendlyNamePlain, KubeFriendlyNameCompact, KubeFriendlyNameDedupe, KubeFriendlyNameTitle:
+			// ok
+		default:
+			c.errf([]any{"kube", "friendlyName"},
+				"must be one of plain, compact, dedupe, title (got %q)", cfg.Kube.FriendlyName)
 		}
 		for i, r := range cfg.Kube.Match {
 			base := []any{"kube", "match", i}

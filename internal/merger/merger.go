@@ -40,13 +40,14 @@ type MonitorStore interface {
 // (lastSeen) so Prune() can drop entries for ingresses that have
 // disappeared between reconciles.
 type Materializer struct {
-	store         MonitorStore
-	presets       map[string]config.KubePreset
-	annDomain     string
-	pause         []config.KubePause
-	staticSlugs   map[string]struct{}
-	defaultPreset string
-	match         []config.KubeMatch
+	store             MonitorStore
+	presets           map[string]config.KubePreset
+	annDomain         string
+	pause             []config.KubePause
+	staticSlugs       map[string]struct{}
+	defaultPreset     string
+	match             []config.KubeMatch
+	friendlyNameStyle string
 
 	// httpClientUA + slack.UserMapping carry through into the Plan
 	// for each materialized kube monitor. proxies resolves preset
@@ -81,19 +82,24 @@ func New(s MonitorStore, cfg config.Config, proxies *proxypool.Pool) *Materializ
 	for _, m := range cfg.Monitors {
 		statics[m.Slug] = struct{}{}
 	}
+	style := cfg.Kube.FriendlyName
+	if style == "" {
+		style = config.KubeFriendlyNameCompact
+	}
 	return &Materializer{
-		store:         s,
-		presets:       presets,
-		annDomain:     cfg.Kube.AnnotationDomain,
-		pause:         cfg.Kube.Pause,
-		staticSlugs:   statics,
-		defaultPreset: cfg.Kube.DefaultPreset,
-		match:         cfg.Kube.Match,
-		userAgent:     cfg.HTTPClient.UserAgent,
-		userMapping:   cfg.Slack.UserMapping,
-		bodyMaxBase:   cfg.Slack.BodyMaxChars,
-		proxies:       proxies,
-		kubePlans:     map[string]planEntry{},
+		store:             s,
+		presets:           presets,
+		annDomain:         cfg.Kube.AnnotationDomain,
+		pause:             cfg.Kube.Pause,
+		staticSlugs:       statics,
+		defaultPreset:     cfg.Kube.DefaultPreset,
+		match:             cfg.Kube.Match,
+		friendlyNameStyle: style,
+		userAgent:         cfg.HTTPClient.UserAgent,
+		userMapping:       cfg.Slack.UserMapping,
+		bodyMaxBase:       cfg.Slack.BodyMaxChars,
+		proxies:           proxies,
+		kubePlans:         map[string]planEntry{},
 	}
 }
 
@@ -157,7 +163,7 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 		// Reconcile a kube-paused monitor so history sticks around.
 		if err := m.store.ReconcileMonitor(ctx, store.MonitorSpec{
 			Slug:         monSlug,
-			FriendlyName: defaultFriendlyName(ing, host),
+			FriendlyName: m.friendlyName(ing, host),
 			URL:          buildURL("https", host, ""),
 			GroupSlug:    "kube-discovered",
 			Source:       store.SourceKube,
@@ -234,7 +240,7 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 
 	if err := m.store.ReconcileMonitor(ctx, store.MonitorSpec{
 		Slug:         monSlug,
-		FriendlyName: defaultFriendlyName(ing, host),
+		FriendlyName: m.friendlyName(ing, host),
 		URL:          buildURL(scheme, host, path),
 		GroupSlug:    groupSlug,
 		Source:       store.SourceKube,
@@ -251,7 +257,7 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 	mentions := slack.ResolveMentions(notifyMerged, m.userMapping)
 	plan := scheduler.Plan{
 		Slug:                   monSlug,
-		FriendlyName:           defaultFriendlyName(ing, host),
+		FriendlyName:           m.friendlyName(ing, host),
 		URL:                    buildURL(scheme, host, path),
 		HTTPMethod:             preset.HTTPMethod,
 		AcceptedStatusCodes:    append([]int(nil), preset.AcceptedStatusCodes...),
@@ -410,8 +416,136 @@ func buildURL(scheme, host, path string) string {
 	return scheme + "://" + host + path
 }
 
-func defaultFriendlyName(ing *networkingv1.Ingress, host string) string {
-	return ing.Namespace + "/" + ing.Name + " (" + host + ")"
+// friendlyName renders a human-skimmable label for a kube monitor.
+// The exact style is picked by kube.friendlyName in config; see
+// formatFriendlyName for the rules.
+//
+// When the source ingress carries multiple distinct hosts, the
+// first segment of the current host is appended (after a middle-dot)
+// so the listing differentiates monitors that share an ingress.
+func (m *Materializer) friendlyName(ing *networkingv1.Ingress, host string) string {
+	return formatFriendlyName(m.friendlyNameStyle, ing.Namespace, ing.Name, host, hasMultipleHosts(ing))
+}
+
+// formatFriendlyName is the pure renderer — kept separate from the
+// Materializer so style tests don't need DB plumbing.
+func formatFriendlyName(style, namespace, ingName, host string, multiHost bool) string {
+	appendHost := func(s string) string {
+		if !multiHost {
+			return s
+		}
+		seg := hostFirstSegment(host)
+		if seg == "" {
+			return s
+		}
+		return s + " · " + seg
+	}
+	switch style {
+	case config.KubeFriendlyNamePlain:
+		return appendHost("(" + namespace + ") " + ingName)
+
+	case config.KubeFriendlyNameDedupe:
+		name := stripNsPrefix(namespace, stripIngressSuffix(ingName))
+		out := "(" + namespace + ")"
+		if name != "" {
+			out += " " + name
+		}
+		return appendHost(out)
+
+	case config.KubeFriendlyNameTitle:
+		name := stripNsPrefix(namespace, stripIngressSuffix(ingName))
+		out := "(" + titleize(namespace) + ")"
+		if name != "" {
+			out += " " + titleize(name)
+		}
+		if multiHost {
+			if seg := hostFirstSegment(host); seg != "" {
+				out += " · " + titleize(seg)
+			}
+		}
+		return out
+
+	default: // "" or "compact"
+		name := stripIngressSuffix(ingName)
+		if name == "" {
+			name = ingName
+		}
+		return appendHost("(" + namespace + ") " + name)
+	}
+}
+
+// stripIngressSuffix drops a trailing "-ingress" so the boilerplate
+// kube convention doesn't drown the meaningful part.
+func stripIngressSuffix(name string) string {
+	return strings.TrimSuffix(name, "-ingress")
+}
+
+// stripNsPrefix drops leading hyphen-separated tokens from `name`
+// that also appear (as standalone tokens) in `namespace`. This is
+// looser than `HasPrefix(name, ns+"-")` so e.g. ingress
+// `core-backend-1-api` in namespace `betaco-core-backend-1` reduces
+// to `api` (the leading core, backend, 1 tokens are all present
+// in the namespace token set).
+func stripNsPrefix(namespace, name string) string {
+	if namespace == "" || name == "" {
+		return name
+	}
+	nsTokens := map[string]struct{}{}
+	for _, t := range strings.Split(namespace, "-") {
+		if t != "" {
+			nsTokens[t] = struct{}{}
+		}
+	}
+	nameTokens := strings.Split(name, "-")
+	cut := 0
+	for cut < len(nameTokens) {
+		if _, ok := nsTokens[nameTokens[cut]]; !ok {
+			break
+		}
+		cut++
+	}
+	return strings.Join(nameTokens[cut:], "-")
+}
+
+// titleize splits on '-' and title-cases each token, joined by spaces.
+// "betaco-core-backend-1" → "Betaco Core Backend 1".
+func titleize(s string) string {
+	if s == "" {
+		return s
+	}
+	parts := strings.Split(s, "-")
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(p[:1]) + p[1:]
+	}
+	return strings.Join(parts, " ")
+}
+
+// hostFirstSegment returns the portion of host before the first dot.
+func hostFirstSegment(host string) string {
+	if i := strings.Index(host, "."); i > 0 {
+		return host[:i]
+	}
+	return host
+}
+
+// hasMultipleHosts returns true when ing.Spec.Rules carries more
+// than one distinct non-empty host. Mirrors kube.uniqueHosts's dedup
+// without importing the kube package.
+func hasMultipleHosts(ing *networkingv1.Ingress) bool {
+	seen := map[string]struct{}{}
+	for _, rule := range ing.Spec.Rules {
+		if rule.Host == "" {
+			continue
+		}
+		seen[rule.Host] = struct{}{}
+		if len(seen) > 1 {
+			return true
+		}
+	}
+	return false
 }
 
 func splitAndTrim(s string) []string {

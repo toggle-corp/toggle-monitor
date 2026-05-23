@@ -44,6 +44,19 @@ kube:
       reason: "Endpoint under maintenance until 2026-06-01"
     - host: "*.staging.example.com"
 
+  # Auto-generated friendly name style for kube-discovered monitors.
+  # Defaults to "compact" when omitted. Options:
+  #   plain   → (ns) ingress-name                              (no magic)
+  #   compact → (ns) ingress-name, with `-ingress` stripped    (default)
+  #   dedupe  → also strip leading ingress tokens that already appear in ns
+  #   title   → dedupe + Title Case With Spaces
+  # Examples for ns=betaco-core-backend-1, name=core-backend-1-api:
+  #   plain   → (betaco-core-backend-1) core-backend-1-api
+  #   compact → (betaco-core-backend-1) core-backend-1-api
+  #   dedupe  → (betaco-core-backend-1) api
+  #   title   → (Betaco Core Backend 1) Api
+  friendlyName: compact
+
   # defaultPreset is the catch-all used when an ingress has no
   # `monitor.togglecorp.com/kube.preset` annotation and no match[]
   # rule fires. Omit to keep the original "kube-invalid: no preset

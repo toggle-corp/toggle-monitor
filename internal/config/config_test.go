@@ -379,6 +379,26 @@ func TestLoad_kube_match_rejectsUnknownPresetSlug(t *testing.T) {
 	}
 }
 
+func TestLoad_kube_friendlyName_acceptsKnownValues(t *testing.T) {
+	for _, v := range []string{"plain", "compact", "dedupe", "title"} {
+		data := []byte(kubeWith("  friendlyName: " + v + "\n"))
+		if _, err := config.Load(data); err != nil {
+			t.Errorf("style %q rejected: %v", v, err)
+		}
+	}
+}
+
+func TestLoad_kube_friendlyName_rejectsUnknownValue(t *testing.T) {
+	data := []byte(kubeWith("  friendlyName: cursive\n"))
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected validation error for unknown friendlyName")
+	}
+	if !strings.Contains(err.Error(), "friendlyName") || !strings.Contains(err.Error(), "cursive") {
+		t.Errorf("error should call out the bad value, got: %v", err)
+	}
+}
+
 func TestLoad_kube_match_rejectsEmptyWhen(t *testing.T) {
 	data := []byte(kubeWith("  match:\n    - when: {}\n      preset: internal-api\n"))
 	_, err := config.Load(data)
