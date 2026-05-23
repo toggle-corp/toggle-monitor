@@ -157,6 +157,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /{$}", s.handleHomepage)
 	mux.HandleFunc("GET /monitors", s.handleMonitorsListing)
 	mux.HandleFunc("GET /monitor/{slug}", s.handleMonitorDetail)
+	mux.HandleFunc("GET /groups", s.handleGroupsIndex)
 	mux.HandleFunc("GET /group/{slug}", s.handleGroupPage)
 	mux.HandleFunc("GET /discovery", s.handleDiscoveryListing)
 	mux.HandleFunc("GET /discovery/{ns}/{name}/{host}", s.handleDiscoveryDetail)
@@ -224,11 +225,27 @@ func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
 	_ = templates.MonitorsPage(listing, filter, nil, s.knownGroups, page, perPage).Render(ctx, w)
 }
 
+func (s *Server) handleGroupsIndex(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	groups, err := s.repo.ListGroupStats(ctx)
+	if err != nil {
+		s.renderDBUnavailable(ctx, w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = templates.GroupsIndex(groups).Render(ctx, w)
+}
+
 func (s *Server) handleGroupPage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	slug := r.PathValue("slug")
 	if !validSlugForURL(slug) {
 		http.NotFound(w, r)
+		return
+	}
+	stats, _, err := s.repo.GroupStatsForSlug(ctx, slug)
+	if err != nil {
+		s.renderDBUnavailable(ctx, w, err)
 		return
 	}
 	page, perPage := s.pagination(r, s.pageSizes.MonitorListing)
@@ -242,7 +259,7 @@ func (s *Server) handleGroupPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.GroupPage(slug, listing, page, perPage).Render(ctx, w)
+	_ = templates.GroupPage(slug, stats, listing, page, perPage).Render(ctx, w)
 }
 
 func (s *Server) handleDiscoveryListing(w http.ResponseWriter, r *http.Request) {

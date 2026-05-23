@@ -293,6 +293,75 @@ func TestDiscoveryListing_namespaceAndStatusFilter(t *testing.T) {
 	}
 }
 
+func TestGroupsIndex_listsGroupsWithCounts(t *testing.T) {
+	srv, repo := newServer(t)
+	ctx := context.Background()
+	for _, s := range []store.MonitorSpec{
+		{Slug: "api", FriendlyName: "API", URL: "http://api", GroupSlug: "prod", Source: store.SourceStatic},
+		{Slug: "web", FriendlyName: "Web", URL: "http://web", GroupSlug: "prod", Source: store.SourceStatic},
+		{Slug: "staging-api", FriendlyName: "Staging API", URL: "http://stg", GroupSlug: "staging", Source: store.SourceStatic},
+	} {
+		if err := repo.ReconcileMonitor(ctx, s); err != nil {
+			t.Fatalf("reconcile %q: %v", s.Slug, err)
+		}
+	}
+
+	resp, body := get(t, srv.Routes(), "/groups")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/groups status: got %d, want 200", resp.StatusCode)
+	}
+	// Both group slugs render as clickable rows.
+	for _, want := range []string{">prod<", ">staging<", "/group/prod", "/group/staging"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q; first 400:\n%s", want, firstN(body, 400))
+		}
+	}
+}
+
+func TestGroupPage_rendersStatsHeader(t *testing.T) {
+	srv, repo := newServer(t)
+	ctx := context.Background()
+	for _, s := range []store.MonitorSpec{
+		{Slug: "api", FriendlyName: "API", URL: "http://api", GroupSlug: "prod", Source: store.SourceStatic},
+		{Slug: "web", FriendlyName: "Web", URL: "http://web", GroupSlug: "prod", Source: store.SourceStatic},
+	} {
+		if err := repo.ReconcileMonitor(ctx, s); err != nil {
+			t.Fatalf("reconcile %q: %v", s.Slug, err)
+		}
+	}
+
+	resp, body := get(t, srv.Routes(), "/group/prod")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/group/prod status: got %d, want 200", resp.StatusCode)
+	}
+	// Stats tiles render with pre-filtered /monitors hrefs scoped to this group.
+	for _, want := range []string{
+		"/monitors?group=prod&amp;status=up",
+		"/monitors?group=prod&amp;status=down",
+		"/monitors?group=prod&amp;ssl=ssl-expiring",
+		"/monitor/api",
+		"/monitor/web",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q; first 600:\n%s", want, firstN(body, 600))
+		}
+	}
+}
+
+func TestGroupLink_clickableInMonitorsListing(t *testing.T) {
+	srv, repo := newServer(t)
+	ctx := context.Background()
+	if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
+		Slug: "api", FriendlyName: "API", URL: "http://api", GroupSlug: "prod", Source: store.SourceStatic,
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	_, body := get(t, srv.Routes(), "/monitors")
+	if !strings.Contains(body, `href="/group/prod"`) {
+		t.Errorf("monitors listing should link the group slug to /group/prod; first 600:\n%s", firstN(body, 600))
+	}
+}
+
 func TestMonitorDetail_notFound(t *testing.T) {
 	srv, _ := newServer(t)
 	resp, _ := get(t, srv.Routes(), "/monitor/does-not-exist")

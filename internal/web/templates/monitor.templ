@@ -83,6 +83,17 @@ templ kvHTTPCodes(label string, codes []int) {
 	</div>
 }
 
+// kvGroup is the kv row for the group field — renders the slug as
+// a clickable mono chip linking to /group/<slug>. Keeps the chip
+// visually consistent with how the slug appears in the listing
+// table and the /groups index.
+templ kvGroup(label, slug string) {
+	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
+		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
+		<dd class="text-sm col-span-2">@GroupLink(slug)</dd>
+	</div>
+}
+
 // kvSlugLinks renders a list of monitor slugs as comma-separated
 // links to each monitor's detail page. Used by "Depends on" and the
 // gating-parents row so the operator can hop straight to the upstream
@@ -163,7 +174,7 @@ templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []stri
 			<dl>
 				@kv("Slug", m.Slug)
 				@kvURL("URL", m.URL)
-				@kv("Group", m.GroupSlug)
+				@kvGroup("Group", m.GroupSlug)
 				@kv("Source", string(m.Source))
 				if cfg != nil && cfg.Preset != "" {
 					@kv("Preset", cfg.Preset)
@@ -246,7 +257,7 @@ templ configDialog(m store.MonitorRow, cfg MonitorConfig) {
 			<dl class="[&>div]:py-2.5">
 				@kv("Slug", m.Slug)
 				@kvURL("URL", m.URL)
-				@kv("Group", m.GroupSlug)
+				@kvGroup("Group", m.GroupSlug)
 				@kv("Source", string(m.Source))
 				if cfg.Preset != "" {
 					@kv("Preset", cfg.Preset)

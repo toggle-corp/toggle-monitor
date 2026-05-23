@@ -319,6 +319,19 @@ type HomepageStats struct {
 	SSLSkipped      int
 }
 
+// GroupStats is the same shape as HomepageStats but scoped to one
+// group slug. Powers both the /groups index (one row per group) and
+// the per-group page header tiles.
+type GroupStats struct {
+	GroupSlug       string
+	Total           int
+	Up              int
+	Down            int
+	TemporaryPaused int
+	SSLExpiring     int
+	SSLSkipped      int
+}
+
 // DiscoverySnapshotRow is one row from the discovery_snapshot table.
 type DiscoverySnapshotRow struct {
 	ID          int64
@@ -439,6 +452,63 @@ func (r *Repo) HomepageStats(ctx context.Context) (HomepageStats, error) {
 		return HomepageStats{}, fmt.Errorf("homepage stats: %w", err)
 	}
 	return s, nil
+}
+
+// ListGroupStats returns per-group status counts for the /groups
+// index, sorted by group slug. Archived monitors are excluded so the
+// index reflects what's currently being checked.
+func (r *Repo) ListGroupStats(ctx context.Context) ([]GroupStats, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT
+			group_slug,
+			COUNT(*) AS total,
+			COUNT(*) FILTER (WHERE status = 'up'),
+			COUNT(*) FILTER (WHERE status = 'down'),
+			COUNT(*) FILTER (WHERE status = 'temporary-paused'),
+			COUNT(*) FILTER (WHERE ssl_status = 'ssl-expiring'),
+			COUNT(*) FILTER (WHERE ssl_status = 'ssl-skipped')
+		FROM monitors
+		WHERE archived = FALSE
+		GROUP BY group_slug
+		ORDER BY group_slug`)
+	if err != nil {
+		return nil, fmt.Errorf("list group stats: %w", err)
+	}
+	defer rows.Close()
+	var out []GroupStats
+	for rows.Next() {
+		var g GroupStats
+		if err := rows.Scan(&g.GroupSlug, &g.Total, &g.Up, &g.Down, &g.TemporaryPaused, &g.SSLExpiring, &g.SSLSkipped); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// GroupStatsForSlug returns the same stats shape scoped to one group.
+// Used by the per-group page header. Returns (_, false) when no
+// monitors live in that group — the caller can render an empty-state.
+func (r *Repo) GroupStatsForSlug(ctx context.Context, slug string) (GroupStats, bool, error) {
+	row := r.pool.QueryRow(ctx, `
+		SELECT
+			COUNT(*) AS total,
+			COUNT(*) FILTER (WHERE status = 'up'),
+			COUNT(*) FILTER (WHERE status = 'down'),
+			COUNT(*) FILTER (WHERE status = 'temporary-paused'),
+			COUNT(*) FILTER (WHERE ssl_status = 'ssl-expiring'),
+			COUNT(*) FILTER (WHERE ssl_status = 'ssl-skipped')
+		FROM monitors
+		WHERE archived = FALSE AND group_slug = $1`, slug)
+	var g GroupStats
+	if err := row.Scan(&g.Total, &g.Up, &g.Down, &g.TemporaryPaused, &g.SSLExpiring, &g.SSLSkipped); err != nil {
+		return GroupStats{}, false, fmt.Errorf("group stats %q: %w", slug, err)
+	}
+	if g.Total == 0 {
+		return GroupStats{}, false, nil
+	}
+	g.GroupSlug = slug
+	return g, true, nil
 }
 
 // ApplyCheck records the result of one check tick. If event is non-nil
