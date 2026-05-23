@@ -3,6 +3,7 @@ package templates
 import (
 	"net/url"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/toggle-corp/toggle-monitor/internal/store"
@@ -24,12 +25,15 @@ type StatusConfigSection struct {
 	Match []StatusMatch
 }
 
-// StatusMatch mirrors config.StatusMatch — selector fields AND within
-// a selector; sections OR across selectors.
+// StatusMatch mirrors config.StatusPageMatch — selector fields AND
+// within a selector; sections OR across selectors. GroupRegex is
+// pre-compiled by lifecycle so per-request matching avoids the
+// regexp.Compile cost on every page render.
 type StatusMatch struct {
-	Host  string
-	Group string
-	Tags  []string
+	Host       string
+	Group      string
+	GroupRegex *regexp.Regexp
+	Tags       []string
 }
 
 // StatusSection is one rendered block on /status — title + the
@@ -80,6 +84,9 @@ func monitorMatches(m store.MonitorRow, sel StatusMatch) bool {
 		}
 	}
 	if sel.Group != "" && sel.Group != m.GroupSlug {
+		return false
+	}
+	if sel.GroupRegex != nil && !sel.GroupRegex.MatchString(m.GroupSlug) {
 		return false
 	}
 	if len(sel.Tags) > 0 && !tagsOverlap(sel.Tags, m.Tags) {

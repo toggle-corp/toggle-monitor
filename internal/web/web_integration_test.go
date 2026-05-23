@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -484,6 +485,39 @@ func TestIssuesPage_missingParentsSection(t *testing.T) {
 	// Nav badge picks up the missing parent in the count.
 	if !strings.Contains(body, "bg-rose-100") {
 		t.Errorf("nav should show issue chip when missing parents exist; first 600:\n%s", firstN(body, 600))
+	}
+}
+
+func TestStatusPage_groupRegexMatch(t *testing.T) {
+	srv, repo := newServer(t)
+	ctx := context.Background()
+	for _, s := range []store.MonitorSpec{
+		{Slug: "tc-api", FriendlyName: "TC API", URL: "https://tc-api/health", GroupSlug: "tc-prod", Source: store.SourceStatic},
+		{Slug: "tc-web", FriendlyName: "TC Web", URL: "https://tc-web/health", GroupSlug: "tc-stage", Source: store.SourceStatic},
+		{Slug: "other", FriendlyName: "Other", URL: "https://other/health", GroupSlug: "infra", Source: store.SourceStatic},
+	} {
+		if err := repo.ReconcileMonitor(ctx, s); err != nil {
+			t.Fatalf("reconcile %q: %v", s.Slug, err)
+		}
+	}
+	srv.SetStatusConfig(&templates.StatusConfig{
+		Title: "TC", ShowSections: true,
+		Sections: []templates.StatusConfigSection{
+			{
+				Title: "Toggle services",
+				Match: []templates.StatusMatch{{GroupRegex: regexp.MustCompile(`^tc-.*$`)}},
+			},
+		},
+	})
+	_, body := get(t, srv.Routes(), "/status")
+	for _, want := range []string{"TC API", "TC Web", "Toggle services"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q; first 600:\n%s", want, firstN(body, 600))
+		}
+	}
+	// `other` (group=infra) must NOT land in the regex-matched section.
+	if strings.Contains(body, "Other") {
+		t.Errorf("group infra should not match ^tc-.*$; body:\n%s", firstN(body, 600))
 	}
 }
 

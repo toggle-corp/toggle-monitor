@@ -813,6 +813,60 @@ func TestLoad_rejectsUnknownTopLevelKey(t *testing.T) {
 	}
 }
 
+func TestLoad_statusPage_acceptsExactGroupAndRegex(t *testing.T) {
+	data := []byte(validMinimal + `
+statusPage:
+  title: Test
+  sections:
+    - title: Exact
+      match:
+        - group: gateways
+    - title: Regex
+      match:
+        - groupRegex: "^tc-.*$"
+`)
+	if _, err := config.Load(data); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoad_statusPage_rejectsGroupAndRegexTogether(t *testing.T) {
+	data := []byte(validMinimal + `
+statusPage:
+  title: Test
+  sections:
+    - title: Bad
+      match:
+        - group: gateways
+          groupRegex: ".*"
+`)
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected mutual-exclusion error for group + groupRegex")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error should call out mutual exclusion, got: %v", err)
+	}
+}
+
+func TestLoad_statusPage_rejectsInvalidRegex(t *testing.T) {
+	data := []byte(validMinimal + `
+statusPage:
+  title: Test
+  sections:
+    - title: Bad
+      match:
+        - groupRegex: "[oops"
+`)
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected invalid-regex error")
+	}
+	if !strings.Contains(err.Error(), "invalid regex") {
+		t.Errorf("error should flag the invalid regex, got: %v", err)
+	}
+}
+
 func TestLoad_rejectsWhenRetryWindowExceedsInterval(t *testing.T) {
 	// retries=2 × (timeout 10s + retryBackoff 5s) = 30s; bump interval down to 20s.
 	data := withReplaced(t, "interval: 5m", "interval: 20s")

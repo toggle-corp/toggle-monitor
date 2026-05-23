@@ -239,12 +239,15 @@ type StatusPageSection struct {
 
 // StatusPageMatch is the per-monitor selector. host is a glob
 // (path.Match, same as kube.match[].when.host); group is an exact
-// slug match; tags matches if the monitor carries any of the listed
-// labels.
+// slug match while groupRegex is a Go regexp matched against the
+// monitor's group slug; tags matches if the monitor carries any of
+// the listed labels. group and groupRegex are mutually exclusive
+// per selector.
 type StatusPageMatch struct {
-	Host  string   `yaml:"host,omitempty"`
-	Group string   `yaml:"group,omitempty"`
-	Tags  []string `yaml:"tags,omitempty"`
+	Host       string   `yaml:"host,omitempty"`
+	Group      string   `yaml:"group,omitempty"`
+	GroupRegex string   `yaml:"groupRegex,omitempty"`
+	Tags       []string `yaml:"tags,omitempty"`
 }
 
 // ShowSectionsEnabled returns the flag value, defaulting to true.
@@ -694,12 +697,20 @@ func (c *checker) validate(cfg *Config) {
 			}
 			for j, sel := range sec.Match {
 				mbase := append(sbase, "match", j)
-				if sel.Host == "" && sel.Group == "" && len(sel.Tags) == 0 {
-					c.errf(mbase, "at least one of host, group, or tags is required")
+				if sel.Host == "" && sel.Group == "" && sel.GroupRegex == "" && len(sel.Tags) == 0 {
+					c.errf(mbase, "at least one of host, group, groupRegex, or tags is required")
+				}
+				if sel.Group != "" && sel.GroupRegex != "" {
+					c.errf(mbase, "group and groupRegex are mutually exclusive")
 				}
 				if sel.Group != "" {
 					if _, ok := seenGroups[sel.Group]; !ok {
 						c.errf(append(mbase, "group"), "unknown group %q", sel.Group)
+					}
+				}
+				if sel.GroupRegex != "" {
+					if _, err := regexp.Compile(sel.GroupRegex); err != nil {
+						c.errf(append(mbase, "groupRegex"), "invalid regex: %v", err)
 					}
 				}
 			}

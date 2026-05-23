@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -229,11 +230,18 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		for _, sec := range sc.Sections {
 			tsec := templates.StatusConfigSection{Title: sec.Title}
 			for _, sel := range sec.Match {
-				tsec.Match = append(tsec.Match, templates.StatusMatch{
+				m := templates.StatusMatch{
 					Host:  sel.Host,
 					Group: sel.Group,
 					Tags:  append([]string(nil), sel.Tags...),
-				})
+				}
+				if sel.GroupRegex != "" {
+					// Config validation already confirmed this
+					// compiles; MustCompile is safe and avoids
+					// re-validating per request.
+					m.GroupRegex = regexp.MustCompile(sel.GroupRegex)
+				}
+				tsec.Match = append(tsec.Match, m)
 			}
 			tc.Sections = append(tc.Sections, tsec)
 		}

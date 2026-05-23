@@ -218,9 +218,12 @@ monitors:
 # Public /status page. Optional — omit this block to keep /status at
 # an empty placeholder. When set, the page renders sections of
 # monitors selected by the match rules. Match selectors AND within a
-# selector and OR across selectors. Same DSL shape kube.match[] uses
-# for host globs, extended with `group` (exact slug) and `tags` (set
-# overlap against monitors.tags).
+# selector and OR across selectors. Selector fields:
+#   - host:       glob (path.Match) against the monitor's URL host
+#   - group:      exact slug equality (must reference a declared group)
+#   - groupRegex: Go regexp against the monitor's group slug
+#                 (mutually exclusive with `group` in the same selector)
+#   - tags:       set overlap against monitors.tags
 statusPage:
   title: "Toggle status"
   showSections: true            # toggle the section headings on/off
@@ -230,6 +233,9 @@ statusPage:
       match:
         - host: "*.example.com"
         - group: gateways
+    - title: "Toggle-prefixed services"
+      match:
+        - groupRegex: "^tc-.*$"
     - title: "Internal tools"
       match:
         - tags: [internal-tools]
