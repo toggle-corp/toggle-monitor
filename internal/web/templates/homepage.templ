@@ -112,7 +112,12 @@ templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page
 // problem (the homepage mapping panel / the /discovery listing).
 templ IssuesPage(mapping MappingHealth, invalidDiscovery []store.DiscoverySnapshotRow) {
 	@Layout("Issues") {
-		<h1 class="text-xl font-semibold mb-4">Issues</h1>
+		<h1 class="text-xl font-semibold mb-4 inline-flex items-center gap-2">
+			Issues
+			if total := len(mapping.Invalid) + len(invalidDiscovery); total > 0 {
+				<span class="inline-flex items-center justify-center min-w-[1.5rem] px-2 py-0.5 rounded-full text-sm font-medium bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300 tabular-nums">{ fmt.Sprint(total) }</span>
+			}
+		</h1>
 		if len(mapping.Invalid) == 0 && len(invalidDiscovery) == 0 {
 			<div class="bg-white dark:bg-slate-900 rounded border border-emerald-200 dark:border-emerald-800 p-6 text-center text-sm text-slate-500 dark:text-slate-400">
 				<p>No issues detected.</p>
