@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/a-h/templ"
@@ -252,6 +253,33 @@ func paramsFromFilter(f MonitorsFilter) url.Values {
 		}
 	}
 	return v
+}
+
+// kubeNamePrefix returns the "(namespace)" portion of a kube
+// friendly-name produced by merger.formatFriendlyName. Returns ""
+// for static-monitor names (operator-chosen, no parens convention)
+// and any name that doesn't start with the parenthesized prefix.
+func kubeNamePrefix(name string) string {
+	if len(name) < 2 || name[0] != '(' {
+		return ""
+	}
+	close := strings.Index(name, ")")
+	if close < 0 {
+		return ""
+	}
+	return name[:close+1]
+}
+
+// kubeNameRest returns the text after the "(namespace)" prefix —
+// trimmed of the single separating space. When no prefix is
+// present, returns the full name so callers can fall back to a
+// single-span render.
+func kubeNameRest(name string) string {
+	p := kubeNamePrefix(name)
+	if p == "" {
+		return name
+	}
+	return strings.TrimSpace(name[len(p):])
 }
 
 // boolYesNo renders a bool as "yes"/"no" for compact dl rows.
