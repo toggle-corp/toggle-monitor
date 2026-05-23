@@ -136,6 +136,23 @@ templ DiscoveryBadge(s string) {
 	<span class={ "inline-block px-2 py-0.5 rounded text-xs font-medium", discoveryBadgeClasses(s) }>{ s }</span>
 }
 
+// MonitorName renders the monitor's display name with the kube
+// namespace lifted into a monospace chip — kube friendly names from
+// merger.formatFriendlyName arrive as "(my-team) api-health", and
+// the namespace boundary reads at a glance when it has its own
+// visual treatment. Static monitors lack the prefix and render as
+// a single plain span. Callers wrap this fragment in their own
+// element (<a> for listings, <h1> for the detail page heading)
+// using inline-flex + gap-1.5 to keep the chip beside the label.
+templ MonitorName(name string) {
+	if ns := kubeNamePrefix(name); ns != "" {
+		<code class="font-mono text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 shrink-0">{ ns }</code>
+		<span class="truncate">{ kubeNameRest(name) }</span>
+	} else {
+		<span class="truncate">{ name }</span>
+	}
+}
+
 // Timestamp renders an RFC3339 UTC stamp followed by a dim
 // human-readable diff (e.g. "5m ago"). Empty for the zero time so
 // callers can omit them safely.
@@ -152,7 +169,11 @@ templ Timestamp(t time.Time) {
 // so a glance at the listing is enough to triage a flood of failures.
 templ MonitorRow(m store.MonitorRow) {
 	<tr class="border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/60 align-top">
-		<td class="py-2 px-3"><a class="text-blue-700 dark:text-blue-400 hover:underline" href={ templ.URL("/monitor/" + m.Slug) }>{ m.FriendlyName }</a></td>
+		<td class="py-2 px-3">
+			<a class="text-blue-700 dark:text-blue-400 hover:underline inline-flex items-center gap-1.5" href={ templ.URL("/monitor/" + m.Slug) }>
+				@MonitorName(m.FriendlyName)
+			</a>
+		</td>
 		<td class="py-2 px-3 text-sm text-slate-600 dark:text-slate-400">{ m.GroupSlug }</td>
 		<td class="py-2 px-3">@StatusBadge(string(m.Status))</td>
 		<td class="py-2 px-3 text-sm">

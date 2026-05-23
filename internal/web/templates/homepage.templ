@@ -84,7 +84,9 @@ templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page
 					for _, ev := range alerts.Items {
 						<li class="py-2 px-3 text-sm flex flex-wrap items-center gap-3">
 							<span class="w-24 shrink-0">@EventTypeBadge(string(ev.Type))</span>
-							@alertMonitorLink(ev.MonitorSlug, ev.FriendlyName)
+							<a class="text-blue-700 dark:text-blue-400 hover:underline inline-flex items-center gap-1.5 min-w-0 max-w-[28rem]" href={ templ.URL("/monitor/" + ev.MonitorSlug) }>
+								@MonitorName(ev.FriendlyName)
+							</a>
 							<span class="text-slate-500 dark:text-slate-400 shrink-0">@Timestamp(ev.At)</span>
 							if ev.StatusCode != nil {
 								@HTTPStatusBadge(*ev.StatusCode)
@@ -101,19 +103,3 @@ templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page
 	}
 }
 
-// alertMonitorLink renders the monitor link for one latest-alerts row.
-// Kube friendly names start with a "(namespace)" prefix produced by
-// merger.formatFriendlyName — we lift that into a monospace chip so
-// the namespace boundary is visible at a glance and the human label
-// ("Timur prod API") sits cleanly beside it. Static monitors lack
-// the prefix and render as a single plain span.
-templ alertMonitorLink(slug, name string) {
-	<a class="text-blue-700 dark:text-blue-400 hover:underline inline-flex items-center gap-1.5 min-w-0 max-w-[28rem]" href={ templ.URL("/monitor/" + slug) }>
-		if ns := kubeNamePrefix(name); ns != "" {
-			<code class="font-mono text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 shrink-0">{ ns }</code>
-			<span class="truncate">{ kubeNameRest(name) }</span>
-		} else {
-			<span class="truncate">{ name }</span>
-		}
-	</a>
-}

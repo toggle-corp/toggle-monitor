@@ -128,7 +128,9 @@ templ kvURL(label, href string) {
 templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []string, history []store.AlertEventRow) {
 	@Layout(m.FriendlyName) {
 		<div class="flex items-center gap-3 mb-4">
-			<h1 class="text-xl font-semibold">{ m.FriendlyName }</h1>
+			<h1 class="text-xl font-semibold inline-flex items-center gap-2">
+				@MonitorName(m.FriendlyName)
+			</h1>
 			@StatusBadge(string(m.Status))
 			if cfg != nil {
 				<button

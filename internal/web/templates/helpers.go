@@ -255,10 +255,10 @@ func paramsFromFilter(f MonitorsFilter) url.Values {
 	return v
 }
 
-// kubeNamePrefix returns the "(namespace)" portion of a kube
-// friendly-name produced by merger.formatFriendlyName. Returns ""
-// for static-monitor names (operator-chosen, no parens convention)
-// and any name that doesn't start with the parenthesized prefix.
+// kubeNamePrefix returns the namespace from a kube friendly-name
+// produced by merger.formatFriendlyName ("(my-team) api" → "my-team").
+// Returns "" for static-monitor names (operator-chosen, no parens
+// convention) and any name that doesn't start with "(…)".
 func kubeNamePrefix(name string) string {
 	if len(name) < 2 || name[0] != '(' {
 		return ""
@@ -267,19 +267,21 @@ func kubeNamePrefix(name string) string {
 	if close < 0 {
 		return ""
 	}
-	return name[:close+1]
+	return name[1:close]
 }
 
-// kubeNameRest returns the text after the "(namespace)" prefix —
-// trimmed of the single separating space. When no prefix is
-// present, returns the full name so callers can fall back to a
-// single-span render.
+// kubeNameRest returns the text after the "(namespace) " prefix.
+// When no prefix is present, returns the full name so callers can
+// fall back to a single-span render.
 func kubeNameRest(name string) string {
-	p := kubeNamePrefix(name)
-	if p == "" {
+	if len(name) < 2 || name[0] != '(' {
 		return name
 	}
-	return strings.TrimSpace(name[len(p):])
+	close := strings.Index(name, ")")
+	if close < 0 {
+		return name
+	}
+	return strings.TrimSpace(name[close+1:])
 }
 
 // boolYesNo renders a bool as "yes"/"no" for compact dl rows.
