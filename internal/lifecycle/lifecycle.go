@@ -268,14 +268,14 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 
 	// Scheduler. RunDynamic re-evaluates the plan set every
 	// refreshInterval so newly-materialized kube monitors are picked
-	// up without restarting the worker. For all-static deployments
-	// the refresh is still cheap (no diff).
+	// up without restarting the worker. The refresh is a cheap
+	// in-memory plan diff (slug-keyed map lookup, then reflect.DeepEqual
+	// per kept slug) — independent of the watcher's k8s-API resync,
+	// which is bounded by API cost and may be tens of minutes. A
+	// previous version of this code yoked the two together, which made
+	// kube monitors invisible to the scheduler for up to ResyncInterval
+	// after they were materialized.
 	refresh := 30 * time.Second
-	if kc := opts.Config.Kube; kc != nil && kc.ResyncInterval.AsDuration() > 0 {
-		// Match the watcher cadence so kube monitor lifecycle and
-		// scheduling refresh stay in lockstep.
-		refresh = kc.ResyncInterval.AsDuration()
-	}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
