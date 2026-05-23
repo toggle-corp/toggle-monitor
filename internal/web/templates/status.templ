@@ -209,19 +209,30 @@ templ StatusPage(cfg *StatusConfig, sections []StatusSection, incidents []store.
 						No monitors in this section.
 					</div>
 				} else {
-					<ul class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 divide-y divide-slate-100 dark:divide-slate-800 mb-6">
-						for _, m := range sec.Monitors {
-							<li class="py-2 px-3 flex flex-wrap items-center gap-3">
-								<span class="font-medium">{ m.FriendlyName }</span>
-								<span class="ml-auto flex items-center gap-2">
-									if m.SSLStatus != nil && string(*m.SSLStatus) == "ssl-expiring" {
-										@SSLBadge("ssl-expiring")
-									}
-									@StatusBadge(string(m.Status))
-								</span>
-							</li>
-						}
-					</ul>
+					<table class="w-full bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 overflow-hidden mb-6">
+						<thead>
+							<tr class="bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
+								<th class="py-2 px-3">Name</th>
+								<th class="py-2 px-3 text-right">SSL</th>
+								<th class="py-2 px-3 text-right">Status</th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, m := range sec.Monitors {
+								<tr class="border-b border-slate-100 dark:border-slate-800 last:border-0 align-middle">
+									<td class="py-2 px-3 font-medium">{ m.FriendlyName }</td>
+									<td class="py-2 px-3 text-sm text-right">
+										if m.SSLStatus != nil && string(*m.SSLStatus) == "ssl-expiring" {
+											@SSLBadge("ssl-expiring")
+										} else {
+											<span class="text-slate-400 dark:text-slate-600">—</span>
+										}
+									</td>
+									<td class="py-2 px-3 text-right">@StatusBadge(string(m.Status))</td>
+								</tr>
+							}
+						</tbody>
+					</table>
 				}
 			}
 			if cfg.ShowIncidents {

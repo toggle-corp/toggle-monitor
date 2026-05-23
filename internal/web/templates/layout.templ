@@ -69,8 +69,14 @@ templ Layout(title string) {
 				<a href="/" class="text-sm text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100">Home</a>
 				<a href="/monitors" class="text-sm text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100">Monitors</a>
 				<a href="/groups" class="text-sm text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100">Groups</a>
+				<a href="/status" class="text-sm text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100">Status</a>
 				<a href="/discovery" class="text-sm text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100">Discovery</a>
-				<a href="/issues" class="text-sm text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100">Issues</a>
+				<a href="/issues" class="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100">
+					Issues
+					if n := NavFromCtx(ctx).IssueCount; n > 0 {
+						<span class="inline-flex items-center justify-center min-w-[1.25rem] px-1.5 py-0.5 rounded-full text-xs font-medium bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300 tabular-nums">{ fmt.Sprint(n) }</span>
+					}
+				</a>
 				@themeSwitcher()
 			</nav>
 			<main class="max-w-screen-2xl mx-auto px-6 pb-12">

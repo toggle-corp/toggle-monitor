@@ -362,6 +362,41 @@ func TestGroupLink_clickableInMonitorsListing(t *testing.T) {
 	}
 }
 
+func TestNav_issueBadgeAndStatusLink(t *testing.T) {
+	srv, repo := newServer(t)
+	ctx := context.Background()
+	// Insert a kube-invalid row → issueCount becomes 1, badge should render.
+	reason := "no preset annotation"
+	if err := repo.UpsertDiscoverySnapshot(ctx, store.DiscoverySnapshotRow{
+		Namespace: "prod", IngressName: "api", Host: "api.example.com",
+		Status: "kube-invalid", Reason: &reason,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	_, body := get(t, srv.Routes(), "/")
+	if !strings.Contains(body, `href="/status"`) {
+		t.Errorf("homepage nav should include the Status link; first 600:\n%s", firstN(body, 600))
+	}
+	if !strings.Contains(body, "Issues") {
+		t.Fatalf("homepage nav should include the Issues link; first 600:\n%s", firstN(body, 600))
+	}
+	// The badge body for count=1 is just "1" wrapped in the rose chip.
+	// The chip class string fingerprint distinguishes it from a stray "1".
+	if !strings.Contains(body, "bg-rose-100") || !strings.Contains(body, ">1<") {
+		t.Errorf("expected issue-count badge with count=1; first 800:\n%s", firstN(body, 800))
+	}
+}
+
+func TestNav_noBadgeWhenZero(t *testing.T) {
+	srv, _ := newServer(t)
+	_, body := get(t, srv.Routes(), "/")
+	// No discovery rows + no mapping reader → count is 0 → no badge.
+	// The Issues link itself still renders; the chip class shouldn't appear inside the nav anchor.
+	if strings.Contains(body, "bg-rose-100") {
+		t.Errorf("count=0 should not render any rose chip in the nav; first 600:\n%s", firstN(body, 600))
+	}
+}
+
 func TestStatusPage_emptyWhenNoConfig(t *testing.T) {
 	srv, _ := newServer(t)
 	resp, body := get(t, srv.Routes(), "/status")

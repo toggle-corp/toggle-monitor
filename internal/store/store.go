@@ -405,6 +405,21 @@ func (r *Repo) PruneDiscoverySnapshot(ctx context.Context, before time.Time) (in
 	return pruned, prunedMonitors, rows.Err()
 }
 
+// CountKubeInvalid returns the number of discovery_snapshot rows
+// currently at status='kube-invalid'. Used by the operator nav to
+// surface a count badge on the Issues tab; intentionally a thin
+// COUNT(*) query rather than reusing ListDiscoverySnapshot so the
+// per-page-render cost stays predictable.
+func (r *Repo) CountKubeInvalid(ctx context.Context) (int, error) {
+	var n int
+	if err := r.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM discovery_snapshot WHERE status = 'kube-invalid'`,
+	).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count kube-invalid: %w", err)
+	}
+	return n, nil
+}
+
 // ListDiscoverySnapshot returns every snapshot row, ordered by
 // namespace then ingress name then host. Used by the auto-discovery
 // UI (Issue 12).

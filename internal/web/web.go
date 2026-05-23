@@ -159,15 +159,15 @@ func (s *Server) Routes() http.Handler {
 		mux.Handle("GET /metrics", s.metrics)
 	}
 
-	mux.HandleFunc("GET /{$}", s.handleHomepage)
-	mux.HandleFunc("GET /monitors", s.handleMonitorsListing)
-	mux.HandleFunc("GET /monitor/{slug}", s.handleMonitorDetail)
-	mux.HandleFunc("GET /groups", s.handleGroupsIndex)
-	mux.HandleFunc("GET /group/{slug}", s.handleGroupPage)
-	mux.HandleFunc("GET /issues", s.handleIssues)
-	mux.HandleFunc("GET /status", s.handleStatus)
-	mux.HandleFunc("GET /discovery", s.handleDiscoveryListing)
-	mux.HandleFunc("GET /discovery/{ns}/{name}/{host}", s.handleDiscoveryDetail)
+	mux.HandleFunc("GET /{$}", s.navWrap(s.handleHomepage))
+	mux.HandleFunc("GET /monitors", s.navWrap(s.handleMonitorsListing))
+	mux.HandleFunc("GET /monitor/{slug}", s.navWrap(s.handleMonitorDetail))
+	mux.HandleFunc("GET /groups", s.navWrap(s.handleGroupsIndex))
+	mux.HandleFunc("GET /group/{slug}", s.navWrap(s.handleGroupPage))
+	mux.HandleFunc("GET /issues", s.navWrap(s.handleIssues))
+	mux.HandleFunc("GET /status", s.handleStatus) // public, no operator nav
+	mux.HandleFunc("GET /discovery", s.navWrap(s.handleDiscoveryListing))
+	mux.HandleFunc("GET /discovery/{ns}/{name}/{host}", s.navWrap(s.handleDiscoveryDetail))
 
 	return mux
 }
@@ -230,6 +230,37 @@ func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = templates.MonitorsPage(listing, filter, nil, s.knownGroups, page, perPage).Render(ctx, w)
+}
+
+// navWrap injects per-request NavMeta (currently just the issue
+// count) into ctx so the operator-side Layout can render a badge on
+// the Issues tab without each handler having to compute it. Skipped
+// for the public /status page, which uses its own bare layout.
+func (s *Server) navWrap(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		meta := templates.NavMeta{IssueCount: s.issueCount(r.Context())}
+		h(w, r.WithContext(templates.WithNav(r.Context(), meta)))
+	}
+}
+
+// issueCount sums the two issue sources the /issues page surfaces:
+// failed Slack mapping entries (in-memory, free) + kube-invalid
+// discovery rows (one COUNT query). DB errors are swallowed so the
+// nav still renders the mapping-side count when Postgres is sick.
+func (s *Server) issueCount(ctx context.Context) int {
+	count := 0
+	if s.mapping != nil {
+		entries, _ := s.mapping.Snapshot()
+		for _, e := range entries {
+			if !e.OK {
+				count++
+			}
+		}
+	}
+	if n, err := s.repo.CountKubeInvalid(ctx); err == nil {
+		count += n
+	}
+	return count
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
