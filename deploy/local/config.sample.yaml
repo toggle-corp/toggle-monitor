@@ -89,3 +89,21 @@ monitors:
     slack: ops-alerts
     notify:
       - "<!here>"
+    tags: [demo, flaky]
+
+# Public /status page. Optional — omit the entire block to keep
+# /status at the empty placeholder. Match selectors AND within a
+# selector and OR across selectors; same host-glob syntax as
+# kube.match[].when.host, extended with `group` (exact slug) and
+# `tags` (set overlap against monitors.tags).
+status:
+  title: "Toggle Monitor — local dev"
+  showSections: true       # render the section headings
+  showIncidents: true      # opt in; surfaces the last few alert events
+  sections:
+    - title: "Local services"
+      match:
+        - group: local
+    - title: "Flaky things"
+      match:
+        - tags: [flaky]
