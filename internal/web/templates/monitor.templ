@@ -3,7 +3,6 @@ package templates
 import (
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/toggle-corp/toggle-monitor/internal/store"
@@ -84,6 +83,24 @@ templ kvHTTPCodes(label string, codes []int) {
 	</div>
 }
 
+// kvSlugLinks renders a list of monitor slugs as comma-separated
+// links to each monitor's detail page. Used by "Depends on" and the
+// gating-parents row so the operator can hop straight to the upstream
+// monitor that's pausing or being depended on.
+templ kvSlugLinks(label string, slugs []string) {
+	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
+		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
+		<dd class="text-sm text-slate-900 dark:text-slate-100 col-span-2 break-words">
+			for i, s := range slugs {
+				if i > 0 {
+					<span>, </span>
+				}
+				<a class="text-blue-700 dark:text-blue-400 hover:underline" href={ templ.URL("/monitor/" + s) }>{ s }</a>
+			}
+		</dd>
+	</div>
+}
+
 // kvMentions renders each mention as "<slug> <code>U…</code>" so the
 // operator can map a Slack ID back to the configured slug without
 // hunting through userMapping. Raw markers (<!here>, <!channel>)
@@ -152,10 +169,10 @@ templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []stri
 					@kv("Preset", cfg.Preset)
 				}
 				if len(m.DependsOn) > 0 {
-					@kv("Depends on", strings.Join(m.DependsOn, ", "))
+					@kvSlugLinks("Depends on", m.DependsOn)
 				}
 				if string(m.Status) == "temporary-paused" && len(gatingParents) > 0 {
-					@kv("Gated by (currently down)", strings.Join(gatingParents, ", "))
+					@kvSlugLinks("Gated by (currently down)", gatingParents)
 				}
 				if m.LastCheckedAt != nil {
 					@kvTime("Last checked", *m.LastCheckedAt)
@@ -235,7 +252,7 @@ templ configDialog(m store.MonitorRow, cfg MonitorConfig) {
 					@kv("Preset", cfg.Preset)
 				}
 				if len(m.DependsOn) > 0 {
-					@kv("Depends on", strings.Join(m.DependsOn, ", "))
+					@kvSlugLinks("Depends on", m.DependsOn)
 				}
 				if cfg.HTTPMethod != "" {
 					@kv("HTTP method", cfg.HTTPMethod)
