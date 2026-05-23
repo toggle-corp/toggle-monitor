@@ -220,6 +220,25 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		}
 		srv.SetDiscoveryStatus(ds)
 	}
+	if sc := opts.Config.Status; sc != nil {
+		tc := &templates.StatusConfig{
+			Title:         sc.Title,
+			ShowSections:  sc.ShowSectionsEnabled(),
+			ShowIncidents: sc.ShowIncidentsEnabled(),
+		}
+		for _, sec := range sc.Sections {
+			tsec := templates.StatusConfigSection{Title: sec.Title}
+			for _, sel := range sec.Match {
+				tsec.Match = append(tsec.Match, templates.StatusMatch{
+					Host:  sel.Host,
+					Group: sel.Group,
+					Tags:  append([]string(nil), sel.Tags...),
+				})
+			}
+			tc.Sections = append(tc.Sections, tsec)
+		}
+		srv.SetStatusConfig(tc)
+	}
 	listener, err := net.Listen("tcp", opts.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("bind listen address %q: %w", opts.ListenAddr, err)

@@ -362,6 +362,68 @@ func TestGroupLink_clickableInMonitorsListing(t *testing.T) {
 	}
 }
 
+func TestStatusPage_emptyWhenNoConfig(t *testing.T) {
+	srv, _ := newServer(t)
+	resp, body := get(t, srv.Routes(), "/status")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/status status: got %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(body, "No public status configured.") {
+		t.Errorf("empty placeholder expected; first 400:\n%s", firstN(body, 400))
+	}
+}
+
+func TestStatusPage_sectionsAndMatching(t *testing.T) {
+	srv, repo := newServer(t)
+	ctx := context.Background()
+	for _, s := range []store.MonitorSpec{
+		{Slug: "api", FriendlyName: "API", URL: "https://api.example.com/health", GroupSlug: "prod", Source: store.SourceStatic, Tags: []string{"public"}},
+		{Slug: "ui", FriendlyName: "UI", URL: "https://ui.example.com/health", GroupSlug: "prod", Source: store.SourceStatic, Tags: []string{"public"}},
+		{Slug: "internal", FriendlyName: "Internal", URL: "http://internal/health", GroupSlug: "ops", Source: store.SourceStatic, Tags: []string{"internal"}},
+	} {
+		if err := repo.ReconcileMonitor(ctx, s); err != nil {
+			t.Fatalf("reconcile %q: %v", s.Slug, err)
+		}
+	}
+	srv.SetStatusConfig(&templates.StatusConfig{
+		Title:        "Toggle status",
+		ShowSections: true,
+		Sections: []templates.StatusConfigSection{
+			{
+				Title: "Public",
+				Match: []templates.StatusMatch{{Host: "*.example.com"}},
+			},
+			{
+				Title: "Internal tools",
+				Match: []templates.StatusMatch{{Tags: []string{"internal"}}},
+			},
+		},
+	})
+
+	resp, body := get(t, srv.Routes(), "/status")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/status status: got %d, want 200", resp.StatusCode)
+	}
+	for _, want := range []string{
+		"Toggle status",
+		"Public",
+		"Internal tools",
+		"API",
+		"UI",
+		"Internal",
+		"All systems operational",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q; first 600:\n%s", want, firstN(body, 600))
+		}
+	}
+	// The public-section monitors must NOT appear under Internal tools
+	// — verify by checking that "Internal" only renders once.
+	if strings.Count(body, ">Internal<") != 1 {
+		t.Errorf("expected the Internal monitor to render in exactly one section; got %d occurrences", strings.Count(body, ">Internal<"))
+	}
+}
+
 func TestIssuesPage_emptyAndKubeInvalid(t *testing.T) {
 	srv, repo := newServer(t)
 	ctx := context.Background()

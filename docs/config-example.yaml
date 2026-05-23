@@ -214,3 +214,22 @@ monitors:
     notify:
       - ops-team
       - "<!here>"                                    # raw Slack markup passes through
+
+# Public /status page. Optional — omit this block to keep /status at
+# an empty placeholder. When set, the page renders sections of
+# monitors selected by the match rules. Match selectors AND within a
+# selector and OR across selectors. Same DSL shape kube.match[] uses
+# for host globs, extended with `group` (exact slug) and `tags` (set
+# overlap against monitors.tags).
+status:
+  title: "Toggle status"
+  showSections: true            # toggle the section headings on/off
+  showIncidents: false          # off by default — recent alerts are sensitive
+  sections:
+    - title: "Public APIs"
+      match:
+        - host: "*.example.com"
+        - group: gateways
+    - title: "Internal tools"
+      match:
+        - tags: [internal-tools]

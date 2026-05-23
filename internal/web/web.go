@@ -57,6 +57,7 @@ type Server struct {
 	knownGroups     []string
 	mapping         MappingHealthReader
 	configLookup    ConfigLookup
+	statusConfig    *templates.StatusConfig
 	discoveryStatus templates.DiscoveryStatus
 	ready           atomic.Bool
 }
@@ -92,6 +93,10 @@ type MappingEntry struct {
 // SetMappingReader plugs in the userMapping validator. When nil
 // (tests), the homepage panel is suppressed.
 func (s *Server) SetMappingReader(r MappingHealthReader) { s.mapping = r }
+
+// SetStatusConfig wires the public /status page's selector config.
+// Nil keeps /status at the empty placeholder.
+func (s *Server) SetStatusConfig(c *templates.StatusConfig) { s.statusConfig = c }
 
 // SetPageSizes overrides the per-listing default page sizes (called
 // by lifecycle after the config is loaded).
@@ -160,6 +165,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /groups", s.handleGroupsIndex)
 	mux.HandleFunc("GET /group/{slug}", s.handleGroupPage)
 	mux.HandleFunc("GET /issues", s.handleIssues)
+	mux.HandleFunc("GET /status", s.handleStatus)
 	mux.HandleFunc("GET /discovery", s.handleDiscoveryListing)
 	mux.HandleFunc("GET /discovery/{ns}/{name}/{host}", s.handleDiscoveryDetail)
 
@@ -224,6 +230,46 @@ func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = templates.MonitorsPage(listing, filter, nil, s.knownGroups, page, perPage).Render(ctx, w)
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if s.statusConfig == nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_ = templates.StatusPage(nil, nil, nil).Render(ctx, w)
+		return
+	}
+	monitors, err := s.repo.ListActiveMonitors(ctx)
+	if err != nil {
+		s.renderDBUnavailable(ctx, w, err)
+		return
+	}
+	sections := templates.BuildStatusSections(s.statusConfig, monitors)
+	var incidents []store.AlertEventRow
+	if s.statusConfig.ShowIncidents {
+		// Latest alerts across the whole system, then filter to monitors
+		// that landed in any section. Bound to a small N — the status
+		// page is a snapshot, not a paginated history.
+		listing, err := s.repo.ListLatestAlerts(ctx, 50, 0)
+		if err == nil {
+			included := map[string]struct{}{}
+			for _, sec := range sections {
+				for _, m := range sec.Monitors {
+					included[m.Slug] = struct{}{}
+				}
+			}
+			for _, ev := range listing.Items {
+				if _, ok := included[ev.MonitorSlug]; ok {
+					incidents = append(incidents, ev)
+					if len(incidents) >= 10 {
+						break
+					}
+				}
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = templates.StatusPage(s.statusConfig, sections, incidents).Render(ctx, w)
 }
 
 func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
