@@ -215,27 +215,34 @@ monitors:
       - ops-team
       - "<!here>"                                    # raw Slack markup passes through
 
-# Public /status page. Optional — omit this block to keep /status at
-# an empty placeholder. When set, the page renders sections of
-# monitors selected by the match rules. Match selectors AND within a
-# selector and OR across selectors. Selector fields:
+# Public status pages. Optional — omit this block to keep /status at
+# an empty placeholder. Each entry has a required, unique `slug` and
+# is served at /status/<slug>; /status itself renders an index of all
+# configured pages. Each page renders sections of monitors selected
+# by its match rules. Match selectors AND within a selector and OR
+# across selectors. Selector fields:
 #   - host:       glob (path.Match) against the monitor's URL host
 #   - group:      exact slug equality (must reference a declared group)
 #   - groupRegex: Go regexp against the monitor's group slug
 #                 (mutually exclusive with `group` in the same selector)
 #   - tags:       set overlap against monitors.tags
-statusPage:
-  title: "Toggle status"
-  showSections: true            # toggle the section headings on/off
-  showIncidents: false          # off by default — recent alerts are sensitive
-  sections:
-    - title: "Public APIs"
-      match:
-        - host: "*.example.com"
-        - group: gateways
-    - title: "Toggle-prefixed services"
-      match:
-        - groupRegex: "^tc-.*$"
-    - title: "Internal tools"
-      match:
-        - tags: [internal-tools]
+statusPages:
+  - slug: public
+    title: "Toggle status"
+    showSections: true            # toggle the section headings on/off
+    showIncidents: false          # off by default — recent alerts are sensitive
+    sections:
+      - title: "Public APIs"
+        match:
+          - host: "*.example.com"
+          - group: gateways
+      - title: "Toggle-prefixed services"
+        match:
+          - groupRegex: "^tc-.*$"
+  - slug: internal
+    title: "Internal tools"
+    showSections: true
+    sections:
+      - title: "Internal tools"
+        match:
+          - tags: [internal-tools]

@@ -58,7 +58,8 @@ type Server struct {
 	mapping         MappingHealthReader
 	missingParents  MissingParentReader
 	configLookup    ConfigLookup
-	statusConfig    *templates.StatusConfig
+	statusConfigs   []*templates.StatusConfig
+	statusBySlug    map[string]*templates.StatusConfig
 	discoveryStatus templates.DiscoveryStatus
 	ready           atomic.Bool
 }
@@ -115,9 +116,17 @@ func (s *Server) SetMappingReader(r MappingHealthReader) { s.mapping = r }
 // dependsOn references that didn't resolve to a known monitor.
 func (s *Server) SetMissingParentReader(r MissingParentReader) { s.missingParents = r }
 
-// SetStatusConfig wires the public /status page's selector config.
-// Nil keeps /status at the empty placeholder.
-func (s *Server) SetStatusConfig(c *templates.StatusConfig) { s.statusConfig = c }
+// SetStatusConfigs wires the public status pages' selector configs.
+// Empty (or nil) keeps /status at the empty placeholder. Callers
+// must ensure slugs are unique; lifecycle relies on config-load
+// validation for that.
+func (s *Server) SetStatusConfigs(cs []*templates.StatusConfig) {
+	s.statusConfigs = cs
+	s.statusBySlug = make(map[string]*templates.StatusConfig, len(cs))
+	for _, c := range cs {
+		s.statusBySlug[c.Slug] = c
+	}
+}
 
 // SetPageSizes overrides the per-listing default page sizes (called
 // by lifecycle after the config is loaded).
@@ -186,7 +195,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /groups", s.navWrap(s.handleGroupsIndex))
 	mux.HandleFunc("GET /group/{slug}", s.navWrap(s.handleGroupPage))
 	mux.HandleFunc("GET /issues", s.navWrap(s.handleIssues))
-	mux.HandleFunc("GET /status", s.handleStatus) // public, no operator nav
+	mux.HandleFunc("GET /status", s.handleStatusIndex)        // public index of pages
+	mux.HandleFunc("GET /status/{slug}", s.handleStatusBySlug) // public, no operator nav
 	mux.HandleFunc("GET /discovery", s.navWrap(s.handleDiscoveryListing))
 	mux.HandleFunc("GET /discovery/{ns}/{name}/{host}", s.navWrap(s.handleDiscoveryDetail))
 
@@ -287,11 +297,28 @@ func (s *Server) issueCount(ctx context.Context) int {
 	return count
 }
 
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+// handleStatusIndex renders the public list of configured status
+// pages. Zero pages → the same empty-placeholder card the singular
+// page used to show, so existing /status bookmarks still resolve.
+func (s *Server) handleStatusIndex(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if s.statusConfig == nil {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_ = templates.StatusPage(nil, nil, nil).Render(ctx, w)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = templates.StatusIndexPage(s.statusConfigs).Render(ctx, w)
+}
+
+// handleStatusBySlug renders one configured status page. Unknown
+// slugs 404 (no DB hit). Same per-page rendering as the previous
+// singular handler.
+func (s *Server) handleStatusBySlug(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	slug := r.PathValue("slug")
+	if !validSlugForURL(slug) {
+		http.NotFound(w, r)
+		return
+	}
+	cfg, ok := s.statusBySlug[slug]
+	if !ok {
+		http.NotFound(w, r)
 		return
 	}
 	monitors, err := s.repo.ListActiveMonitors(ctx)
@@ -299,9 +326,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		s.renderDBUnavailable(ctx, w, err)
 		return
 	}
-	sections := templates.BuildStatusSections(s.statusConfig, monitors)
+	sections := templates.BuildStatusSections(cfg, monitors)
 	var incidents []store.AlertEventRow
-	if s.statusConfig.ShowIncidents {
+	if cfg.ShowIncidents {
 		// Latest alerts across the whole system, then filter to monitors
 		// that landed in any section. Bound to a small N — the status
 		// page is a snapshot, not a paginated history.
@@ -324,7 +351,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.StatusPage(s.statusConfig, sections, incidents).Render(ctx, w)
+	_ = templates.StatusPage(cfg, sections, incidents).Render(ctx, w)
 }
 
 func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {

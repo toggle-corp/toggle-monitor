@@ -42,7 +42,7 @@ type Config struct {
 	Proxies         []Proxy    `yaml:"proxies,omitempty"`
 	Groups          []Group    `yaml:"groups"`
 	Monitors        []Monitor  `yaml:"monitors"`
-	StatusPage      *StatusPage `yaml:"statusPage,omitempty"` // optional; nil → /status renders empty placeholder
+	StatusPages     []StatusPage `yaml:"statusPages,omitempty"` // optional; empty → /status renders empty placeholder
 }
 
 // Proxy is one outbound proxy that monitors can route their probes
@@ -219,10 +219,12 @@ type Group struct {
 	Notify       []string `yaml:"notify,omitempty"` // userMapping slugs or raw <…> markup; merged union with monitor.notify
 }
 
-// StatusPage is the public-page block. nil → /status renders an
-// empty placeholder. When set, the page lists monitors selected by
-// the per-section match rules.
+// StatusPage is one public status page. Each entry in statusPages
+// gets its own /status/<slug> URL; /status itself lists every
+// configured page. Slug is required and must be unique across the
+// list.
 type StatusPage struct {
+	Slug          string              `yaml:"slug"`
 	Title         string              `yaml:"title,omitempty"`
 	ShowSections  *bool               `yaml:"showSections,omitempty"`  // default true
 	ShowIncidents *bool               `yaml:"showIncidents,omitempty"` // default false (privacy)
@@ -340,7 +342,7 @@ var knownTopLevelKeys = map[string]struct{}{
 	"slack":   {},
 	"proxies": {},
 	"groups":  {}, "monitors": {},
-	"statusPage": {},
+	"statusPages": {},
 }
 
 func checkTopLevelKeys(root *yaml.Node) error {
@@ -680,15 +682,27 @@ func (c *checker) validate(cfg *Config) {
 		c.errf([]any{"monitors"}, "dependsOn graph contains a cycle: %s", cycle)
 	}
 
-	// StatusPage block validation. Per-section: title + non-empty
-	// match; each selector must specify at least one of host/group/
-	// tags, and any referenced group must exist.
-	if cfg.StatusPage != nil {
-		if len(cfg.StatusPage.Sections) == 0 {
-			c.errf([]any{"statusPage", "sections"}, "at least one section is required when statusPage block is set")
+	// statusPages validation. Per page: slug required + unique across
+	// the list. Per section: title + non-empty match; each selector
+	// must specify at least one of host/group/tags, and any referenced
+	// group must exist.
+	seenStatusSlugs := map[string]int{}
+	for pi, page := range cfg.StatusPages {
+		pbase := []any{"statusPages", pi}
+		if err := slug.Validate(page.Slug); err != nil {
+			c.errf(append(pbase, "slug"), "%v", err)
 		}
-		for i, sec := range cfg.StatusPage.Sections {
-			sbase := []any{"statusPage", "sections", i}
+		if prev, dup := seenStatusSlugs[page.Slug]; dup && page.Slug != "" {
+			c.errf(append(pbase, "slug"), "duplicate slug %q (also at statusPages[%d])", page.Slug, prev)
+		}
+		if page.Slug != "" {
+			seenStatusSlugs[page.Slug] = pi
+		}
+		if len(page.Sections) == 0 {
+			c.errf(append(pbase, "sections"), "at least one section is required")
+		}
+		for i, sec := range page.Sections {
+			sbase := append(pbase, "sections", i)
 			if strings.TrimSpace(sec.Title) == "" {
 				c.errf(append(sbase, "title"), "required")
 			}

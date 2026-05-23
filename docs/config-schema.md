@@ -387,13 +387,56 @@ slack:
 
 ---
 
+## 5b. Status pages (optional)
+
+Public, read-only pages served outside the operator nav. Each entry gets a unique slug and is served at `/status/<slug>`; `/status` itself lists every configured page. Omit the block (or set it to `[]`) to keep `/status` at the empty placeholder.
+
+```yaml
+statusPages:
+  - slug: public
+    title: "Toggle status"
+    showSections: true
+    showIncidents: false
+    sections:
+      - title: "Public APIs"
+        match:
+          - host: "*.example.com"
+          - group: gateways
+  - slug: internal
+    title: "Internal tools"
+    sections:
+      - title: "Internal"
+        match:
+          - tags: [internal-tools]
+```
+
+| Field | Type | Required | Constraints | Notes |
+|---|---|---|---|---|
+| `statusPages[].slug` | string | ✓ | kebab-case (same rules as monitor/group slugs); unique across the list | URL segment for the page |
+| `statusPages[].title` | string | optional | non-empty if set | Displayed as the page heading; falls back to `Status` |
+| `statusPages[].showSections` | bool | optional (default `true`) | | Renders the section headings |
+| `statusPages[].showIncidents` | bool | optional (default `false`) | | Opt-in surfacing of the last few alert events filtered to monitors in the page |
+| `statusPages[].sections` | list | ✓ | non-empty | At least one section per page |
+| `statusPages[].sections[].title` | string | ✓ | non-empty | |
+| `statusPages[].sections[].match` | list | ✓ | non-empty | OR across selectors; AND within a selector |
+| `statusPages[].sections[].match[].host` | string | optional | glob (`path.Match`) | Matched against monitor URL host |
+| `statusPages[].sections[].match[].group` | string | optional | must reference a declared group | Exact slug match; mutually exclusive with `groupRegex` |
+| `statusPages[].sections[].match[].groupRegex` | string | optional | valid Go regexp | Matched against monitor group slug |
+| `statusPages[].sections[].match[].tags` | list[string] | optional | | Set overlap against `monitors[].tags` |
+
+A monitor lands in a section when any one selector fires; within a selector the listed fields all have to match. The same monitor may appear in multiple sections — the status page is a curated view, not a strict partition.
+
+---
+
 ## 6. Schema-level rules
 
 **Recognized top-level keys** (anything else is a typo unless prefixed `x-`):
 - `displayTimezone`, `publicBaseURL`, `dbBodyMaxChars`
 - `kube`, `ui`, `theme`, `httpClient`, `heartbeat`, `database`
 - `slack`
+- `proxies`
 - `groups`, `monitors`
+- `statusPages`
 - `x-*` — ignored (docker-compose-style anchor host)
 
 **Validator behavior:**

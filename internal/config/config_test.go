@@ -813,32 +813,102 @@ func TestLoad_rejectsUnknownTopLevelKey(t *testing.T) {
 	}
 }
 
-func TestLoad_statusPage_acceptsExactGroupAndRegex(t *testing.T) {
+func TestLoad_statusPages_acceptsExactGroupAndRegex(t *testing.T) {
 	data := []byte(validMinimal + `
-statusPage:
-  title: Test
-  sections:
-    - title: Exact
-      match:
-        - group: gateways
-    - title: Regex
-      match:
-        - groupRegex: "^tc-.*$"
+statusPages:
+  - slug: public
+    title: Test
+    sections:
+      - title: Exact
+        match:
+          - group: gateways
+      - title: Regex
+        match:
+          - groupRegex: "^tc-.*$"
 `)
 	if _, err := config.Load(data); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestLoad_statusPage_rejectsGroupAndRegexTogether(t *testing.T) {
+func TestLoad_statusPages_acceptsMultiplePagesWithUniqueSlugs(t *testing.T) {
 	data := []byte(validMinimal + `
-statusPage:
-  title: Test
-  sections:
-    - title: Bad
-      match:
-        - group: gateways
-          groupRegex: ".*"
+statusPages:
+  - slug: public
+    title: Public
+    sections:
+      - title: Gateways
+        match:
+          - group: gateways
+  - slug: internal
+    title: Internal
+    sections:
+      - title: All
+        match:
+          - groupRegex: ".+"
+`)
+	cfg, err := config.Load(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.StatusPages) != 2 {
+		t.Fatalf("expected 2 status pages, got %d", len(cfg.StatusPages))
+	}
+	if cfg.StatusPages[0].Slug != "public" || cfg.StatusPages[1].Slug != "internal" {
+		t.Errorf("slug order should be preserved, got %q, %q", cfg.StatusPages[0].Slug, cfg.StatusPages[1].Slug)
+	}
+}
+
+func TestLoad_statusPages_rejectsDuplicateSlug(t *testing.T) {
+	data := []byte(validMinimal + `
+statusPages:
+  - slug: public
+    title: A
+    sections:
+      - title: One
+        match:
+          - group: gateways
+  - slug: public
+    title: B
+    sections:
+      - title: Two
+        match:
+          - group: gateways
+`)
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected duplicate-slug error")
+	}
+	if !strings.Contains(err.Error(), "duplicate slug") {
+		t.Errorf("error should flag duplicate slug, got: %v", err)
+	}
+}
+
+func TestLoad_statusPages_rejectsMissingSlug(t *testing.T) {
+	data := []byte(validMinimal + `
+statusPages:
+  - title: No slug here
+    sections:
+      - title: One
+        match:
+          - group: gateways
+`)
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected missing-slug error")
+	}
+}
+
+func TestLoad_statusPages_rejectsGroupAndRegexTogether(t *testing.T) {
+	data := []byte(validMinimal + `
+statusPages:
+  - slug: public
+    title: Test
+    sections:
+      - title: Bad
+        match:
+          - group: gateways
+            groupRegex: ".*"
 `)
 	_, err := config.Load(data)
 	if err == nil {
@@ -849,14 +919,15 @@ statusPage:
 	}
 }
 
-func TestLoad_statusPage_rejectsInvalidRegex(t *testing.T) {
+func TestLoad_statusPages_rejectsInvalidRegex(t *testing.T) {
 	data := []byte(validMinimal + `
-statusPage:
-  title: Test
-  sections:
-    - title: Bad
-      match:
-        - groupRegex: "[oops"
+statusPages:
+  - slug: public
+    title: Test
+    sections:
+      - title: Bad
+        match:
+          - groupRegex: "[oops"
 `)
 	_, err := config.Load(data)
 	if err == nil {

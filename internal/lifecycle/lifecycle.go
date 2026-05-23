@@ -221,31 +221,36 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		}
 		srv.SetDiscoveryStatus(ds)
 	}
-	if sc := opts.Config.StatusPage; sc != nil {
-		tc := &templates.StatusConfig{
-			Title:         sc.Title,
-			ShowSections:  sc.ShowSectionsEnabled(),
-			ShowIncidents: sc.ShowIncidentsEnabled(),
-		}
-		for _, sec := range sc.Sections {
-			tsec := templates.StatusConfigSection{Title: sec.Title}
-			for _, sel := range sec.Match {
-				m := templates.StatusMatch{
-					Host:  sel.Host,
-					Group: sel.Group,
-					Tags:  append([]string(nil), sel.Tags...),
-				}
-				if sel.GroupRegex != "" {
-					// Config validation already confirmed this
-					// compiles; MustCompile is safe and avoids
-					// re-validating per request.
-					m.GroupRegex = regexp.MustCompile(sel.GroupRegex)
-				}
-				tsec.Match = append(tsec.Match, m)
+	if len(opts.Config.StatusPages) > 0 {
+		configs := make([]*templates.StatusConfig, 0, len(opts.Config.StatusPages))
+		for _, sc := range opts.Config.StatusPages {
+			tc := &templates.StatusConfig{
+				Slug:          sc.Slug,
+				Title:         sc.Title,
+				ShowSections:  sc.ShowSectionsEnabled(),
+				ShowIncidents: sc.ShowIncidentsEnabled(),
 			}
-			tc.Sections = append(tc.Sections, tsec)
+			for _, sec := range sc.Sections {
+				tsec := templates.StatusConfigSection{Title: sec.Title}
+				for _, sel := range sec.Match {
+					m := templates.StatusMatch{
+						Host:  sel.Host,
+						Group: sel.Group,
+						Tags:  append([]string(nil), sel.Tags...),
+					}
+					if sel.GroupRegex != "" {
+						// Config validation already confirmed this
+						// compiles; MustCompile is safe and avoids
+						// re-validating per request.
+						m.GroupRegex = regexp.MustCompile(sel.GroupRegex)
+					}
+					tsec.Match = append(tsec.Match, m)
+				}
+				tc.Sections = append(tc.Sections, tsec)
+			}
+			configs = append(configs, tc)
 		}
-		srv.SetStatusConfig(tc)
+		srv.SetStatusConfigs(configs)
 	}
 	listener, err := net.Listen("tcp", opts.ListenAddr)
 	if err != nil {

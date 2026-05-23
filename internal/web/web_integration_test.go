@@ -398,7 +398,7 @@ func TestNav_noBadgeWhenZero(t *testing.T) {
 	}
 }
 
-func TestStatusPage_emptyWhenNoConfig(t *testing.T) {
+func TestStatusIndex_emptyWhenNoConfig(t *testing.T) {
 	srv, _ := newServer(t)
 	resp, body := get(t, srv.Routes(), "/status")
 	if resp.StatusCode != http.StatusOK {
@@ -406,6 +406,47 @@ func TestStatusPage_emptyWhenNoConfig(t *testing.T) {
 	}
 	if !strings.Contains(body, "No public status configured.") {
 		t.Errorf("empty placeholder expected; first 400:\n%s", firstN(body, 400))
+	}
+}
+
+func TestStatusIndex_listsConfiguredPages(t *testing.T) {
+	srv, _ := newServer(t)
+	srv.SetStatusConfigs([]*templates.StatusConfig{
+		{Slug: "public", Title: "Public", ShowSections: true, Sections: []templates.StatusConfigSection{
+			{Title: "Public", Match: []templates.StatusMatch{{Host: "*.example.com"}}},
+		}},
+		{Slug: "internal", Title: "Internal", ShowSections: true, Sections: []templates.StatusConfigSection{
+			{Title: "Internal", Match: []templates.StatusMatch{{Tags: []string{"internal"}}}},
+		}},
+	})
+	resp, body := get(t, srv.Routes(), "/status")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/status status: got %d, want 200", resp.StatusCode)
+	}
+	for _, want := range []string{
+		`href="/status/public"`,
+		`href="/status/internal"`,
+		">public<",
+		">internal<",
+		"Public",
+		"Internal",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("index body missing %q; first 600:\n%s", want, firstN(body, 600))
+		}
+	}
+}
+
+func TestStatusPage_unknownSlugIs404(t *testing.T) {
+	srv, _ := newServer(t)
+	srv.SetStatusConfigs([]*templates.StatusConfig{
+		{Slug: "public", Title: "Public", ShowSections: true, Sections: []templates.StatusConfigSection{
+			{Title: "Public", Match: []templates.StatusMatch{{Host: "*.example.com"}}},
+		}},
+	})
+	resp, _ := get(t, srv.Routes(), "/status/does-not-exist")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown slug should 404; got %d", resp.StatusCode)
 	}
 }
 
@@ -421,7 +462,8 @@ func TestStatusPage_sectionsAndMatching(t *testing.T) {
 			t.Fatalf("reconcile %q: %v", s.Slug, err)
 		}
 	}
-	srv.SetStatusConfig(&templates.StatusConfig{
+	srv.SetStatusConfigs([]*templates.StatusConfig{{
+		Slug:         "public",
 		Title:        "Toggle status",
 		ShowSections: true,
 		Sections: []templates.StatusConfigSection{
@@ -434,11 +476,11 @@ func TestStatusPage_sectionsAndMatching(t *testing.T) {
 				Match: []templates.StatusMatch{{Tags: []string{"internal"}}},
 			},
 		},
-	})
+	}})
 
-	resp, body := get(t, srv.Routes(), "/status")
+	resp, body := get(t, srv.Routes(), "/status/public")
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("/status status: got %d, want 200", resp.StatusCode)
+		t.Fatalf("/status/public status: got %d, want 200", resp.StatusCode)
 	}
 	for _, want := range []string{
 		"Toggle status",
@@ -448,6 +490,7 @@ func TestStatusPage_sectionsAndMatching(t *testing.T) {
 		"UI",
 		"Internal",
 		"All systems operational",
+		">public<", // slug chip in the header
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q; first 600:\n%s", want, firstN(body, 600))
@@ -500,16 +543,16 @@ func TestStatusPage_groupRegexMatch(t *testing.T) {
 			t.Fatalf("reconcile %q: %v", s.Slug, err)
 		}
 	}
-	srv.SetStatusConfig(&templates.StatusConfig{
-		Title: "TC", ShowSections: true,
+	srv.SetStatusConfigs([]*templates.StatusConfig{{
+		Slug: "tc", Title: "TC", ShowSections: true,
 		Sections: []templates.StatusConfigSection{
 			{
 				Title: "Toggle services",
 				Match: []templates.StatusMatch{{GroupRegex: regexp.MustCompile(`^tc-.*$`)}},
 			},
 		},
-	})
-	_, body := get(t, srv.Routes(), "/status")
+	}})
+	_, body := get(t, srv.Routes(), "/status/tc")
 	for _, want := range []string{"TC API", "TC Web", "Toggle services"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q; first 600:\n%s", want, firstN(body, 600))
