@@ -50,6 +50,7 @@ type MonitorSpec struct {
 	Source           MonitorSource
 	DependsOn        []string
 	SlackChannelSlug string // remembered so removal can still address Slack
+	Tags             []string
 }
 
 // MonitorRow is the full row as the UI sees it. The embedded
@@ -118,13 +119,17 @@ func (r *Repo) ReconcileMonitor(ctx context.Context, spec MonitorSpec) error {
 	if deps == nil {
 		deps = []string{}
 	}
+	tags := spec.Tags
+	if tags == nil {
+		tags = []string{}
+	}
 	var slackSlugArg any
 	if spec.SlackChannelSlug != "" {
 		slackSlugArg = spec.SlackChannelSlug
 	}
 	_, err := r.pool.Exec(ctx, `
-		INSERT INTO monitors (slug, friendly_name, url, group_slug, source, depends_on, slack_channel_slug)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO monitors (slug, friendly_name, url, group_slug, source, depends_on, slack_channel_slug, tags)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (slug) DO UPDATE SET
 			friendly_name      = EXCLUDED.friendly_name,
 			url                = EXCLUDED.url,
@@ -132,11 +137,12 @@ func (r *Repo) ReconcileMonitor(ctx context.Context, spec MonitorSpec) error {
 			source             = EXCLUDED.source,
 			depends_on         = EXCLUDED.depends_on,
 			slack_channel_slug = EXCLUDED.slack_channel_slug,
+			tags               = EXCLUDED.tags,
 			archived           = FALSE,
 			archived_at        = NULL,
 			archive_reason     = NULL,
 			updated_at         = now()
-	`, spec.Slug, spec.FriendlyName, spec.URL, spec.GroupSlug, string(src), deps, slackSlugArg)
+	`, spec.Slug, spec.FriendlyName, spec.URL, spec.GroupSlug, string(src), deps, slackSlugArg, tags)
 	if err != nil {
 		return fmt.Errorf("reconcile monitor %q: %w", spec.Slug, err)
 	}
@@ -897,7 +903,7 @@ func (r *Repo) ListLatestAlerts(ctx context.Context, limit, offset int) (LatestA
 }
 
 const selectMonitor = `
-	SELECT slug, friendly_name, url, group_slug, source, depends_on, slack_channel_slug,
+	SELECT slug, friendly_name, url, group_slug, source, depends_on, slack_channel_slug, tags,
 	       status, opened_at, last_reminder_at, last_checked_at, last_status_code, last_error,
 	       archived, archived_at, archive_reason,
 	       uptime_thread_channel, uptime_thread_ts,
@@ -916,7 +922,7 @@ func scanMonitor(row rowScanner) (MonitorRow, error) {
 	var src, status string
 	var sslStatus, slackSlug *string
 	err := row.Scan(
-		&m.Slug, &m.FriendlyName, &m.URL, &m.GroupSlug, &src, &m.DependsOn, &slackSlug,
+		&m.Slug, &m.FriendlyName, &m.URL, &m.GroupSlug, &src, &m.DependsOn, &slackSlug, &m.Tags,
 		&status, &m.OpenedAt, &m.LastReminderAt, &m.LastCheckedAt, &m.LastStatusCode, &m.LastError,
 		&m.Archived, &m.ArchivedAt, &m.ArchiveReason,
 		&m.UptimeThreadChannel, &m.UptimeThreadTS,

@@ -247,6 +247,10 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 		dependsOn = splitAndTrim(override)
 	}
 
+	tags := append([]string(nil), preset.Tags...)
+	if override := ing.Annotations[m.annDomain+"/config.tags"]; override != "" {
+		tags = splitAndTrim(override)
+	}
 	if err := m.store.ReconcileMonitor(ctx, store.MonitorSpec{
 		Slug:         monSlug,
 		FriendlyName: m.friendlyName(ing, host),
@@ -254,6 +258,7 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 		GroupSlug:    groupSlug,
 		Source:       store.SourceKube,
 		DependsOn:    dependsOn,
+		Tags:         tags,
 	}); err != nil {
 		return base, fmt.Errorf("reconcile kube monitor: %w", err)
 	}

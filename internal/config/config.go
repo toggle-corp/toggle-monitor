@@ -241,6 +241,7 @@ type Monitor struct {
 	Slack                 string   `yaml:"slack"`               // channel slug
 	Notify                []string `yaml:"notify,omitempty"`    // raw <...> Slack markup or userMapping slug
 	DependsOn             []string `yaml:"dependsOn,omitempty"` // upstream static-monitor slugs that gate this one
+	Tags                  []string `yaml:"tags,omitempty"`      // free-form labels; consumed by status[].match[].tags selectors
 
 	// SSL thresholds — required when URL is HTTPS, allowed but
 	// ignored for HTTP URLs (so anchored defaults can be shared).

@@ -167,6 +167,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 			Source:           store.SourceStatic,
 			DependsOn:        m.DependsOn,
 			SlackChannelSlug: m.Slack,
+			Tags:             m.Tags,
 		}
 		if err := repo.ReconcileMonitor(ctx, spec); err != nil {
 			return fmt.Errorf("reconcile %q: %w", m.Slug, err)
