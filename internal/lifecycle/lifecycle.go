@@ -247,9 +247,19 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		scheduler.WithMetrics(metrics),
 	)
 	staticPlans := buildPlans(opts.Config, proxies)
+	idToSlug := make(map[string]string, len(opts.Config.Slack.UserMapping))
+	for slug, id := range opts.Config.Slack.UserMapping {
+		// First slug wins on collision — userMapping is operator-curated
+		// so duplicates are rare; keeping it deterministic via "first
+		// seen" is enough for a display-only reverse lookup.
+		if _, dup := idToSlug[id]; !dup {
+			idToSlug[id] = slug
+		}
+	}
 	planSource := &combinedPlanSource{
 		static:       staticPlans,
 		materializer: materializer,
+		idToSlug:     idToSlug,
 	}
 	srv.SetConfigLookup(planSource)
 
@@ -417,10 +427,12 @@ func buildPlans(cfg config.Config, proxies *proxypool.Pool) []scheduler.Plan {
 
 // combinedPlanSource concatenates the static-config plans (immutable
 // for the run) with the materializer's current kube plans (changes
-// every kube reconcile).
+// every kube reconcile). userMapping powers the reverse-lookup that
+// renders mentions as "<slug> U…" in the config dialog.
 type combinedPlanSource struct {
 	static       []scheduler.Plan
 	materializer *merger.Materializer
+	idToSlug     map[string]string // U…/S… → slug; built once from cfg.Slack.UserMapping
 }
 
 func (c *combinedPlanSource) CurrentPlans() []scheduler.Plan {
@@ -458,7 +470,7 @@ func (c *combinedPlanSource) ConfigFor(slug string) (templates.MonitorConfig, bo
 			UserAgent:              p.UserAgent,
 			ReminderInterval:       p.ReminderInterval,
 			SlackChannelSlug:       p.ChannelSlug,
-			Mentions:               append([]string(nil), p.Mentions...),
+			Mentions:               displayMentions(p.Mentions, c.idToSlug),
 			IsHTTPS:                p.IsHTTPS,
 			SSLAlertThreshold:      p.SSLAlertThreshold,
 			SSLEscalationThreshold: p.SSLEscalationThreshold,
@@ -466,6 +478,31 @@ func (c *combinedPlanSource) ConfigFor(slug string) (templates.MonitorConfig, bo
 		}, true
 	}
 	return templates.MonitorConfig{}, false
+}
+
+// displayMentions parses each resolved Slack mention back into a
+// (slug, ID, raw-marker) triple for the config dialog. Inverse of
+// slack.ResolveMentions, modulo the slug being best-effort —
+// userMapping can be edited between resolution and display, and an
+// unknown ID just renders without a slug prefix.
+func displayMentions(mentions []string, idToSlug map[string]string) []templates.MentionDisplay {
+	if len(mentions) == 0 {
+		return nil
+	}
+	out := make([]templates.MentionDisplay, 0, len(mentions))
+	for _, m := range mentions {
+		switch {
+		case strings.HasPrefix(m, "<@") && strings.HasSuffix(m, ">"):
+			id := strings.TrimSuffix(strings.TrimPrefix(m, "<@"), ">")
+			out = append(out, templates.MentionDisplay{Slug: idToSlug[id], ID: id})
+		case strings.HasPrefix(m, "<!subteam^") && strings.HasSuffix(m, ">"):
+			id := strings.TrimSuffix(strings.TrimPrefix(m, "<!subteam^"), ">")
+			out = append(out, templates.MentionDisplay{Slug: idToSlug[id], ID: id})
+		default:
+			out = append(out, templates.MentionDisplay{Raw: m})
+		}
+	}
+	return out
 }
 
 // mappingAdapter converts slack.UserMappingValidator.Snapshot() into

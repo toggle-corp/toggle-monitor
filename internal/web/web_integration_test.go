@@ -205,7 +205,7 @@ func TestMonitorDetail_rendersConfigDialogAndPreset(t *testing.T) {
 			Proxy:                 "corp",
 			ReminderInterval:      time.Hour,
 			SlackChannelSlug:      "ops-alerts",
-			Mentions:              []string{"<@U1>", "<!here>"},
+			Mentions:              []templates.MentionDisplay{{Slug: "alice", ID: "U1"}, {Raw: "<!here>"}},
 			IsHTTPS:               true,
 			SSLAlertThreshold:     14 * 24 * time.Hour,
 		},
@@ -235,15 +235,17 @@ func TestMonitorDetail_rendersConfigDialogAndPreset(t *testing.T) {
 	// the operator clicks the button).
 	for _, want := range []string{
 		"GET",
-		"200, 204",
+		">200<",
+		">204<",
 		"45s",
 		"7s",
 		"3s",
 		"corp",
 		"ops-alerts",
-		"@U1",
-		"here",
-		"1h0m0s",
+		"alice",
+		">U1<",
+		"&lt;!here&gt;",
+		"1h",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dialog body missing %q", want)

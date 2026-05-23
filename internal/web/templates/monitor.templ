@@ -28,11 +28,21 @@ type MonitorConfig struct {
 	UserAgent              string
 	ReminderInterval       time.Duration
 	SlackChannelSlug       string
-	Mentions               []string
+	Mentions               []MentionDisplay
 	IsHTTPS                bool
 	SSLAlertThreshold      time.Duration
 	SSLEscalationThreshold time.Duration
 	SSLReminderInterval    time.Duration
+}
+
+// MentionDisplay carries enough about a resolved Slack mention to
+// render it as "<slug> <code>U…</code>" in the config dialog. For
+// raw special markers (<!here>, <!channel>) the slug and ID are
+// empty and Raw carries the verbatim marker.
+type MentionDisplay struct {
+	Slug string // reverse-resolved from userMapping; empty if unknown
+	ID   string // U… for users, S… for subteams; empty for raw markers
+	Raw  string // <!here>, <!channel>, etc.; empty for slug-backed mentions
 }
 
 templ kv(label, value string) {
@@ -69,6 +79,30 @@ templ kvHTTPCodes(label string, codes []int) {
 		<dd class="text-sm col-span-2 flex flex-wrap gap-1.5">
 			for _, c := range codes {
 				@HTTPStatusBadge(c)
+			}
+		</dd>
+	</div>
+}
+
+// kvMentions renders each mention as "<slug> <code>U…</code>" so the
+// operator can map a Slack ID back to the configured slug without
+// hunting through userMapping. Raw markers (<!here>, <!channel>)
+// render as a plain code chip — no slug to show.
+templ kvMentions(label string, mentions []MentionDisplay) {
+	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
+		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
+		<dd class="text-sm col-span-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+			for _, m := range mentions {
+				<span class="inline-flex items-center gap-1.5">
+					if m.Raw != "" {
+						<code class="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-xs font-mono">{ m.Raw }</code>
+					} else {
+						if m.Slug != "" {
+							<span>{ m.Slug }</span>
+						}
+						<code class="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-xs font-mono">{ m.ID }</code>
+					}
+				</span>
 			}
 		</dd>
 	</div>
@@ -231,7 +265,7 @@ templ configDialog(m store.MonitorRow, cfg MonitorConfig) {
 					@kv("Slack channel", cfg.SlackChannelSlug)
 				}
 				if len(cfg.Mentions) > 0 {
-					@kv("Mentions", strings.Join(cfg.Mentions, " "))
+					@kvMentions("Mentions", cfg.Mentions)
 				}
 				if cfg.IsHTTPS && cfg.SSLAlertThreshold > 0 {
 					@kv("SSL alert threshold", humanInterval(cfg.SSLAlertThreshold))
