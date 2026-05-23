@@ -445,6 +445,7 @@ func (c *combinedPlanSource) ConfigFor(slug string) (templates.MonitorConfig, bo
 			continue
 		}
 		return templates.MonitorConfig{
+			Preset:                 p.Preset,
 			HTTPMethod:             p.HTTPMethod,
 			AcceptedStatusCodes:    append([]int(nil), p.AcceptedStatusCodes...),
 			Interval:               p.Interval,

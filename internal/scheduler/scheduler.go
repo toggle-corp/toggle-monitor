@@ -46,7 +46,12 @@ type Plan struct {
 	// Proxy is the slug of the configured outbound proxy (or empty
 	// for direct dial). Carried alongside ProxyDialer so the UI can
 	// surface *which* proxy applies without reflecting on the dialer.
-	Proxy            string
+	Proxy string
+	// Preset is the kube preset slug that produced this plan. Empty
+	// for YAML-static monitors. Surfaced in the detail UI so the
+	// operator can tell at a glance which preset drove a given
+	// auto-discovered monitor's config.
+	Preset           string
 	UserAgent        string
 	ReminderInterval time.Duration
 	ChannelSlug      string   // slack destination slug; empty disables Slack output

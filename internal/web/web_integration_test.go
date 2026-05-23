@@ -182,17 +182,18 @@ func (f fakeConfigLookup) ConfigFor(slug string) (templates.MonitorConfig, bool)
 	return c, ok
 }
 
-func TestMonitorDetail_rendersConfigSection(t *testing.T) {
+func TestMonitorDetail_rendersConfigDialogAndPreset(t *testing.T) {
 	srv, repo := newServer(t)
 	ctx := context.Background()
 	if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
 		Slug: "api", FriendlyName: "API", URL: "https://api/health",
-		GroupSlug: "prod", Source: store.SourceStatic,
+		GroupSlug: "prod", Source: store.SourceKube,
 	}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	srv.SetConfigLookup(fakeConfigLookup{
 		"api": {
+			Preset:                "internal-api",
 			HTTPMethod:            "GET",
 			AcceptedStatusCodes:   []int{200, 204},
 			Interval:              45 * time.Second,
@@ -214,8 +215,25 @@ func TestMonitorDetail_rendersConfigSection(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("monitor detail status: got %d, want 200", resp.StatusCode)
 	}
+	// Preset surfaces in the visible state section AND inside the dialog.
+	if strings.Count(body, "internal-api") < 2 {
+		t.Errorf("expected preset %q to appear in both state section and dialog; body:\n%s", "internal-api", firstN(body, 1200))
+	}
+	// Dialog wiring: the trigger button + the <dialog> + the inline JS
+	// for backdrop-click-to-close.
 	for _, want := range []string{
-		"Configuration",
+		"Show config",
+		`id="monitor-config-dialog"`,
+		"showModal()",
+		"Effective configuration",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("detail body missing dialog wiring %q", want)
+		}
+	}
+	// Config values live inside the pre-rendered dialog (hidden until
+	// the operator clicks the button).
+	for _, want := range []string{
 		"GET",
 		"200, 204",
 		"45s",
@@ -228,7 +246,7 @@ func TestMonitorDetail_rendersConfigSection(t *testing.T) {
 		"1h0m0s",
 	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("detail body missing %q", want)
+			t.Errorf("dialog body missing %q", want)
 		}
 	}
 }

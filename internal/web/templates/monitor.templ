@@ -15,6 +15,7 @@ import (
 // per-monitor by reading the live PlanSource so static + kube monitors
 // render identically.
 type MonitorConfig struct {
+	Preset                 string
 	HTTPMethod             string
 	AcceptedStatusCodes    []int
 	Interval               time.Duration
@@ -81,70 +82,28 @@ templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []stri
 		<div class="flex items-center gap-3 mb-4">
 			<h1 class="text-xl font-semibold">{ m.FriendlyName }</h1>
 			@StatusBadge(string(m.Status))
+			if cfg != nil {
+				<button
+					type="button"
+					class="ml-auto text-sm px-3 py-1 rounded border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
+					onclick="document.getElementById('monitor-config-dialog').showModal()"
+				>Show config</button>
+			}
 		</div>
 
 		<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6">
-			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Configuration</h2>
+			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Current state</h2>
 			<dl>
 				@kv("Slug", m.Slug)
 				@kvURL("URL", m.URL)
 				@kv("Group", m.GroupSlug)
 				@kv("Source", string(m.Source))
+				if cfg != nil && cfg.Preset != "" {
+					@kv("Preset", cfg.Preset)
+				}
 				if len(m.DependsOn) > 0 {
 					@kv("Depends on", strings.Join(m.DependsOn, ", "))
 				}
-				if cfg != nil {
-					if cfg.HTTPMethod != "" {
-						@kv("HTTP method", cfg.HTTPMethod)
-					}
-					if len(cfg.AcceptedStatusCodes) > 0 {
-						@kv("Accepted status codes", joinInts(cfg.AcceptedStatusCodes))
-					}
-					if cfg.Interval > 0 {
-						@kv("Interval", cfg.Interval.String())
-					}
-					if cfg.Timeout > 0 {
-						@kv("Timeout", cfg.Timeout.String())
-					}
-					@kv("Retries", strconv.Itoa(cfg.Retries))
-					if cfg.RetryBackoff > 0 {
-						@kv("Retry backoff", cfg.RetryBackoff.String())
-					}
-					@kv("Follow redirects", boolYesNo(cfg.FollowRedirects))
-					if cfg.IsHTTPS {
-						@kv("TLS insecure skip verify", boolYesNo(cfg.TLSInsecureSkipVerify))
-					}
-					if cfg.Proxy != "" {
-						@kv("Proxy", cfg.Proxy)
-					}
-					if cfg.ReminderInterval > 0 {
-						@kv("Reminder interval", cfg.ReminderInterval.String())
-					}
-					if cfg.SlackChannelSlug != "" {
-						@kv("Slack channel", cfg.SlackChannelSlug)
-					}
-					if len(cfg.Mentions) > 0 {
-						@kv("Mentions", strings.Join(cfg.Mentions, " "))
-					}
-					if cfg.IsHTTPS && cfg.SSLAlertThreshold > 0 {
-						@kv("SSL alert threshold", cfg.SSLAlertThreshold.String())
-					}
-					if cfg.IsHTTPS && cfg.SSLEscalationThreshold > 0 {
-						@kv("SSL escalation threshold", cfg.SSLEscalationThreshold.String())
-					}
-					if cfg.IsHTTPS && cfg.SSLReminderInterval > 0 {
-						@kv("SSL reminder interval", cfg.SSLReminderInterval.String())
-					}
-					if cfg.UserAgent != "" {
-						@kv("User agent", cfg.UserAgent)
-					}
-				}
-			</dl>
-		</section>
-
-		<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6">
-			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Current state</h2>
-			<dl>
 				if string(m.Status) == "temporary-paused" && len(gatingParents) > 0 {
 					@kv("Gated by (currently down)", strings.Join(gatingParents, ", "))
 				}
@@ -172,6 +131,10 @@ templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []stri
 			</dl>
 		</section>
 
+		if cfg != nil {
+			@configDialog(m, *cfg)
+		}
+
 		<section>
 			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Alert history</h2>
 			if len(history) == 0 {
@@ -197,4 +160,89 @@ templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []stri
 			}
 		</section>
 	}
+}
+
+// configDialog renders the effective scheduler.Plan for `m` inside a
+// native <dialog>. The detail page pre-renders it (hidden) and the
+// "Show config" button calls showModal(). ESC + backdrop-click close
+// the dialog via the small inline JS handler at the bottom.
+templ configDialog(m store.MonitorRow, cfg MonitorConfig) {
+	<dialog
+		id="monitor-config-dialog"
+		class="w-full max-w-2xl rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 backdrop:bg-slate-900/60 p-0"
+	>
+		<form method="dialog" class="flex items-center justify-between border-b border-slate-200 dark:border-slate-700 px-4 py-3">
+			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400">Effective configuration</h2>
+			<button class="text-sm px-3 py-1 rounded border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Close">Close</button>
+		</form>
+		<div class="px-4 py-3 max-h-[70vh] overflow-y-auto">
+			<dl>
+				@kv("Slug", m.Slug)
+				@kvURL("URL", m.URL)
+				@kv("Group", m.GroupSlug)
+				@kv("Source", string(m.Source))
+				if cfg.Preset != "" {
+					@kv("Preset", cfg.Preset)
+				}
+				if len(m.DependsOn) > 0 {
+					@kv("Depends on", strings.Join(m.DependsOn, ", "))
+				}
+				if cfg.HTTPMethod != "" {
+					@kv("HTTP method", cfg.HTTPMethod)
+				}
+				if len(cfg.AcceptedStatusCodes) > 0 {
+					@kv("Accepted status codes", joinInts(cfg.AcceptedStatusCodes))
+				}
+				if cfg.Interval > 0 {
+					@kv("Interval", cfg.Interval.String())
+				}
+				if cfg.Timeout > 0 {
+					@kv("Timeout", cfg.Timeout.String())
+				}
+				@kv("Retries", strconv.Itoa(cfg.Retries))
+				if cfg.RetryBackoff > 0 {
+					@kv("Retry backoff", cfg.RetryBackoff.String())
+				}
+				@kv("Follow redirects", boolYesNo(cfg.FollowRedirects))
+				if cfg.IsHTTPS {
+					@kv("TLS insecure skip verify", boolYesNo(cfg.TLSInsecureSkipVerify))
+				}
+				if cfg.Proxy != "" {
+					@kv("Proxy", cfg.Proxy)
+				}
+				if cfg.ReminderInterval > 0 {
+					@kv("Reminder interval", cfg.ReminderInterval.String())
+				}
+				if cfg.SlackChannelSlug != "" {
+					@kv("Slack channel", cfg.SlackChannelSlug)
+				}
+				if len(cfg.Mentions) > 0 {
+					@kv("Mentions", strings.Join(cfg.Mentions, " "))
+				}
+				if cfg.IsHTTPS && cfg.SSLAlertThreshold > 0 {
+					@kv("SSL alert threshold", cfg.SSLAlertThreshold.String())
+				}
+				if cfg.IsHTTPS && cfg.SSLEscalationThreshold > 0 {
+					@kv("SSL escalation threshold", cfg.SSLEscalationThreshold.String())
+				}
+				if cfg.IsHTTPS && cfg.SSLReminderInterval > 0 {
+					@kv("SSL reminder interval", cfg.SSLReminderInterval.String())
+				}
+				if cfg.UserAgent != "" {
+					@kv("User agent", cfg.UserAgent)
+				}
+			</dl>
+		</div>
+		<script>
+			(function () {
+				var d = document.getElementById('monitor-config-dialog');
+				if (!d) return;
+				d.addEventListener('click', function (e) {
+					var r = d.getBoundingClientRect();
+					var inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+					if (!inside) d.close();
+				});
+			})();
+		</script>
+	</dialog>
 }
