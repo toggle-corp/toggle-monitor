@@ -14,11 +14,53 @@ type DiscoveryStatus struct {
 	ResyncInterval time.Duration // 0 when disabled
 }
 
-templ DiscoveryListing(rows []store.DiscoverySnapshotRow, status DiscoveryStatus) {
+// DiscoveryFilter is the slim shape the listing handler passes to the
+// template for repopulating the filter form. Empty fields = "any".
+type DiscoveryFilter struct {
+	Namespace string // glob-matched against the row's namespace
+	Status    string // exact match: added | kube-paused | kube-invalid | kube-ignored
+}
+
+templ DiscoveryListing(rows []store.DiscoverySnapshotRow, filter DiscoveryFilter, status DiscoveryStatus) {
 	@Layout("Auto-discovery") {
 		<h1 class="text-xl font-semibold mb-3">Auto-discovery snapshot</h1>
+		if status.KubeEnabled {
+			<form
+				hx-get="/discovery"
+				hx-target="body"
+				hx-push-url="true"
+				method="get"
+				action="/discovery"
+				class="flex flex-wrap items-end gap-3 mb-4 bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-3"
+			>
+				<div>
+					<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="ns">Namespace</label>
+					<input id="ns" name="ns" value={ filter.Namespace } class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm" placeholder="exact or glob (e.g. test-*)"/>
+				</div>
+				<div>
+					<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="status">Status</label>
+					<select id="status" name="status" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
+						<option value="" selected?={ filter.Status == "" }>(any)</option>
+						<option value="added" selected?={ filter.Status == "added" }>added</option>
+						<option value="kube-paused" selected?={ filter.Status == "kube-paused" }>kube-paused</option>
+						<option value="kube-invalid" selected?={ filter.Status == "kube-invalid" }>kube-invalid</option>
+						<option value="kube-ignored" selected?={ filter.Status == "kube-ignored" }>kube-ignored</option>
+					</select>
+				</div>
+				<button class="bg-slate-900 dark:bg-slate-200 dark:text-slate-900 text-white text-sm px-3 py-1.5 rounded">Apply</button>
+				if filter.Namespace != "" || filter.Status != "" {
+					<a class="text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100" href="/discovery">Clear filters</a>
+				}
+			</form>
+		}
 		if len(rows) == 0 {
-			@discoveryEmptyState(status)
+			if filter.Namespace != "" || filter.Status != "" {
+				<div class="rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 text-sm">
+					<p class="text-slate-600 dark:text-slate-400">No discovery rows match the current filters. <a class="text-blue-700 dark:text-blue-400 hover:underline" href="/discovery">Clear filters</a>.</p>
+				</div>
+			} else {
+				@discoveryEmptyState(status)
+			}
 		} else {
 			<div class="mb-3 text-sm text-slate-600 dark:text-slate-400">{ summary(rows) }</div>
 			<table class="w-full bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 overflow-hidden">

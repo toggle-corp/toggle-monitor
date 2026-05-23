@@ -269,6 +269,42 @@ func TestMaterializer_matchRule_namespaceAndHostAND(t *testing.T) {
 	}
 }
 
+func TestMaterializer_matchRule_ignoreSkipsMaterialization(t *testing.T) {
+	repo := newRepo(t)
+	kc := presetCfgWith()
+	kc.DefaultPreset = "catchall"
+	kc.Match = []config.KubeMatch{
+		{When: config.KubeMatchWhen{Namespace: "test-*"}, Ignore: true},
+	}
+	m := merger.New(repo, withKube(kc, nil), nil)
+	ing := ingress("test-ephemeral", "api", nil, "ephemeral.example.com")
+
+	row, err := m.Materialize(context.Background(), ing, "ephemeral.example.com")
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if row.Status != "kube-ignored" {
+		t.Errorf("status: got %q, want 'kube-ignored'", row.Status)
+	}
+	if row.Reason == nil || !contains(*row.Reason, "match[0]") || !contains(*row.Reason, "test-*") {
+		t.Errorf("reason should call out the match rule + namespace glob, got %v", row.Reason)
+	}
+	if row.MonitorSlug != nil {
+		t.Errorf("ignored row must not point at a materialized monitor, got %v", row.MonitorSlug)
+	}
+	// No plan should land in CurrentPlans either — otherwise the
+	// scheduler would still spawn a goroutine for an ingress the
+	// operator explicitly opted out of.
+	if plans := m.CurrentPlans(); len(plans) != 0 {
+		t.Errorf("expected zero plans for an ignored ingress, got %d", len(plans))
+	}
+	// And no monitor row should exist in the DB.
+	slug := "kube-test-ephemeral-api-ephemeral-example-com"
+	if _, err := repo.GetMonitor(context.Background(), slug); err == nil {
+		t.Errorf("expected no monitor row for ignored ingress (slug %q exists)", slug)
+	}
+}
+
 func TestMaterializer_unknownExplicitPreset_stillFlags(t *testing.T) {
 	// Default + match[] do NOT rescue an explicit-but-unknown
 	// annotation. Typos should stay visible.

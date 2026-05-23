@@ -158,6 +158,8 @@ func discoveryBadgeClasses(s string) string {
 		return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
 	case "kube-invalid":
 		return "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300"
+	case "kube-ignored":
+		return "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
 	default:
 		return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
 	}
@@ -168,8 +170,8 @@ func summary(rows []store.DiscoverySnapshotRow) string {
 	for _, r := range rows {
 		counts[r.Status]++
 	}
-	return fmt.Sprintf("%d total · %d added · %d kube-paused · %d kube-invalid",
-		len(rows), counts["added"], counts["kube-paused"], counts["kube-invalid"])
+	return fmt.Sprintf("%d total · %d added · %d kube-paused · %d kube-invalid · %d kube-ignored",
+		len(rows), counts["added"], counts["kube-paused"], counts["kube-invalid"], counts["kube-ignored"])
 }
 
 func sortedKeys(m map[string]string) []string {

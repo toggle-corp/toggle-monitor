@@ -251,6 +251,46 @@ func TestMonitorDetail_rendersConfigDialogAndPreset(t *testing.T) {
 	}
 }
 
+func TestDiscoveryListing_namespaceAndStatusFilter(t *testing.T) {
+	srv, repo := newServer(t)
+	ctx := context.Background()
+	reason := func(s string) *string { return &s }
+	for _, row := range []store.DiscoverySnapshotRow{
+		{Namespace: "prod", IngressName: "api", Host: "api.example.com", Status: "added", Reason: reason("added")},
+		{Namespace: "test-1", IngressName: "api", Host: "t1.example.com", Status: "kube-ignored", Reason: reason("ignored (via match[0]: namespace=test-*)")},
+		{Namespace: "test-2", IngressName: "api", Host: "t2.example.com", Status: "kube-ignored", Reason: reason("ignored (via match[0]: namespace=test-*)")},
+		{Namespace: "review", IngressName: "api", Host: "rev.example.com", Status: "kube-invalid", Reason: reason("no preset annotation")},
+	} {
+		if err := repo.UpsertDiscoverySnapshot(ctx, row); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+
+	// Glob filter: only the test-* rows survive.
+	_, body := get(t, srv.Routes(), "/discovery?ns=test-*")
+	if !strings.Contains(body, "t1.example.com") || !strings.Contains(body, "t2.example.com") {
+		t.Errorf("ns=test-* should keep both test-* rows; body:\n%s", firstN(body, 800))
+	}
+	if strings.Contains(body, "api.example.com") || strings.Contains(body, "rev.example.com") {
+		t.Errorf("ns=test-* should drop non-matching rows; body:\n%s", firstN(body, 800))
+	}
+
+	// Status filter narrows further.
+	_, body = get(t, srv.Routes(), "/discovery?status=kube-ignored")
+	if strings.Contains(body, "api.example.com") || strings.Contains(body, "rev.example.com") {
+		t.Errorf("status=kube-ignored should drop added/invalid rows; body:\n%s", firstN(body, 800))
+	}
+	if !strings.Contains(body, "t1.example.com") || !strings.Contains(body, "t2.example.com") {
+		t.Errorf("status=kube-ignored should keep ignored rows; body:\n%s", firstN(body, 800))
+	}
+
+	// Empty-result state with an active filter offers a clear-filters link.
+	_, body = get(t, srv.Routes(), "/discovery?ns=does-not-exist")
+	if !strings.Contains(body, "Clear filters") {
+		t.Errorf("empty result with active filter should offer 'Clear filters'; body:\n%s", firstN(body, 800))
+	}
+}
+
 func TestMonitorDetail_notFound(t *testing.T) {
 	srv, _ := newServer(t)
 	resp, _ := get(t, srv.Routes(), "/monitor/does-not-exist")

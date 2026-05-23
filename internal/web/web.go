@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -251,8 +252,47 @@ func (s *Server) handleDiscoveryListing(w http.ResponseWriter, r *http.Request) 
 		s.renderDBUnavailable(ctx, w, err)
 		return
 	}
+	filter := templates.DiscoveryFilter{
+		Namespace: strings.TrimSpace(r.URL.Query().Get("ns")),
+		Status:    strings.TrimSpace(r.URL.Query().Get("status")),
+	}
+	rows = filterDiscoveryRows(rows, filter)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.DiscoveryListing(rows, s.discoveryStatus).Render(ctx, w)
+	_ = templates.DiscoveryListing(rows, filter, s.discoveryStatus).Render(ctx, w)
+}
+
+// filterDiscoveryRows keeps the snapshot rows the operator asked for.
+// Namespace supports the same path.Match-style globs as
+// kube.match[].when.namespace; empty values mean "any".
+func filterDiscoveryRows(rows []store.DiscoverySnapshotRow, f templates.DiscoveryFilter) []store.DiscoverySnapshotRow {
+	if f.Namespace == "" && f.Status == "" {
+		return rows
+	}
+	out := rows[:0:0]
+	for _, r := range rows {
+		if f.Status != "" && r.Status != f.Status {
+			continue
+		}
+		if f.Namespace != "" && !matchNamespaceGlob(f.Namespace, r.Namespace) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// matchNamespaceGlob mirrors the merger.matchGlob semantics so the
+// /discovery filter behaves identically to the kube.match[] rules:
+// `*` matches any run of non-`/` characters via path.Match.
+func matchNamespaceGlob(pattern, value string) bool {
+	if pattern == value {
+		return true
+	}
+	ok, err := path.Match(pattern, value)
+	if err != nil {
+		return false
+	}
+	return ok
 }
 
 func (s *Server) handleDiscoveryDetail(w http.ResponseWriter, r *http.Request) {

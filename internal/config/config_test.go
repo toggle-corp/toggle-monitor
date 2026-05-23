@@ -421,6 +421,35 @@ func TestLoad_kube_match_rejectsEmptyWhen(t *testing.T) {
 	}
 }
 
+func TestLoad_kube_match_acceptsIgnoreRule(t *testing.T) {
+	data := []byte(kubeWith("  match:\n    - when: { namespace: test-* }\n      ignore: true\n"))
+	if _, err := config.Load(data); err != nil {
+		t.Errorf("ignore rule should validate, got: %v", err)
+	}
+}
+
+func TestLoad_kube_match_rejectsNeitherPresetNorIgnore(t *testing.T) {
+	data := []byte(kubeWith("  match:\n    - when: { namespace: test-* }\n"))
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected validation error for match rule with neither preset nor ignore")
+	}
+	if !strings.Contains(err.Error(), "preset") || !strings.Contains(err.Error(), "ignore") {
+		t.Errorf("error should mention both preset and ignore, got: %v", err)
+	}
+}
+
+func TestLoad_kube_match_rejectsBothPresetAndIgnore(t *testing.T) {
+	data := []byte(kubeWith("  match:\n    - when: { namespace: test-* }\n      preset: internal-api\n      ignore: true\n"))
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected validation error for match rule with both preset and ignore")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error should call out mutual exclusion, got: %v", err)
+	}
+}
+
 func TestLoad_rejectsDBBodyMaxCharsSmallerThanSlackBodyMaxChars(t *testing.T) {
 	data := withReplaced(t, "dbBodyMaxChars: 4000", "dbBodyMaxChars: 100")
 	_, err := config.Load(data)

@@ -69,12 +69,21 @@ kube:
   # so `betaco-core-backend-*` matches `betaco-core-backend-1`). When
   # both fields are set on a rule, they AND together.
   #
+  # Each rule must specify either `preset: <slug>` (materialize the
+  # ingress with that preset) OR `ignore: true` (skip the ingress
+  # entirely — no monitor, but a "kube-ignored" row still lands on
+  # /discovery so you can verify the rule is firing).
+  #
   # Resolution order overall:
   #   1. /kube.preset annotation (explicit)
-  #   2. first matching match[] rule
+  #   2. first matching match[] rule (preset OR ignore)
   #   3. defaultPreset
   #   4. otherwise → kube-invalid
   match:
+    # Skip short-lived test namespaces entirely — they churn the UI on
+    # every push and don't merit alerting.
+    - when: { namespace: "test-*" }
+      ignore: true
     - when: { namespace: "betaco-core-backend-*" }
       preset: internal-api
     - when: { namespace: "acme-*", host: "*.example.com" }

@@ -112,6 +112,7 @@ const (
 	presetSourceAnnotation              // /kube.preset annotation
 	presetSourceMatch                   // first matching match[] rule
 	presetSourceDefault                 // kube.defaultPreset fallback
+	presetSourceIgnore                  // matching match[] rule with ignore: true
 )
 
 // resolvePreset picks a preset for the given (ingress, host) pair.
@@ -130,6 +131,9 @@ func (m *Materializer) resolvePreset(ing *networkingv1.Ingress, host string) (sl
 		}
 		if r.When.Host != "" && !matchGlob(r.When.Host, host) {
 			continue
+		}
+		if r.Ignore {
+			return "", presetSourceIgnore, i
 		}
 		return r.Preset, presetSourceMatch, i
 	}
@@ -183,6 +187,15 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 	// defaultPreset. Unknown explicit annotation still flunks as
 	// kube-invalid (typos shouldn't silently fall through).
 	presetSlug, presetVia, matchIdx := m.resolvePreset(ing, host)
+	if presetVia == presetSourceIgnore {
+		// Matched a match[] rule with ignore: true. Persist the
+		// snapshot row so the operator can see *which* rule fired
+		// (and filter accordingly on /discovery), but do NOT
+		// reconcile a monitor or stash a scheduler plan.
+		reason := formatIgnoredReason(matchIdx, m.match)
+		base.Status, base.Reason = "kube-ignored", &reason
+		return base, nil
+	}
 	if presetSlug == "" {
 		reason := "no preset annotation"
 		base.Status, base.Reason = "kube-invalid", &reason
@@ -287,6 +300,26 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 	reason := formatAddedReason(presetVia, matchIdx, m.match)
 	base.Status, base.Reason, base.PresetSlug, base.MonitorSlug = "added", &reason, &presetSlug, &monSlug
 	return base, nil
+}
+
+// formatIgnoredReason explains *which* match[] rule caused the
+// ingress to be skipped — same conditions-string shape as
+// formatAddedReason so /discovery reads consistently.
+func formatIgnoredReason(matchIdx int, rules []config.KubeMatch) string {
+	if matchIdx < 0 || matchIdx >= len(rules) {
+		return "ignored"
+	}
+	w := rules[matchIdx].When
+	var cond string
+	switch {
+	case w.Namespace != "" && w.Host != "":
+		cond = fmt.Sprintf("namespace=%s, host=%s", w.Namespace, w.Host)
+	case w.Namespace != "":
+		cond = "namespace=" + w.Namespace
+	case w.Host != "":
+		cond = "host=" + w.Host
+	}
+	return fmt.Sprintf("ignored (via match[%d]: %s)", matchIdx, cond)
 }
 
 // formatAddedReason explains *which* path picked the preset for the

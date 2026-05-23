@@ -111,12 +111,21 @@ var KubeFriendlyNameStyles = []string{
 	KubeFriendlyNameTitle,
 }
 
-// KubeMatch is one conditional preset rule. The `when` conditions
-// AND together; both fields are optional but at least one must be
-// set. Globs use the same `*`-per-segment syntax as KubePause.Host.
+// KubeMatch is one conditional rule: when `when` fires, the ingress
+// is either materialized with `preset` or skipped entirely via
+// `ignore: true`. Exactly one of preset/ignore must be set per rule.
+// The `when` conditions AND together; both when-fields are optional
+// but at least one must be set. Globs use the same `*`-per-segment
+// syntax as KubePause.Host.
 type KubeMatch struct {
 	When   KubeMatchWhen `yaml:"when"`
-	Preset string        `yaml:"preset"`
+	Preset string        `yaml:"preset,omitempty"`
+	// Ignore=true skips the ingress entirely — no monitor is created,
+	// the discovery snapshot row is recorded with status="kube-ignored"
+	// so the operator can see the rule fired (and filter accordingly
+	// on /discovery). Useful for namespace globs like "test-*" that
+	// churn the listing without operational value.
+	Ignore bool `yaml:"ignore,omitempty"`
 }
 
 // KubeMatchWhen carries the conditions checked against an ingress.
@@ -435,10 +444,15 @@ func (c *checker) validate(cfg *Config) {
 		}
 		for i, r := range cfg.Kube.Match {
 			base := []any{"kube", "match", i}
-			if r.Preset == "" {
-				c.errf(append(base, "preset"), "required")
-			} else if _, ok := seenPresets[r.Preset]; !ok {
-				c.errf(append(base, "preset"), "references unknown preset slug %q", r.Preset)
+			switch {
+			case r.Preset == "" && !r.Ignore:
+				c.errf(base, "exactly one of preset or ignore is required")
+			case r.Preset != "" && r.Ignore:
+				c.errf(base, "preset and ignore are mutually exclusive")
+			case r.Preset != "":
+				if _, ok := seenPresets[r.Preset]; !ok {
+					c.errf(append(base, "preset"), "references unknown preset slug %q", r.Preset)
+				}
 			}
 			if r.When.Namespace == "" && r.When.Host == "" {
 				c.errf(append(base, "when"), "at least one of namespace or host is required")
