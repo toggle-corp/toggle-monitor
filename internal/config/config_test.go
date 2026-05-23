@@ -394,8 +394,19 @@ func TestLoad_kube_friendlyName_rejectsUnknownValue(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation error for unknown friendlyName")
 	}
-	if !strings.Contains(err.Error(), "friendlyName") || !strings.Contains(err.Error(), "cursive") {
-		t.Errorf("error should call out the bad value, got: %v", err)
+	msg := err.Error()
+	if !strings.Contains(msg, "friendlyName") {
+		t.Errorf("error should call out the offending field, got: %v", err)
+	}
+	if !strings.Contains(msg, `"cursive"`) {
+		t.Errorf("error should echo the bad value, got: %v", err)
+	}
+	// Every allowed value should appear in the message so the user
+	// can copy-paste the right one without re-reading the docs.
+	for _, allowed := range config.KubeFriendlyNameStyles {
+		if !strings.Contains(msg, allowed) {
+			t.Errorf("error should list allowed value %q, got: %v", allowed, err)
+		}
 	}
 }
 

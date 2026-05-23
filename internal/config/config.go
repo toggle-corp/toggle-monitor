@@ -101,6 +101,16 @@ const (
 	KubeFriendlyNameTitle   = "title"
 )
 
+// KubeFriendlyNameStyles is the canonical, declaration-ordered list
+// of allowed kube.friendlyName values. Both the validator and the
+// validator's error message read from this slice so they can't drift.
+var KubeFriendlyNameStyles = []string{
+	KubeFriendlyNamePlain,
+	KubeFriendlyNameCompact,
+	KubeFriendlyNameDedupe,
+	KubeFriendlyNameTitle,
+}
+
 // KubeMatch is one conditional preset rule. The `when` conditions
 // AND together; both fields are optional but at least one must be
 // set. Globs use the same `*`-per-segment syntax as KubePause.Host.
@@ -410,12 +420,18 @@ func (c *checker) validate(cfg *Config) {
 					"references unknown preset slug %q", cfg.Kube.DefaultPreset)
 			}
 		}
-		switch cfg.Kube.FriendlyName {
-		case "", KubeFriendlyNamePlain, KubeFriendlyNameCompact, KubeFriendlyNameDedupe, KubeFriendlyNameTitle:
-			// ok
-		default:
-			c.errf([]any{"kube", "friendlyName"},
-				"must be one of plain, compact, dedupe, title (got %q)", cfg.Kube.FriendlyName)
+		if v := cfg.Kube.FriendlyName; v != "" {
+			ok := false
+			for _, allowed := range KubeFriendlyNameStyles {
+				if v == allowed {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				c.errf([]any{"kube", "friendlyName"},
+					"must be one of %s (got %q)", strings.Join(KubeFriendlyNameStyles, ", "), v)
+			}
 		}
 		for i, r := range cfg.Kube.Match {
 			base := []any{"kube", "match", i}
