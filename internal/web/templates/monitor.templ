@@ -2,11 +2,37 @@ package templates
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/toggle-corp/toggle-monitor/internal/store"
 )
+
+// MonitorConfig is the display-side mirror of scheduler.Plan — every
+// field the operator wants to see for a monitor that isn't part of
+// the runtime "current state" panel. Lifecycle constructs one of these
+// per-monitor by reading the live PlanSource so static + kube monitors
+// render identically.
+type MonitorConfig struct {
+	HTTPMethod             string
+	AcceptedStatusCodes    []int
+	Interval               time.Duration
+	Timeout                time.Duration
+	Retries                int
+	RetryBackoff           time.Duration
+	FollowRedirects        bool
+	TLSInsecureSkipVerify  bool
+	Proxy                  string
+	UserAgent              string
+	ReminderInterval       time.Duration
+	SlackChannelSlug       string
+	Mentions               []string
+	IsHTTPS                bool
+	SSLAlertThreshold      time.Duration
+	SSLEscalationThreshold time.Duration
+	SSLReminderInterval    time.Duration
+}
 
 templ kv(label, value string) {
 	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
@@ -50,7 +76,7 @@ templ kvURL(label, href string) {
 	</div>
 }
 
-templ MonitorDetail(m store.MonitorRow, gatingParents []string, history []store.AlertEventRow) {
+templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []string, history []store.AlertEventRow) {
 	@Layout(m.FriendlyName) {
 		<div class="flex items-center gap-3 mb-4">
 			<h1 class="text-xl font-semibold">{ m.FriendlyName }</h1>
@@ -58,7 +84,7 @@ templ MonitorDetail(m store.MonitorRow, gatingParents []string, history []store.
 		</div>
 
 		<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6">
-			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Current state</h2>
+			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Configuration</h2>
 			<dl>
 				@kv("Slug", m.Slug)
 				@kvURL("URL", m.URL)
@@ -67,6 +93,58 @@ templ MonitorDetail(m store.MonitorRow, gatingParents []string, history []store.
 				if len(m.DependsOn) > 0 {
 					@kv("Depends on", strings.Join(m.DependsOn, ", "))
 				}
+				if cfg != nil {
+					if cfg.HTTPMethod != "" {
+						@kv("HTTP method", cfg.HTTPMethod)
+					}
+					if len(cfg.AcceptedStatusCodes) > 0 {
+						@kv("Accepted status codes", joinInts(cfg.AcceptedStatusCodes))
+					}
+					if cfg.Interval > 0 {
+						@kv("Interval", cfg.Interval.String())
+					}
+					if cfg.Timeout > 0 {
+						@kv("Timeout", cfg.Timeout.String())
+					}
+					@kv("Retries", strconv.Itoa(cfg.Retries))
+					if cfg.RetryBackoff > 0 {
+						@kv("Retry backoff", cfg.RetryBackoff.String())
+					}
+					@kv("Follow redirects", boolYesNo(cfg.FollowRedirects))
+					if cfg.IsHTTPS {
+						@kv("TLS insecure skip verify", boolYesNo(cfg.TLSInsecureSkipVerify))
+					}
+					if cfg.Proxy != "" {
+						@kv("Proxy", cfg.Proxy)
+					}
+					if cfg.ReminderInterval > 0 {
+						@kv("Reminder interval", cfg.ReminderInterval.String())
+					}
+					if cfg.SlackChannelSlug != "" {
+						@kv("Slack channel", cfg.SlackChannelSlug)
+					}
+					if len(cfg.Mentions) > 0 {
+						@kv("Mentions", strings.Join(cfg.Mentions, " "))
+					}
+					if cfg.IsHTTPS && cfg.SSLAlertThreshold > 0 {
+						@kv("SSL alert threshold", cfg.SSLAlertThreshold.String())
+					}
+					if cfg.IsHTTPS && cfg.SSLEscalationThreshold > 0 {
+						@kv("SSL escalation threshold", cfg.SSLEscalationThreshold.String())
+					}
+					if cfg.IsHTTPS && cfg.SSLReminderInterval > 0 {
+						@kv("SSL reminder interval", cfg.SSLReminderInterval.String())
+					}
+					if cfg.UserAgent != "" {
+						@kv("User agent", cfg.UserAgent)
+					}
+				}
+			</dl>
+		</section>
+
+		<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6">
+			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Current state</h2>
+			<dl>
 				if string(m.Status) == "temporary-paused" && len(gatingParents) > 0 {
 					@kv("Gated by (currently down)", strings.Join(gatingParents, ", "))
 				}

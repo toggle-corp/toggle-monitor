@@ -251,6 +251,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		static:       staticPlans,
 		materializer: materializer,
 	}
+	srv.SetConfigLookup(planSource)
 
 	var wg sync.WaitGroup
 	// HTTP server.
@@ -399,6 +400,7 @@ func buildPlans(cfg config.Config, proxies *proxypool.Pool) []scheduler.Plan {
 			FollowRedirects:        m.FollowRedirects,
 			TLSInsecureSkipVerify:  m.TLSInsecureSkipVerify,
 			ProxyDialer:            proxies.Get(m.Proxy),
+			Proxy:                  m.Proxy,
 			UserAgent:              cfg.HTTPClient.UserAgent,
 			ReminderInterval:       m.ReminderInterval.AsDuration(),
 			ChannelSlug:            m.Slack,
@@ -430,6 +432,39 @@ func (c *combinedPlanSource) CurrentPlans() []scheduler.Plan {
 	out = append(out, c.static...)
 	out = append(out, kube...)
 	return out
+}
+
+// ConfigFor satisfies web.ConfigLookup: the monitor detail page
+// renders the live plan so static + kube monitors look identical to
+// the operator. Returns (_, false) for slugs we don't currently have
+// a plan for (e.g. a kube monitor whose ingress was pruned this pass
+// and the soft-delete hasn't landed yet).
+func (c *combinedPlanSource) ConfigFor(slug string) (templates.MonitorConfig, bool) {
+	for _, p := range c.CurrentPlans() {
+		if p.Slug != slug {
+			continue
+		}
+		return templates.MonitorConfig{
+			HTTPMethod:             p.HTTPMethod,
+			AcceptedStatusCodes:    append([]int(nil), p.AcceptedStatusCodes...),
+			Interval:               p.Interval,
+			Timeout:                p.Timeout,
+			Retries:                p.Retries,
+			RetryBackoff:           p.RetryBackoff,
+			FollowRedirects:        p.FollowRedirects,
+			TLSInsecureSkipVerify:  p.TLSInsecureSkipVerify,
+			Proxy:                  p.Proxy,
+			UserAgent:              p.UserAgent,
+			ReminderInterval:       p.ReminderInterval,
+			SlackChannelSlug:       p.ChannelSlug,
+			Mentions:               append([]string(nil), p.Mentions...),
+			IsHTTPS:                p.IsHTTPS,
+			SSLAlertThreshold:      p.SSLAlertThreshold,
+			SSLEscalationThreshold: p.SSLEscalationThreshold,
+			SSLReminderInterval:    p.SSLReminderInterval,
+		}, true
+	}
+	return templates.MonitorConfig{}, false
 }
 
 // mappingAdapter converts slack.UserMappingValidator.Snapshot() into

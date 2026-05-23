@@ -268,6 +268,7 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 		FollowRedirects:        preset.FollowRedirects,
 		TLSInsecureSkipVerify:  preset.TLSInsecureSkipVerify,
 		ProxyDialer:            m.proxies.Get(preset.Proxy),
+		Proxy:                  preset.Proxy,
 		UserAgent:              m.userAgent,
 		ReminderInterval:       preset.ReminderInterval.AsDuration(),
 		ChannelSlug:            preset.Slack,

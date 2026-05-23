@@ -251,3 +251,28 @@ func paramsFromFilter(f MonitorsFilter) url.Values {
 	}
 	return v
 }
+
+// joinInts renders []int as a comma-separated string, used by the
+// monitor detail page to format the acceptedStatusCodes list.
+func joinInts(xs []int) string {
+	if len(xs) == 0 {
+		return ""
+	}
+	parts := make([]string, len(xs))
+	for i, x := range xs {
+		parts[i] = strconv.Itoa(x)
+	}
+	out := parts[0]
+	for _, p := range parts[1:] {
+		out += ", " + p
+	}
+	return out
+}
+
+// boolYesNo renders a bool as "yes"/"no" for compact dl rows.
+func boolYesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
+}

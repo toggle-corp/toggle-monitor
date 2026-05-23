@@ -55,8 +55,19 @@ type Server struct {
 	pageSizes       PageSizes
 	knownGroups     []string
 	mapping         MappingHealthReader
+	configLookup    ConfigLookup
 	discoveryStatus templates.DiscoveryStatus
 	ready           atomic.Bool
+}
+
+// ConfigLookup returns the effective runtime config for a monitor (the
+// fields that aren't carried on store.MonitorRow — interval, timeout,
+// retries, mentions, etc.). Production wires the live scheduler plan
+// source so static + kube monitors render identically; tests can
+// supply a fake or omit it entirely (the detail page falls back to
+// just the store-side spec).
+type ConfigLookup interface {
+	ConfigFor(slug string) (templates.MonitorConfig, bool)
 }
 
 // MappingHealthReader exposes the userMapping validator's current
@@ -93,6 +104,11 @@ func (s *Server) SetKnownGroups(g []string) { s.knownGroups = g }
 // auto-discovery is enabled (and at what cadence) so the empty state
 // can explain why no rows are showing.
 func (s *Server) SetDiscoveryStatus(d templates.DiscoveryStatus) { s.discoveryStatus = d }
+
+// SetConfigLookup plugs in the runtime-config view (the live
+// scheduler.Plan, shaped for the UI). When nil, the monitor detail
+// page renders the store-side spec only.
+func (s *Server) SetConfigLookup(c ConfigLookup) { s.configLookup = c }
 
 // New constructs a Server. Call MarkReady once the DB is connected and
 // the config has loaded so /readyz starts returning 200.
@@ -315,8 +331,14 @@ func (s *Server) handleMonitorDetail(w http.ResponseWriter, r *http.Request) {
 		s.renderDBUnavailable(ctx, w, err)
 		return
 	}
+	var cfg *templates.MonitorConfig
+	if s.configLookup != nil {
+		if c, ok := s.configLookup.ConfigFor(slug); ok {
+			cfg = &c
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.MonitorDetail(m, gatingParents, history).Render(ctx, w)
+	_ = templates.MonitorDetail(m, cfg, gatingParents, history).Render(ctx, w)
 }
 
 // renderDBUnavailable serves a 503 with the friendly fallback page.

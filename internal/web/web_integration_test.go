@@ -18,6 +18,7 @@ import (
 	"github.com/toggle-corp/toggle-monitor/internal/store"
 	"github.com/toggle-corp/toggle-monitor/internal/testpg"
 	"github.com/toggle-corp/toggle-monitor/internal/web"
+	"github.com/toggle-corp/toggle-monitor/internal/web/templates"
 )
 
 // newServer spins up a Postgres container, applies migrations, seeds a
@@ -164,6 +165,68 @@ func TestMonitorDetail_renders(t *testing.T) {
 		t.Fatalf("monitor detail status: got %d, want 200", resp.StatusCode)
 	}
 	for _, want := range []string{"API", "http://api/health", "Service Unavailable", "503", "DOWN", "open"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("detail body missing %q", want)
+		}
+	}
+}
+
+// fakeConfigLookup feeds the detail page a canned MonitorConfig per
+// slug, mirroring what lifecycle's combinedPlanSource would produce
+// at runtime. Tests assert that the rendered detail page actually
+// contains the values from the lookup (interval, timeout, etc.).
+type fakeConfigLookup map[string]templates.MonitorConfig
+
+func (f fakeConfigLookup) ConfigFor(slug string) (templates.MonitorConfig, bool) {
+	c, ok := f[slug]
+	return c, ok
+}
+
+func TestMonitorDetail_rendersConfigSection(t *testing.T) {
+	srv, repo := newServer(t)
+	ctx := context.Background()
+	if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
+		Slug: "api", FriendlyName: "API", URL: "https://api/health",
+		GroupSlug: "prod", Source: store.SourceStatic,
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	srv.SetConfigLookup(fakeConfigLookup{
+		"api": {
+			HTTPMethod:            "GET",
+			AcceptedStatusCodes:   []int{200, 204},
+			Interval:              45 * time.Second,
+			Timeout:               7 * time.Second,
+			Retries:               2,
+			RetryBackoff:          3 * time.Second,
+			FollowRedirects:       true,
+			TLSInsecureSkipVerify: false,
+			Proxy:                 "corp",
+			ReminderInterval:      time.Hour,
+			SlackChannelSlug:      "ops-alerts",
+			Mentions:              []string{"<@U1>", "<!here>"},
+			IsHTTPS:               true,
+			SSLAlertThreshold:     14 * 24 * time.Hour,
+		},
+	})
+
+	resp, body := get(t, srv.Routes(), "/monitor/api")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("monitor detail status: got %d, want 200", resp.StatusCode)
+	}
+	for _, want := range []string{
+		"Configuration",
+		"GET",
+		"200, 204",
+		"45s",
+		"7s",
+		"3s",
+		"corp",
+		"ops-alerts",
+		"@U1",
+		"here",
+		"1h0m0s",
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("detail body missing %q", want)
 		}
