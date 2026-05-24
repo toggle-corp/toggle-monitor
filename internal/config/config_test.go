@@ -365,6 +365,9 @@ kube:
           monitor.togglecorp.com/disabled: "true"
       ignore: true
       final: true
+      nested:
+        - when: { namespace: "test-critical-*" }
+          ignore: false
     - when: { namespace: "acme-*" }
       config:
         group: acme
@@ -400,8 +403,11 @@ func TestLoad_kube_parsesCascadingTree(t *testing.T) {
 	if root.When.Namespace != "" || root.When.Host != "" || len(root.When.Labels) != 0 {
 		t.Errorf("root rule's When should be zero-value, got %+v", root.When)
 	}
-	if root.Final || root.Ignore {
-		t.Errorf("root rule should have ignore=final=false, got ignore=%v final=%v", root.Ignore, root.Final)
+	if root.Final {
+		t.Errorf("root rule should have final=false, got final=%v", root.Final)
+	}
+	if root.Ignore != nil {
+		t.Errorf("root rule should have ignore unset (nil), got %v", *root.Ignore)
 	}
 	if root.Config.Path != "/" {
 		t.Errorf("root path: got %q, want %q", root.Config.Path, "/")
@@ -426,7 +432,7 @@ func TestLoad_kube_parsesCascadingTree(t *testing.T) {
 	}
 
 	killSwitch := cfg.Kube.Match[1]
-	if !killSwitch.Ignore || !killSwitch.Final {
+	if killSwitch.Ignore == nil || !*killSwitch.Ignore || !killSwitch.Final {
 		t.Errorf("kill-switch rule should have ignore=final=true, got ignore=%v final=%v",
 			killSwitch.Ignore, killSwitch.Final)
 	}
@@ -438,6 +444,18 @@ func TestLoad_kube_parsesCascadingTree(t *testing.T) {
 	}
 	if got, want := killSwitch.When.Labels["monitor.togglecorp.com/disabled"], "true"; got != want {
 		t.Errorf("kill-switch label value: got %q, want %q", got, want)
+	}
+	if len(killSwitch.Nested) != 1 {
+		t.Fatalf("expected one nested un-ignore rule under kill-switch, got %d", len(killSwitch.Nested))
+	}
+	unignore := killSwitch.Nested[0]
+	if unignore.Ignore == nil {
+		t.Error("un-ignore rule should have ignore set (non-nil), got nil")
+	} else if *unignore.Ignore {
+		t.Errorf("un-ignore rule should have *ignore=false, got true")
+	}
+	if unignore.When.Namespace != "test-critical-*" {
+		t.Errorf("un-ignore namespace: got %q, want %q", unignore.When.Namespace, "test-critical-*")
 	}
 
 	acme := cfg.Kube.Match[2]

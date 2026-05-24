@@ -112,7 +112,7 @@ var KubeFriendlyNameStyles = []string{
 // rule that only carries `ignore: true`).
 type KubeMatchRule struct {
 	When   KubeMatchWhen   `yaml:"when,omitempty"`
-	Ignore bool            `yaml:"ignore,omitempty"`
+	Ignore *bool           `yaml:"ignore,omitempty"`
 	Final  bool            `yaml:"final,omitempty"`
 	Config KubeConfig      `yaml:"config,omitempty"`
 	Nested []KubeMatchRule `yaml:"nested,omitempty"`
