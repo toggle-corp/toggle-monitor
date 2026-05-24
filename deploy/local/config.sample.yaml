@@ -79,14 +79,80 @@ monitors:
     notify:
       - "<!here>"
 
+# Shared branding anchor — pull logoUrl/color into one place so
+# multiple pages for the same project look the same.
+x-status-page-local: &x-status-page-local
+  logoUrl: https://upload.wikimedia.org/wikipedia/commons/4/4e/Docker_%28container_engine%29_logo.svg
+  color: "#2496ed"
+
 # Status pages — see ADR-0003. Each section's `match` is a single
-# predicate node (leaf or branch); tag-AND semantics in leaves.
+# predicate node:
+#   - Leaf: { tags: [...] } and/or { hostRegex: '...' }. Tags AND
+#     within the list (monitor must carry every listed tag); hostRegex
+#     is a Go regexp auto-anchored ^...$ at use time, matched against
+#     the monitor's URL host. A leaf with both ANDs them.
+#   - Branch: { any: [...] } OR { all: [...] } — recurse to any depth.
+#     Mixing both keys on the same node is a validation error.
+# Slug must be kebab-case (^[a-z][a-z0-9]*(-[a-z0-9]+)*$); each page is
+# rendered at /status/<slug>; /status renders an index of every page
+# (alphabetical by friendlyName).
 statusPages:
-  - slug: local
-    friendlyName: Toggle Monitor — local dev
-    description: Local docker-compose services.
+  # Plain leaf — simplest possible page.
+  - slug: local-tags
+    friendlyName: Local (tags)
+    description: Single-leaf predicate matching by tag.
+    <<: *x-status-page-local
     sections:
       - title: Local services
         match: { tags: [local] }
       - title: Flaky things
         match: { tags: [flaky] }
+
+  # `any:` branch — OR across leaves. Useful for name variants
+  # (legacy `acme` vs new `acme`, etc.).
+  - slug: local-any
+    friendlyName: Local (any-of variants)
+    description: Matches either of two tag spellings via `any:`.
+    sections:
+      - title: Either spelling
+        match:
+          any:
+            - { tags: [local] }
+            - { tags: [demo] }
+
+  # `all:` branch composed of mixed leaves — tags AND hostRegex.
+  - slug: local-all
+    friendlyName: Local (all-of)
+    description: Demonstrates `all:` with a hostRegex + tag leaf.
+    sections:
+      - title: Local + matching host
+        match:
+          all:
+            - { tags: [local] }
+            - { hostRegex: 'upstream(:\d+)?' }   # auto-anchored ^...$
+
+  # Nested branches — any-of-(all-of-…) is the canonical shape for
+  # "(prod AND acme) OR (prod AND acme)" type rules.
+  - slug: local-nested
+    friendlyName: Local (nested any/all)
+    description: any-of two AND-groups; also shows hostRegex alone.
+    sections:
+      - title: Tag combos
+        match:
+          any:
+            - all:
+                - { tags: [local] }
+                - { tags: [demo] }
+            - { tags: [flaky] }
+      - title: Host-only selector
+        match: { hostRegex: '.*upstream.*' }
+
+  # Branding-only page — host-driven, no tags. Demonstrates `color:`
+  # accent + logoUrl rendering at the top of /status/<slug>.
+  - slug: local-branded
+    friendlyName: Branded sample
+    description: Same monitors as `local`, with logo + accent colour.
+    <<: *x-status-page-local
+    sections:
+      - title: Upstream
+        match: { hostRegex: 'upstream(:\d+)?' }
