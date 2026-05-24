@@ -229,7 +229,7 @@ func (s *Server) handleHomepage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	page, perPage := s.pagination(r, s.pageSizes.MonitorListing)
-	includeArchived := r.URL.Query().Get("archived") == "true"
+	archived := normalizeArchivedFilter(r.URL.Query().Get("archived"))
 	pageSlug := r.URL.Query().Get("status_page")
 	sectionIdx := -1
 	if pageSlug != "" {
@@ -247,6 +247,7 @@ func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
 		Section:  sectionIdx,
 		Sort:     normalizeSortKey(r.URL.Query().Get("sort")),
 		SortDesc: r.URL.Query().Get("dir") == "desc",
+		Archived: archived,
 	}
 	// Page/section filter: resolve to a slug whitelist by evaluating
 	// predicates against active monitors, then pass to the DB as a
@@ -274,15 +275,15 @@ func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	listing, err := s.repo.ListMonitors(ctx, store.ListMonitorsOpts{
-		Search:          filter.Search,
-		Status:          filter.Status,
-		SSL:             filter.SSL,
-		Slugs:           slugFilter,
-		IncludeArchived: includeArchived,
-		Sort:            filter.Sort,
-		SortDesc:        filter.SortDesc,
-		Limit:           perPage,
-		Offset:          (page - 1) * perPage,
+		Search:   filter.Search,
+		Status:   filter.Status,
+		SSL:      filter.SSL,
+		Slugs:    slugFilter,
+		Archived: archived,
+		Sort:     filter.Sort,
+		SortDesc: filter.SortDesc,
+		Limit:    perPage,
+		Offset:   (page - 1) * perPage,
 	})
 	if err != nil {
 		s.renderDBUnavailable(ctx, w, err)
@@ -649,8 +650,11 @@ func (s *Server) handleMonitorDetail(w http.ResponseWriter, r *http.Request) {
 	// "Appears on" backlinks — evaluate every status page's match tree
 	// against this monitor's tag set + host. Config order is preserved
 	// so the page header order on / matches the order shown here.
+	// Archived monitors don't appear on any status page (the listing
+	// query filters them out), so skip the evaluation entirely; the
+	// match tree would otherwise still return true on tags/host alone.
 	var appearsOn []templates.AppearsOnEntry
-	if len(s.statusConfigs) > 0 {
+	if !m.Archived && len(s.statusConfigs) > 0 {
 		tagSet := templates.StatusTagSet(m.Tags)
 		host := monitorHost(m.URL)
 		for _, cfgPage := range s.statusConfigs {
@@ -689,6 +693,19 @@ func normalizeSortKey(raw string) string {
 		}
 	}
 	return ""
+}
+
+// normalizeArchivedFilter coerces the `?archived=` query parameter to
+// one of the values store.ListMonitorsOpts.Archived understands. Empty
+// and unknown values collapse to "" (active-only) so a typo never
+// silently exposes archived rows.
+func normalizeArchivedFilter(raw string) string {
+	switch raw {
+	case "active", "archived", "any":
+		return raw
+	default:
+		return ""
+	}
 }
 
 // validSlugForURL is a defensive sanity check on the slug arriving via

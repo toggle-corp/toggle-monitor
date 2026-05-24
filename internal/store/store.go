@@ -167,11 +167,15 @@ func (r *Repo) ListActiveMonitors(ctx context.Context) ([]MonitorRow, error) {
 // All fields are optional: zero values mean "no filter", and Limit==0
 // means "no limit" (used by integrations that page in memory).
 type ListMonitorsOpts struct {
-	Search          string // substring match on friendly_name OR slug
-	Status          string // "" → no status filter
-	SSL             string // "" → no ssl_status filter ('ok' | 'ssl-expiring' | 'ssl-skipped')
-	Slugs           []string // empty → no slug filter; non-empty restricts to these slugs (used to back ?page=/?section= predicate filters)
-	IncludeArchived bool
+	Search string   // substring match on friendly_name OR slug
+	Status string   // "" → no status filter
+	SSL    string   // "" → no ssl_status filter ('ok' | 'ssl-expiring' | 'ssl-skipped')
+	Slugs  []string // empty → no slug filter; non-empty restricts to these slugs (used to back ?page=/?section= predicate filters)
+	// Archived selects which subset to include:
+	//   "" or "active"  → archived = FALSE (default)
+	//   "archived"      → archived = TRUE
+	//   "any"           → no archived predicate
+	Archived string
 	// Sort is a logical column key (one of ListSortKeys); "" → default
 	// "status priority then name" order. Unknown keys fall back to the
 	// default to keep the API forgiving.
@@ -250,7 +254,16 @@ func (r *Repo) ListMonitors(ctx context.Context, opts ListMonitorsOpts) (Monitor
 		args = append(args, val)
 		conds = append(conds, fmt.Sprintf(cond, "$"+itoa(len(args))))
 	}
-	if !opts.IncludeArchived {
+	switch opts.Archived {
+	case "", "active":
+		conds = append(conds, "archived = FALSE")
+	case "archived":
+		conds = append(conds, "archived = TRUE")
+	case "any":
+		// no archived predicate
+	default:
+		// Unknown value: default to active-only so callers don't
+		// accidentally surface archived rows via a typo.
 		conds = append(conds, "archived = FALSE")
 	}
 	if opts.Status != "" {

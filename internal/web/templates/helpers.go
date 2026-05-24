@@ -245,6 +245,9 @@ func paramsFromFilter(f MonitorsFilter) url.Values {
 			v.Set("dir", "desc")
 		}
 	}
+	if f.Archived != "" && f.Archived != "active" {
+		v.Set("archived", f.Archived)
+	}
 	return v
 }
 

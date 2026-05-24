@@ -285,15 +285,15 @@ func TestSoftDeleteMonitor_archivesAndPreservesHistory(t *testing.T) {
 		t.Errorf("history should be preserved across soft-delete, got %d events", len(events))
 	}
 
-	// Listing with IncludeArchived=false should hide it.
+	// Default listing should hide it.
 	listing, _ := repo.ListMonitors(ctx, store.ListMonitorsOpts{})
 	for _, r := range listing.Items {
 		if r.Slug == "api" {
 			t.Error("archived monitor should be hidden from default listing")
 		}
 	}
-	// IncludeArchived=true should surface it.
-	listing, _ = repo.ListMonitors(ctx, store.ListMonitorsOpts{IncludeArchived: true})
+	// Archived="any" should surface it alongside active rows.
+	listing, _ = repo.ListMonitors(ctx, store.ListMonitorsOpts{Archived: "any"})
 	found := false
 	for _, r := range listing.Items {
 		if r.Slug == "api" {
@@ -301,7 +301,12 @@ func TestSoftDeleteMonitor_archivesAndPreservesHistory(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("archived monitor should appear with IncludeArchived=true")
+		t.Error("archived monitor should appear with Archived=any")
+	}
+	// Archived="archived" should return ONLY the archived row.
+	listing, _ = repo.ListMonitors(ctx, store.ListMonitorsOpts{Archived: "archived"})
+	if len(listing.Items) != 1 || listing.Items[0].Slug != "api" {
+		t.Errorf("Archived=archived should return only the archived row, got %+v", listing.Items)
 	}
 }
 

@@ -18,6 +18,9 @@ type MonitorsFilter struct {
 	Section  int    // 0-indexed section within Page; -1 → no section filter
 	Sort     string // one of store.ListSortKeys; "" → default
 	SortDesc bool
+	// Archived selects the archived subset: "" or "active" (default,
+	// non-archived only), "archived" (archived only), or "any" (both).
+	Archived string
 }
 
 // sortableHeader renders one <th> as a clickable link that toggles
@@ -100,8 +103,16 @@ templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPa
 					}
 				</select>
 			</div>
+			<div>
+				<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="archived">Archived</label>
+				<select id="archived" name="archived" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
+					<option value="" selected?={ filter.Archived == "" || filter.Archived == "active" }>active</option>
+					<option value="archived" selected?={ filter.Archived == "archived" }>archived</option>
+					<option value="any" selected?={ filter.Archived == "any" }>any</option>
+				</select>
+			</div>
 			<button class="bg-slate-900 dark:bg-slate-200 dark:text-slate-900 text-white text-sm px-3 py-1.5 rounded">Apply</button>
-			if filter.Search != "" || filter.Status != "" || filter.SSL != "" || filter.Page != "" {
+			if filter.Search != "" || filter.Status != "" || filter.SSL != "" || filter.Page != "" || (filter.Archived != "" && filter.Archived != "active") {
 				<a class="text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100" href="/monitors">Clear filters</a>
 			}
 		</form>

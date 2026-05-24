@@ -194,13 +194,45 @@ templ kvURL(label, href string) {
 	</div>
 }
 
+// archivedBanner is the amber warning rendered between the title row
+// and the "Last known state" card on the detail page for soft-deleted
+// monitors. The reason line is omitted when archive_reason is nil or
+// empty so legacy rows don't display a "Reason: " stub.
+templ archivedBanner(m store.MonitorRow) {
+	<div class="rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 p-4 mb-6">
+		<p class="font-semibold mb-1">This monitor has been archived.</p>
+		if m.ArchiveReason != nil && *m.ArchiveReason != "" {
+			<p class="text-sm mb-1">
+				Reason: { *m.ArchiveReason }
+				if m.ArchivedAt != nil {
+					<span> — </span>
+					@Timestamp(*m.ArchivedAt)
+				}
+			</p>
+		} else if m.ArchivedAt != nil {
+			<p class="text-sm mb-1">
+				Archived @Timestamp(*m.ArchivedAt)
+			</p>
+		}
+		<p class="text-sm">The state below reflects its last known values and is no longer updating.</p>
+	</div>
+}
+
 templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []string, history []store.AlertEventRow, appearsOn []AppearsOnEntry) {
-	@Layout(m.FriendlyName) {
+	{{ layoutTitle := m.FriendlyName }}
+	if m.Archived {
+		{{ layoutTitle = "[archived] " + m.FriendlyName }}
+	}
+	@Layout(layoutTitle) {
 		<div class="flex items-center gap-3 mb-4">
 			<h1 class="text-xl font-semibold inline-flex items-center gap-2">
 				@MonitorName(m.FriendlyName)
 			</h1>
-			@StatusBadge(string(m.Status))
+			if m.Archived {
+				@ArchivedChip()
+			} else {
+				@StatusBadge(string(m.Status))
+			}
 			if cfg != nil {
 				<button
 					type="button"
@@ -210,9 +242,17 @@ templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []stri
 			}
 		</div>
 
+		if m.Archived {
+			@archivedBanner(m)
+		}
+
 		<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6">
-			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Current state</h2>
-			<dl>
+			if m.Archived {
+				<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Last known state</h2>
+			} else {
+				<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Current state</h2>
+			}
+			<dl class={ templ.KV("opacity-60", m.Archived) }>
 				@kv("Slug", m.Slug)
 				@kvURL("URL", m.URL)
 				@kv("Source", string(m.Source))
