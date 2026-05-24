@@ -551,6 +551,196 @@ func TestStatic_servesEmbeddedCSS(t *testing.T) {
 	}
 }
 
+func TestStatusPage_sslTilesSplitExpiringAndExpired(t *testing.T) {
+	srv, repo := newServer(t)
+	ctx := context.Background()
+
+	now := time.Now()
+	for _, s := range []store.MonitorSpec{
+		{Slug: "tile-soon", FriendlyName: "Soon", URL: "https://soon/", Source: store.SourceStatic, Tags: []string{"public"}},
+		{Slug: "tile-past1", FriendlyName: "P1", URL: "https://p1/", Source: store.SourceStatic, Tags: []string{"public"}},
+		{Slug: "tile-past2", FriendlyName: "P2", URL: "https://p2/", Source: store.SourceStatic, Tags: []string{"public"}},
+	} {
+		if err := repo.ReconcileMonitor(ctx, s); err != nil {
+			t.Fatalf("reconcile %q: %v", s.Slug, err)
+		}
+	}
+	seedSSLState(t, repo, "tile-soon", alert.SSLStatusExpiring, now.Add(5*24*time.Hour))
+	seedSSLState(t, repo, "tile-past1", alert.SSLStatusExpiring, now.Add(-1*24*time.Hour))
+	seedSSLState(t, repo, "tile-past2", alert.SSLStatusExpiring, now.Add(-5*24*time.Hour))
+
+	srv.SetStatusConfigs([]*templates.StatusConfig{{
+		Slug: "pub", FriendlyName: "Pub",
+		Sections: []templates.StatusConfigSection{{
+			Title: "All", Match: templates.StatusMatch{Tags: []string{"public"}},
+		}},
+	}})
+
+	resp, body := get(t, srv.Routes(), "/status/pub")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/status/pub status: got %d, want 200", resp.StatusCode)
+	}
+	for _, want := range []string{"SSL expiring", "SSL expired"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("status-page tiles should include %q; first 2000:\n%s", want, firstN(body, 2000))
+		}
+	}
+	// The expired tile must link to ?ssl=expired so an operator can
+	// drill in.
+	if !strings.Contains(body, "ssl=expired") {
+		t.Errorf("expired tile should link to ?ssl=expired; first 2000:\n%s", firstN(body, 2000))
+	}
+}
+
+func TestMonitorsListing_sslExpiredFilter(t *testing.T) {
+	srv, repo := newServer(t)
+	ctx := context.Background()
+
+	now := time.Now()
+	for _, s := range []store.MonitorSpec{
+		{Slug: "soon", FriendlyName: "Soon", URL: "https://soon/", Source: store.SourceStatic},
+		{Slug: "past", FriendlyName: "Past", URL: "https://past/", Source: store.SourceStatic},
+	} {
+		if err := repo.ReconcileMonitor(ctx, s); err != nil {
+			t.Fatalf("reconcile %q: %v", s.Slug, err)
+		}
+	}
+	// Both rows live in the data layer as ssl-expiring; only their
+	// expiry timestamps differ. The ?ssl=expired filter must select
+	// only the past one.
+	seedSSLState(t, repo, "soon", alert.SSLStatusExpiring, now.Add(3*24*time.Hour))
+	seedSSLState(t, repo, "past", alert.SSLStatusExpiring, now.Add(-3*24*time.Hour))
+
+	resp, body := get(t, srv.Routes(), "/monitors?ssl=expired")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/monitors?ssl=expired status: got %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(body, ">Past<") {
+		t.Errorf("?ssl=expired should include Past row; first 2000:\n%s", firstN(body, 2000))
+	}
+	if strings.Contains(body, ">Soon<") {
+		t.Errorf("?ssl=expired should exclude Soon row; first 2000:\n%s", firstN(body, 2000))
+	}
+	// Dropdown must surface the new option so operators can pick it.
+	if !strings.Contains(body, `value="expired"`) {
+		t.Errorf("/monitors SSL dropdown should expose value=\"expired\"; first 2000:\n%s", firstN(body, 2000))
+	}
+}
+
+func TestMonitorsListing_sslColumnRendersAllStates(t *testing.T) {
+	srv, repo := newServer(t)
+	ctx := context.Background()
+
+	now := time.Now()
+	for _, s := range []store.MonitorSpec{
+		{Slug: "m-ok", FriendlyName: "OK", URL: "https://ok/", Source: store.SourceStatic},
+		{Slug: "m-expired", FriendlyName: "Expd", URL: "https://expd/", Source: store.SourceStatic},
+		{Slug: "m-skipped", FriendlyName: "Skip", URL: "http://skip/", Source: store.SourceStatic},
+	} {
+		if err := repo.ReconcileMonitor(ctx, s); err != nil {
+			t.Fatalf("reconcile %q: %v", s.Slug, err)
+		}
+	}
+	seedSSLState(t, repo, "m-ok", alert.SSLStatusOK, now.Add(60*24*time.Hour+12*time.Hour))
+	seedSSLState(t, repo, "m-expired", alert.SSLStatusExpiring, now.Add(-2*24*time.Hour-12*time.Hour))
+	seedSSLState(t, repo, "m-skipped", alert.SSLStatusSkipped, time.Time{})
+
+	resp, body := get(t, srv.Routes(), "/monitors")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/monitors status: got %d, want 200", resp.StatusCode)
+	}
+	for _, label := range []string{">ok<", ">expired<", ">skipped<"} {
+		if !strings.Contains(body, label) {
+			t.Errorf("/monitors body missing SSL chip label %q; first 2000:\n%s", label, firstN(body, 2000))
+		}
+	}
+	if !strings.Contains(body, "bg-rose-100") {
+		t.Errorf("/monitors expired row should use rose chip classes; first 2000:\n%s", firstN(body, 2000))
+	}
+}
+
+// seedSSLState writes an SSL state row for an existing monitor. Test
+// helper used by SSL-display tests. Pass a zero expiresAt to leave the
+// expiry column NULL (used for the skipped case).
+func seedSSLState(t *testing.T, repo *store.Repo, slug string, status alert.SSLStatus, expiresAt time.Time) {
+	t.Helper()
+	state := alert.SSLState{Status: status}
+	if status == alert.SSLStatusExpiring {
+		state.OpenedAt = time.Now()
+	}
+	if err := repo.ApplySSLCheck(context.Background(), slug, state, expiresAt, "Test Issuer", "test-subject", nil); err != nil {
+		t.Fatalf("ApplySSLCheck(%s): %v", slug, err)
+	}
+}
+
+func TestStatusPage_sslColumnRendersAllStates(t *testing.T) {
+	srv, repo := newServer(t)
+	ctx := context.Background()
+
+	now := time.Now()
+	for _, s := range []store.MonitorSpec{
+		{Slug: "cert-ok", FriendlyName: "OK Cert", URL: "https://ok.example.com/health", Source: store.SourceStatic, Tags: []string{"public"}},
+		{Slug: "cert-expiring", FriendlyName: "Expiring Cert", URL: "https://expiring.example.com/health", Source: store.SourceStatic, Tags: []string{"public"}},
+		{Slug: "cert-expired", FriendlyName: "Expired Cert", URL: "https://expired.example.com/health", Source: store.SourceStatic, Tags: []string{"public"}},
+		{Slug: "cert-skipped", FriendlyName: "Skipped", URL: "http://plain.example.com/health", Source: store.SourceStatic, Tags: []string{"public"}},
+		{Slug: "cert-nil", FriendlyName: "Never Checked", URL: "https://never.example.com/health", Source: store.SourceStatic, Tags: []string{"public"}},
+	} {
+		if err := repo.ReconcileMonitor(ctx, s); err != nil {
+			t.Fatalf("reconcile %q: %v", s.Slug, err)
+		}
+	}
+	// Add a half-day buffer past the integer-day boundary so a few
+	// seconds of test runtime don't flip humanDuration's day bucket
+	// down (3d → 2d, 2d → 1d).
+	seedSSLState(t, repo, "cert-ok", alert.SSLStatusOK, now.Add(60*24*time.Hour+12*time.Hour))
+	seedSSLState(t, repo, "cert-expiring", alert.SSLStatusExpiring, now.Add(3*24*time.Hour+12*time.Hour))
+	seedSSLState(t, repo, "cert-expired", alert.SSLStatusExpiring, now.Add(-2*24*time.Hour-12*time.Hour))
+	seedSSLState(t, repo, "cert-skipped", alert.SSLStatusSkipped, time.Time{})
+	// cert-nil: deliberately no ApplySSLCheck call.
+
+	srv.SetStatusConfigs([]*templates.StatusConfig{{
+		Slug: "public", FriendlyName: "Public status",
+		Sections: []templates.StatusConfigSection{{
+			Title: "All",
+			Match: templates.StatusMatch{Tags: []string{"public"}},
+		}},
+	}})
+
+	resp, body := get(t, srv.Routes(), "/status/public")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/status/public status: got %d, want 200", resp.StatusCode)
+	}
+
+	// Each chip label must appear at least once in the body.
+	for _, label := range []string{">ok<", ">expiring<", ">expired<", ">skipped<"} {
+		if !strings.Contains(body, label) {
+			t.Errorf("body missing SSL chip label %q; first 2000:\n%s", label, firstN(body, 2000))
+		}
+	}
+
+	// The expired chip must use the red/rose palette (not amber), per the
+	// presentation-only override.
+	if !strings.Contains(body, "bg-rose-100") {
+		t.Errorf("expired cert should render with rose/red chip classes; first 2000:\n%s", firstN(body, 2000))
+	}
+
+	// Relative dates next to expiring (future) and expired (past) certs.
+	if !strings.Contains(body, "in 3d") {
+		t.Errorf("expiring cell should show relative 'in 3d'; first 2000:\n%s", firstN(body, 2000))
+	}
+	if !strings.Contains(body, "2d ago") {
+		t.Errorf("expired cell should show relative '2d ago'; first 2000:\n%s", firstN(body, 2000))
+	}
+
+	// RFC3339 timestamp must appear as a tooltip on the OK row.
+	okStamp := now.Add(60*24*time.Hour + 12*time.Hour).UTC().Format(time.RFC3339)
+	// Match prefix (truncated to hour precision) so sub-second drift is OK.
+	okStampPrefix := okStamp[:13]
+	if !strings.Contains(body, `title="`+okStampPrefix) {
+		t.Errorf("ok cell should carry RFC3339 in title attr (prefix %q); first 2000:\n%s", okStampPrefix, firstN(body, 2000))
+	}
+}
+
 func firstN(s string, n int) string {
 	if len(s) <= n {
 		return s

@@ -91,6 +91,7 @@ templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPa
 					<option value="" selected?={ filter.SSL == "" }>(any)</option>
 					<option value="ok" selected?={ filter.SSL == "ok" }>ok</option>
 					<option value="ssl-expiring" selected?={ filter.SSL == "ssl-expiring" }>ssl-expiring</option>
+					<option value="expired" selected?={ filter.SSL == "expired" }>expired</option>
 					<option value="ssl-skipped" selected?={ filter.SSL == "ssl-skipped" }>ssl-skipped</option>
 				</select>
 			</div>

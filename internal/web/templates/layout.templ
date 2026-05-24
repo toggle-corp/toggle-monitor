@@ -145,6 +145,29 @@ templ SSLBadge(s string) {
 	<span class={ "inline-block px-2 py-0.5 rounded text-xs font-medium", sslBadgeClasses(s) }>{ s }</span>
 }
 
+// SSLCell renders the compact SSL column used in both /monitors and
+// /status/<slug>: short-label chip + relative expiry. ssl-expiring
+// rows whose cert has already crossed expires_at render with a red
+// "expired" chip (presentation-only — the persisted status is
+// unchanged, so alerting cadence keeps working). Nil status renders
+// an em-dash so a brand-new monitor that hasn't been probed yet looks
+// distinct from a deliberately skipped one. The absolute RFC3339
+// timestamp lives in `title=` for the rare moment an operator needs
+// it.
+templ SSLCell(status string, expiresAt *time.Time) {
+	{{ kind := SSLCellState(status, expiresAt) }}
+	if kind == "" {
+		<span class="text-slate-400 dark:text-slate-600">—</span>
+	} else {
+		<span class="inline-flex items-center gap-1.5">
+			<span class={ "inline-block px-2 py-0.5 rounded text-xs font-medium", sslBadgeClasses(kind) }>{ kind }</span>
+			if expiresAt != nil && kind != "skipped" {
+				<span title={ expiresAt.UTC().Format(time.RFC3339) } class="text-xs text-slate-500 dark:text-slate-400">{ humanDuration(*expiresAt) }</span>
+			}
+		</span>
+	}
+}
+
 // DiscoveryBadge colors the discovery snapshot row status.
 templ DiscoveryBadge(s string) {
 	<span class={ "inline-block px-2 py-0.5 rounded text-xs font-medium", discoveryBadgeClasses(s) }>{ s }</span>
@@ -246,11 +269,11 @@ templ MonitorRow(m store.MonitorRow) {
 			}
 		</td>
 		<td class="py-2 px-3 text-sm whitespace-nowrap">
-			if m.SSLExpiresAt != nil {
-				<span title={ m.SSLExpiresAt.UTC().Format(time.RFC3339) } class="text-slate-500 dark:text-slate-400">{ humanDuration(*m.SSLExpiresAt) }</span>
-			} else {
-				<span class="text-slate-400 dark:text-slate-600">—</span>
+			{{ var sslStatus string }}
+			if m.SSLStatus != nil {
+				{{ sslStatus = string(*m.SSLStatus) }}
 			}
+			@SSLCell(sslStatus, m.SSLExpiresAt)
 		</td>
 	</tr>
 }

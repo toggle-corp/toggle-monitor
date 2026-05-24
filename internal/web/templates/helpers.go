@@ -135,17 +135,45 @@ func eventTypeBadgeClasses(t string) string {
 }
 
 // sslBadgeClasses colors the SSL-status chip. "ok" is the explicit
-// success case the design doc calls out.
+// success case the design doc calls out. "expired" is a
+// presentation-only state derived from an ssl-expiring row whose cert
+// has already crossed its expires_at — see SSLCellState.
 func sslBadgeClasses(s string) string {
 	switch s {
 	case "ok":
 		return "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
-	case "ssl-expiring":
+	case "ssl-expiring", "expiring":
 		return "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
-	case "ssl-skipped":
+	case "expired":
+		return "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300"
+	case "ssl-skipped", "skipped":
 		return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
 	default:
 		return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+	}
+}
+
+// SSLCellState maps a persisted SSL status + optional expiry into the
+// short label used in compact table cells. "ssl-expiring" splits into
+// "expiring" (future expiry) or "expired" (past expiry) so an
+// already-broken cert reads with red/down severity instead of the same
+// amber as one with 25 days left. nil status → "" so callers can fall
+// back to an em-dash.
+func SSLCellState(status string, expiresAt *time.Time) string {
+	switch status {
+	case "":
+		return ""
+	case "ok":
+		return "ok"
+	case "ssl-skipped":
+		return "skipped"
+	case "ssl-expiring":
+		if expiresAt != nil && nowFunc().After(*expiresAt) {
+			return "expired"
+		}
+		return "expiring"
+	default:
+		return status
 	}
 }
 

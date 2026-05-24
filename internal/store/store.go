@@ -270,7 +270,16 @@ func (r *Repo) ListMonitors(ctx context.Context, opts ListMonitorsOpts) (Monitor
 		add("status = %s", opts.Status)
 	}
 	if opts.SSL != "" {
-		add("ssl_status = %s", opts.SSL)
+		if opts.SSL == "expired" {
+			// Presentation-only state: ssl-expiring rows whose cert has
+			// already crossed expires_at. The persisted status stays
+			// "ssl-expiring" so alerting cadence keeps working — the
+			// listing splits them out so operators can drill into
+			// "currently broken" vs "broken soon".
+			conds = append(conds, "ssl_status = 'ssl-expiring' AND ssl_expires_at < now()")
+		} else {
+			add("ssl_status = %s", opts.SSL)
+		}
 	}
 	if len(opts.Slugs) > 0 {
 		args = append(args, opts.Slugs)

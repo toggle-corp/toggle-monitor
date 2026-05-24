@@ -259,12 +259,13 @@ templ StatusPage(cfg *StatusConfig, sections []StatusSection, stats StatusPageSt
 				</div>
 			</div>
 
-			<div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+			<div class="grid grid-cols-2 md:grid-cols-6 gap-3 mb-6">
 				@statTile("Total", stats.Total, "", statusListingURL(cfg.Slug, -1, ""))
 				@statTile("Up", stats.Up, "up", statusListingURL(cfg.Slug, -1, "up"))
 				@statTile("Down", stats.Down, "down", statusListingURL(cfg.Slug, -1, "down"))
 				@statTile("Paused", stats.TemporaryPaused, "warn", statusListingURL(cfg.Slug, -1, "temporary-paused"))
 				@statTile("SSL expiring", stats.SSLExpiring, "warn", statusListingURL(cfg.Slug, -1, "ssl-expiring"))
+				@statTile("SSL expired", stats.SSLExpired, "down", statusListingURL(cfg.Slug, -1, "expired"))
 			</div>
 
 			for idx, sec := range sections {
@@ -291,12 +292,12 @@ templ StatusPage(cfg *StatusConfig, sections []StatusSection, stats StatusPageSt
 										<td class="py-2 px-3 font-medium">
 											<a href={ templ.SafeURL("/monitor/" + m.Slug) } class="hover:underline">{ m.FriendlyName }</a>
 										</td>
-										<td class="py-2 px-3 text-sm text-right">
-											if m.SSLStatus != nil && string(*m.SSLStatus) == "ssl-expiring" {
-												@SSLBadge("ssl-expiring")
-											} else {
-												<span class="text-slate-400 dark:text-slate-600">—</span>
+										<td class="py-2 px-3 text-sm text-right whitespace-nowrap">
+											{{ var sslStatus string }}
+											if m.SSLStatus != nil {
+												{{ sslStatus = string(*m.SSLStatus) }}
 											}
+											@SSLCell(sslStatus, m.SSLExpiresAt)
 										</td>
 										<td class="py-2 px-3 text-right">@StatusBadge(string(m.Status))</td>
 									</tr>
@@ -330,7 +331,7 @@ func statusListingURL(slug string, sectionIdx int, kind string) string {
 	switch kind {
 	case "":
 		// no extra filter
-	case "ssl-expiring", "ssl-skipped", "ok":
+	case "ssl-expiring", "ssl-skipped", "ok", "expired":
 		q += "&ssl=" + kind
 	default:
 		q += "&status=" + kind

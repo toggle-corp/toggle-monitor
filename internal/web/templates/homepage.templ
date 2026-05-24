@@ -34,6 +34,7 @@ type StatusPageStats struct {
 	Down            int
 	TemporaryPaused int
 	SSLExpiring     int
+	SSLExpired      int // presentation-only: ssl-expiring rows whose cert has crossed expires_at
 	SSLSkipped      int
 }
 

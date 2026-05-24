@@ -470,6 +470,9 @@ func statsForPage(cfg *templates.StatusConfig, active []store.MonitorRow) templa
 			switch string(*m.SSLStatus) {
 			case "ssl-expiring":
 				stat.SSLExpiring++
+				if m.SSLExpiresAt != nil && m.SSLExpiresAt.Before(time.Now()) {
+					stat.SSLExpired++
+				}
 			case "ssl-skipped":
 				stat.SSLSkipped++
 			}
