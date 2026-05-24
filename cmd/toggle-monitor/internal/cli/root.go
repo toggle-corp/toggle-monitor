@@ -28,5 +28,6 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newConfigCmd())
 	root.AddCommand(newMigrateCmd())
 	root.AddCommand(newSlackCmd())
+	root.AddCommand(newExplainCmd())
 	return root
 }

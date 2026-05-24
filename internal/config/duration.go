@@ -19,6 +19,14 @@ func (d Duration) AsDuration() time.Duration { return time.Duration(d) }
 
 func (d Duration) String() string { return time.Duration(d).String() }
 
+// MarshalYAML implements yaml.Marshaler so the Duration round-trips as
+// a human-readable scalar (e.g., "5m0s") instead of a raw nanosecond
+// integer. Used by `toggle-monitor config show` and `toggle-monitor
+// explain` to keep the printed config legible.
+func (d Duration) MarshalYAML() (any, error) {
+	return time.Duration(d).String(), nil
+}
+
 // UnmarshalYAML implements yaml.Unmarshaler so YAML scalar strings get
 // converted into Duration. Numbers are rejected (operator must use a
 // suffixed string for clarity).

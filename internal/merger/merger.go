@@ -99,6 +99,44 @@ func New(s MonitorStore, cfg config.Config, proxies *proxypool.Pool) *Materializ
 	}
 }
 
+// Resolve walks the cascading kube.match[] tree against (ing, host)
+// and returns the merge stack's resolved value plus the rule chain
+// summary, without any DB side effects. It is the shared kernel
+// behind Materializer.Materialize and the `toggle-monitor explain`
+// CLI subcommand — keep them in lockstep by routing every consumer
+// through this helper rather than re-implementing the tree walk.
+//
+// The returned chain is in match-order (root → leaf), with the same
+// formatting Materialize emits in the discovery reason field (one
+// step per matched rule, with selectorSummary appended and a
+// trailing " [final]" when the rule halted the cascade).
+//
+// `ignored` is the deepest-wins resolution of rule-level ignore:
+// directives across the matched stack. `resolvedErr` is the
+// resolved-value validation error (interval > timeout, sslAlert >
+// escalation > 0, required-at-root fields not regressed) — non-nil
+// means the resolved config would emit a kube-invalid discovery row
+// rather than materialize. `matched` is false when no rule in the
+// tree fired (only possible against a hand-constructed tree without
+// a root rule; production configs always carry a matching root).
+func Resolve(rules []config.KubeMatchRule, ing *networkingv1.Ingress, host string) (resolved config.KubeConfig, chain []string, ignored bool, matched bool, resolvedErr error) {
+	stack, ch := walkRules(rules, ing, host)
+	chain = append([]string(nil), ch.steps...)
+	if len(stack) == 0 {
+		return config.KubeConfig{}, chain, false, false, nil
+	}
+	for _, layer := range stack {
+		if layer.ignore != nil {
+			ignored = *layer.ignore
+		}
+	}
+	resolved = resolveStack(stack)
+	if !ignored {
+		resolvedErr = checkResolved(resolved)
+	}
+	return resolved, chain, ignored, true, resolvedErr
+}
+
 // Materialize implements kube.Materializer. For one (Ingress, host)
 // pair it produces a snapshot row carrying the rule chain (in the
 // reason field) and — for non-ignored, non-invalid rows — also
@@ -237,21 +275,28 @@ type ruleChain struct {
 func (c *ruleChain) push(s string) { c.steps = append(c.steps, s) }
 func (c ruleChain) String() string  { return strings.Join(c.steps, " → ") }
 
-// walk traverses the entire kube.match[] tree depth-first in document
-// order, collecting every rule whose `when:` matches the (Ingress,
-// host) pair into the merge stack. `final: true` halts the traversal
-// after descending into its own nested children. Returns the merge
-// stack in match order plus the rule-chain summary for the discovery
-// reason.
+// walk traverses the Materializer's configured kube.match[] tree. It
+// is a thin wrapper around walkRules so the standalone Resolve helper
+// and the materialization path share the same depth-first traversal.
 func (m *Materializer) walk(ing *networkingv1.Ingress, host string) ([]stackEntry, ruleChain) {
+	return walkRules(m.match, ing, host)
+}
+
+// walkRules traverses the given kube.match[] tree depth-first in
+// document order, collecting every rule whose `when:` matches the
+// (Ingress, host) pair into the merge stack. `final: true` halts the
+// traversal after descending into its own nested children. Returns
+// the merge stack in match order plus the rule-chain summary for the
+// discovery reason.
+func walkRules(rules []config.KubeMatchRule, ing *networkingv1.Ingress, host string) ([]stackEntry, ruleChain) {
 	var stack []stackEntry
 	var chain ruleChain
 	halted := false
-	for i := range m.match {
+	for i := range rules {
 		if halted {
 			break
 		}
-		halted = visitRule(&m.match[i], ing, host, fmt.Sprintf("match[%d]", i), &stack, &chain)
+		halted = visitRule(&rules[i], ing, host, fmt.Sprintf("match[%d]", i), &stack, &chain)
 	}
 	return stack, chain
 }

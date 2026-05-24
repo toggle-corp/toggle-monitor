@@ -270,16 +270,38 @@ func (l *NotifyList) UnmarshalYAML(node *yaml.Node) error {
 	return decodeOverridableStringList(node, &l.Values, &l.Override)
 }
 
+// MarshalYAML emits the list as a plain YAML sequence. The Override
+// flag is intentionally not round-tripped: by the time anything
+// re-emits a NotifyList the merger has already consumed the override
+// semantics, so the resolved Values are the only meaningful payload.
+// Used by `toggle-monitor explain` to keep the resolved config block
+// readable.
+func (l NotifyList) MarshalYAML() (any, error) {
+	return l.Values, nil
+}
+
 // UnmarshalYAML implements yaml.Unmarshaler. Sets Override=true when
 // the YAML sequence carries the !override custom tag.
 func (l *TagList) UnmarshalYAML(node *yaml.Node) error {
 	return decodeOverridableStringList(node, &l.Values, &l.Override)
 }
 
+// MarshalYAML emits the list as a plain YAML sequence; see
+// NotifyList.MarshalYAML for the rationale.
+func (l TagList) MarshalYAML() (any, error) {
+	return l.Values, nil
+}
+
 // UnmarshalYAML implements yaml.Unmarshaler. Sets Override=true when
 // the YAML sequence carries the !override custom tag.
 func (l *DependsOnList) UnmarshalYAML(node *yaml.Node) error {
 	return decodeOverridableStringList(node, &l.Values, &l.Override)
+}
+
+// MarshalYAML emits the list as a plain YAML sequence; see
+// NotifyList.MarshalYAML for the rationale.
+func (l DependsOnList) MarshalYAML() (any, error) {
+	return l.Values, nil
 }
 
 func nodeKindName(k yaml.Kind) string {
