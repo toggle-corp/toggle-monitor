@@ -102,6 +102,8 @@ func withKube(kc *config.Kube, statics []config.Monitor) config.Config {
 			UserMapping: map[string]string{
 				"thenav56": "U111111111",
 				"barsha":   "U222222222",
+				"carol":    "U333333333",
+				"dave":     "U444444444",
 			},
 		},
 	}
@@ -227,6 +229,90 @@ func TestMaterializer_arrayUnionAndOverride(t *testing.T) {
 	}
 	if !foundBarsha {
 		t.Errorf("override list should contribute barsha, got %v", mentions)
+	}
+}
+
+func TestMaterializer_overrideMidCascadeContinuesUnion(t *testing.T) {
+	// ADR-0002 §Merge rules: `!override` flips exactly ONE layer to
+	// replace mode; deeper layers continue to union on top of the
+	// override-result. The 2-layer case is covered by
+	// TestMaterializer_arrayUnionAndOverride; this asserts the
+	// 3-layer cascade explicitly.
+	//
+	//   layer 1 (match[1]) : notify=[thenav56, barsha]        → accumulator
+	//   layer 2 (nested[0]): notify=!override [carol]         → resets to [carol]
+	//   layer 3 (nested[1]): notify=[dave]                    → unions → [carol, dave]
+	repo := newRepo(t)
+	extra := `
+- when: {namespace: "acme-*"}
+  config:
+    notify: [thenav56, barsha]
+  nested:
+    - when: {host: "*.example.com"}
+      config:
+        notify: !override [carol]
+      nested:
+        - when: {labels: {tier: "edge"}}
+          config:
+            notify: [dave]
+`
+	kc := fixtureKube(t, extra, true)
+	m := merger.New(repo, withKube(kc, nil), nil)
+	ing := ingress("acme-api-1", "api", map[string]string{"tier": "edge"}, "api.example.com")
+
+	row, err := m.Materialize(context.Background(), ing, "api.example.com")
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if row.Status != "added" {
+		t.Fatalf("status: got %q (reason=%v), want 'added'", row.Status, row.Reason)
+	}
+
+	plans := m.CurrentPlans()
+	if len(plans) != 1 {
+		t.Fatalf("plans: got %d, want 1", len(plans))
+	}
+	mentions := plans[0].Mentions
+
+	// Ancestor notify list (thenav56, barsha) must have been cleared
+	// by !override at layer 2.
+	for _, mt := range mentions {
+		if strings.Contains(mt, "U111111111") || strings.Contains(mt, "U222222222") {
+			t.Errorf("ancestor notify (thenav56/barsha) must have been overridden, got %v", mentions)
+		}
+	}
+
+	// carol (override layer) AND dave (deeper-than-override layer) must
+	// both be present — !override does NOT short-circuit the cascade,
+	// it just resets the accumulator at the layer that carries it.
+	wantUsers := map[string]bool{"U333333333": false, "U444444444": false}
+	for _, mt := range mentions {
+		for u := range wantUsers {
+			if strings.Contains(mt, u) {
+				wantUsers[u] = true
+			}
+		}
+	}
+	for u, seen := range wantUsers {
+		if !seen {
+			t.Errorf("expected mention containing %s; got %v", u, mentions)
+		}
+	}
+
+	// Order: shallow-first per mergeStrings dedup semantics. carol (the
+	// override layer's contribution) should precede dave (the deeper
+	// layer's union contribution).
+	var carolIdx, daveIdx = -1, -1
+	for i, mt := range mentions {
+		if strings.Contains(mt, "U333333333") {
+			carolIdx = i
+		}
+		if strings.Contains(mt, "U444444444") {
+			daveIdx = i
+		}
+	}
+	if carolIdx == -1 || daveIdx == -1 || carolIdx >= daveIdx {
+		t.Errorf("expected carol (override) before dave (deeper union), got %v", mentions)
 	}
 }
 

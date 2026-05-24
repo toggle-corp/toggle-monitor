@@ -3,7 +3,6 @@ package templates
 import (
 	"fmt"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -173,15 +172,6 @@ func summary(rows []store.DiscoverySnapshotRow) string {
 	}
 	return fmt.Sprintf("%d total · %d added · %d kube-paused · %d kube-invalid · %d kube-ignored",
 		len(rows), counts["added"], counts["kube-paused"], counts["kube-invalid"], counts["kube-ignored"])
-}
-
-func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func pageCount(total, perPage int) int {

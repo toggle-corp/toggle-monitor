@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -565,7 +566,7 @@ func selectorSummary(w config.KubeMatchWhen) string {
 			keys = append(keys, k)
 		}
 		// stdlib sort — deterministic chain across reconciles.
-		sortStrings(keys)
+		sort.Strings(keys)
 		for _, k := range keys {
 			parts = append(parts, "labels."+k+"="+w.Labels[k])
 		}
@@ -574,17 +575,6 @@ func selectorSummary(w config.KubeMatchWhen) string {
 		return " ()"
 	}
 	return " (" + strings.Join(parts, ", ") + ")"
-}
-
-// sortStrings is a tiny wrapper so the package's only import of sort
-// stays scoped to selectorSummary — keeps the import list lean.
-func sortStrings(s []string) {
-	// insertion sort; n is small (label-key count per rule).
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j-1] > s[j]; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
-	}
 }
 
 // CurrentPlans returns the scheduler plans for every currently

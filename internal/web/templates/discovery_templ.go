@@ -442,12 +442,6 @@ func DiscoveryDetail(row store.DiscoverySnapshotRow) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			if row.PresetSlug != nil {
-				templ_7745c5c3_Err = kv("Preset", *row.PresetSlug).Render(ctx, templ_7745c5c3_Buffer)
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-			}
 			if row.MonitorSlug != nil {
 				templ_7745c5c3_Err = kv("Materialized monitor", *row.MonitorSlug).Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {

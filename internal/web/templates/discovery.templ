@@ -133,9 +133,6 @@ templ DiscoveryDetail(row store.DiscoverySnapshotRow) {
 				if row.Reason != nil {
 					@kv("Reason", *row.Reason)
 				}
-				if row.PresetSlug != nil {
-					@kv("Preset", *row.PresetSlug)
-				}
 				if row.MonitorSlug != nil {
 					@kv("Materialized monitor", *row.MonitorSlug)
 				}
