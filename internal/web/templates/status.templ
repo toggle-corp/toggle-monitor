@@ -367,33 +367,35 @@ func sectionIndexString(idx int) string {
 // this template can stay pure.
 templ StatusIndexPage(entries []StatusPageStats) {
 	@Layout("Status pages") {
-		<header class="flex flex-wrap items-end justify-between gap-3 mb-6">
-			<div>
-				<h1 class="text-2xl font-semibold tracking-tight">Status pages</h1>
-				<p class="text-sm text-slate-500 dark:text-slate-400 mt-1">Per-app rollups across the system. Pick one to drill into its sections.</p>
-			</div>
-			if len(entries) > 0 {
-				<span class="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
-					{ fmt.Sprint(len(entries)) }
-					if len(entries) == 1 {
-						page
-					} else {
-						pages
-					}
-				</span>
-			}
-		</header>
-		if len(entries) == 0 {
-			<div class="bg-white dark:bg-slate-900 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 p-10 text-center">
-				<p class="text-sm font-medium text-slate-600 dark:text-slate-300">No status pages configured.</p>
-				<p class="text-xs mt-2 text-slate-500 dark:text-slate-400">Add a <code class="font-mono px-1 rounded bg-slate-100 dark:bg-slate-800">statusPages:</code> block to <code class="font-mono">config.yaml</code> to populate this view.</p>
-			</div>
-		} else {
-			<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-				for _, e := range entries {
-					@statusPageTile(e)
+		<div class="max-w-screen-xl mx-auto">
+			<header class="flex flex-wrap items-end justify-between gap-3 pb-5 mb-6 border-b border-slate-200 dark:border-slate-800">
+				<div>
+					<h1 class="text-2xl font-semibold tracking-tight">Status pages</h1>
+					<p class="text-sm text-slate-500 dark:text-slate-400 mt-1.5">Per-app rollups across the system. Pick one to drill into its sections.</p>
+				</div>
+				if len(entries) > 0 {
+					<span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 tabular-nums">
+						{ fmt.Sprint(len(entries)) }
+						if len(entries) == 1 {
+							&nbsp;page
+						} else {
+							&nbsp;pages
+						}
+					</span>
 				}
-			</div>
-		}
+			</header>
+			if len(entries) == 0 {
+				<div class="bg-white dark:bg-slate-900 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 p-10 text-center">
+					<p class="text-sm font-medium text-slate-600 dark:text-slate-300">No status pages configured.</p>
+					<p class="text-xs mt-2 text-slate-500 dark:text-slate-400">Add a <code class="font-mono px-1 rounded bg-slate-100 dark:bg-slate-800">statusPages:</code> block to <code class="font-mono">config.yaml</code> to populate this view.</p>
+				</div>
+			} else {
+				<div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+					for _, e := range entries {
+						@statusPageTile(e)
+					}
+				</div>
+			}
+		</div>
 	}
 }

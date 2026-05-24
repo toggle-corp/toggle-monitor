@@ -78,12 +78,12 @@ templ statusPageTile(s StatusPageStats) {
 	{{ kind := pageBadgeKind(s) }}
 	<a href={ templ.URL("/status/" + s.Slug) } class="group block rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden transition hover:shadow-md hover:-translate-y-0.5 hover:border-slate-300 dark:hover:border-slate-600">
 		if s.Color != "" {
-			<div class="h-1 w-full" style={ "background-color: " + s.Color }></div>
+			<div class="h-1.5 w-full" style={ "background-color: " + s.Color }></div>
 		} else {
-			<div class="h-1 w-full bg-slate-200 dark:bg-slate-700"></div>
+			<div class="h-1.5 w-full bg-slate-200 dark:bg-slate-700"></div>
 		}
-		<div class="p-5">
-			<div class="flex items-start gap-4 mb-3">
+		<div class="p-5 space-y-4">
+			<div class="flex items-start gap-3">
 				if s.LogoURL != "" {
 					<img src={ s.LogoURL } alt="" class="h-11 w-11 rounded-md object-contain shrink-0 bg-slate-50 dark:bg-slate-800 p-1 border border-slate-200 dark:border-slate-700"/>
 				} else {
@@ -93,22 +93,22 @@ templ statusPageTile(s StatusPageStats) {
 				}
 				<div class="flex-1 min-w-0">
 					<div class="flex items-center gap-2 flex-wrap">
-						<h3 class="text-base font-semibold text-slate-900 dark:text-slate-100 truncate">{ s.FriendlyName }</h3>
+						<h3 class="text-base font-semibold text-slate-900 dark:text-slate-100 truncate leading-tight">{ s.FriendlyName }</h3>
 						<code class="font-mono text-[11px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 shrink-0">{ s.Slug }</code>
 					</div>
 					if s.Description != "" {
-						<p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-2">{ s.Description }</p>
+						<p class="text-xs text-slate-500 dark:text-slate-400 mt-1 line-clamp-2 leading-relaxed">{ s.Description }</p>
 					}
 				</div>
 				<span class={ "shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border", statusBadgeClasses(kind) }>
-					<span class={ "inline-block w-1.5 h-1.5 rounded-full", badgeDotClasses(kind) }></span>
+					<span class={ "inline-block w-2 h-2 rounded-full", badgeDotClasses(kind) }></span>
 					{ statusBadgeLabel(kind) }
 				</span>
 			</div>
-			<div class="flex items-end justify-between pt-3 border-t border-slate-100 dark:border-slate-800">
-				<div>
+			<div class="flex items-end justify-between gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
+				<div class="shrink-0">
 					<div class="text-3xl font-semibold tabular-nums text-slate-900 dark:text-slate-100 leading-none">{ fmt.Sprint(s.Total) }</div>
-					<div class="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mt-1">
+					<div class="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 mt-1.5">
 						if s.Total == 1 {
 							monitor
 						} else {
