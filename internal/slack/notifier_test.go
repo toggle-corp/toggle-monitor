@@ -90,7 +90,7 @@ func TestNotifier_EventOpen_includesDependentsNoteWhenChildrenExist(t *testing.T
 		[]string{"<!here>"},
 		slack.MonitorView{
 			Slug: "parent-api", FriendlyName: "parent-api",
-			Tags:      []string{"core"}, URL: "https://api/health",
+			Tags: []string{"core"}, URL: "https://api/health",
 			StatusCode: 503, StatusText: "Service Unavailable",
 		},
 		&alert.Event{
@@ -136,7 +136,7 @@ func TestNotifier_EventOpen_omitsDependentsNoteWhenNoChildren(t *testing.T) {
 	if err := notifier.Notify(context.Background(), "ops", nil,
 		slack.MonitorView{
 			Slug: "leaf-api", FriendlyName: "leaf-api",
-			Tags:      []string{"core"}, URL: "https://api/health",
+			Tags: []string{"core"}, URL: "https://api/health",
 			StatusCode: 500, StatusText: "x",
 		},
 		&alert.Event{Type: alert.EventOpen, At: time.Now().UTC(), StatusCode: 500, Error: "boom"},
@@ -209,7 +209,7 @@ func TestNotifier_EventOpen_truncatesDependentsNoteAtConfiguredMax(t *testing.T)
 	if err := notifier.Notify(context.Background(), "ops", nil,
 		slack.MonitorView{
 			Slug: "parent-api", FriendlyName: "parent-api",
-			Tags:      []string{"core"}, URL: "https://api/health",
+			Tags: []string{"core"}, URL: "https://api/health",
 			StatusCode: 503, StatusText: "Service Unavailable",
 		},
 		&alert.Event{Type: alert.EventOpen, At: time.Now().UTC(), StatusCode: 503, Error: "boom"},
@@ -249,7 +249,7 @@ func TestNotifier_EventResolve_includesResumesNote(t *testing.T) {
 
 	mv := slack.MonitorView{
 		Slug: "parent-api", FriendlyName: "parent-api",
-		Tags:      []string{"core"}, URL: "https://api/health",
+		Tags: []string{"core"}, URL: "https://api/health",
 		StatusCode: 503, StatusText: "Service Unavailable",
 		OpenedAt:            time.Now().UTC().Add(-12 * time.Minute),
 		UptimeThreadChannel: "C0123", UptimeThreadTS: "1700000000.000100",

@@ -33,7 +33,7 @@ var allowedKeysCache sync.Map // reflect.Type → []string
 // allowedKeysFor returns the sorted set of yaml tag names declared on
 // the fields of t. Fields tagged `yaml:"-"` or with no tag are ignored.
 func allowedKeysFor(t reflect.Type) []string {
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t.Kind() != reflect.Struct {
@@ -58,7 +58,7 @@ func allowedKeysFor(t reflect.Type) []string {
 // fieldTypeForKey returns the Go type of the struct field whose yaml
 // tag matches key, or nil if no field matches.
 func fieldTypeForKey(t reflect.Type, key string) reflect.Type {
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t.Kind() != reflect.Struct {
@@ -98,7 +98,7 @@ func (c *checker) walkUnknownKeys(node *yaml.Node, t reflect.Type, path []any) {
 		c.walkUnknownKeys(node.Alias, t, path)
 		return
 	}
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	switch t.Kind() {

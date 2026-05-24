@@ -268,7 +268,7 @@ type ruleChain struct {
 }
 
 func (c *ruleChain) push(s string) { c.steps = append(c.steps, s) }
-func (c ruleChain) String() string  { return strings.Join(c.steps, " → ") }
+func (c ruleChain) String() string { return strings.Join(c.steps, " → ") }
 
 // walk traverses the Materializer's configured kube.match[] tree. It
 // is a thin wrapper around walkRules so the standalone Resolve helper
@@ -677,7 +677,7 @@ func matchRegex(pattern, value string) bool {
 			anchored = "^" + anchored
 		}
 		if !strings.HasSuffix(anchored, "$") {
-			anchored = anchored + "$"
+			anchored += "$"
 		}
 		compiled, err := regexp.Compile(anchored)
 		if err != nil {

@@ -870,7 +870,7 @@ func (c *checker) validate(cfg *Config) {
 			c.errf(append(pbase, "sections"), "at least one section is required")
 		}
 		for i, sec := range page.Sections {
-			sbase := append(pbase, "sections", i)
+			sbase := append(append([]any{}, pbase...), "sections", i)
 			if strings.TrimSpace(sec.Title) == "" {
 				c.errf(append(sbase, "title"), "required")
 			}
@@ -1163,7 +1163,7 @@ func (c *checker) validateKube(cfg *Config, slackChannels, proxies map[string]st
 		// the root. If it isn't, the missing-fields error would be
 		// noise on top of the (more actionable) "root must be empty"
 		// error.
-		c.checkKubeRequiredAtRoot(&root.Config, slackChannels, []any{"kube", "match", 0, "config"})
+		c.checkKubeRequiredAtRoot(&root.Config, []any{"kube", "match", 0, "config"})
 	}
 
 	// Walk every rule (including the root) for selector / config
@@ -1188,7 +1188,7 @@ func kubeWhenIsEmpty(w KubeMatchWhen) bool {
 // distinguishes "explicitly set" from "unset / zero-value" — needed
 // for fields like followRedirects where the zero value (false) is a
 // legitimate explicit choice.
-func (c *checker) checkKubeRequiredAtRoot(k *KubeConfig, slackChannels map[string]struct{}, base []any) {
+func (c *checker) checkKubeRequiredAtRoot(k *KubeConfig, base []any) {
 	for _, key := range KubeRequiredAtRoot {
 		if !k.IsSet(key) {
 			c.errf(append(append([]any{}, base...), key),

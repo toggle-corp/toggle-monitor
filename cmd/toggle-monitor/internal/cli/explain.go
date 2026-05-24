@@ -294,12 +294,12 @@ func defaultClientFor(kubeconfigPath string) (kubernetes.Interface, error) {
 // read top-to-bottom: identity → which rules fired → what config
 // they produced → what the daemon would do with that config.
 type explainReport struct {
-	Ingress    explainIngress    `yaml:"ingress"`
-	RuleChain  []string          `yaml:"ruleChain"`
-	Resolved   *config.KubeConfig `yaml:"resolved,omitempty"`
-	Outcome    string            `yaml:"outcome"`
-	Slug       string            `yaml:"slug,omitempty"`
-	Invalid    string            `yaml:"invalid,omitempty"`
+	Ingress   explainIngress     `yaml:"ingress"`
+	RuleChain []string           `yaml:"ruleChain"`
+	Resolved  *config.KubeConfig `yaml:"resolved,omitempty"`
+	Outcome   string             `yaml:"outcome"`
+	Slug      string             `yaml:"slug,omitempty"`
+	Invalid   string             `yaml:"invalid,omitempty"`
 }
 
 // explainIngress is the identity block at the top of the report.
