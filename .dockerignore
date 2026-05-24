@@ -1,0 +1,18 @@
+# Allowlist — only ship what the Go build needs into the build context.
+# Everything else (gitignored secrets, build artefacts, docs, IDE files,
+# .git history) stays on the host. Fails closed: new top-level paths
+# must be added here before they can enter any image.
+*
+!cmd/
+!internal/
+!go.mod
+!go.sum
+
+# Belt: even inside allowlisted dirs, never let secrets through. Catches
+# stray .env / direnv / *.secret files dropped under cmd/ or internal/.
+**/.env
+**/.env.*
+**/*.secret
+**/*.secrets
+**/secrets.*
+**/.envrc

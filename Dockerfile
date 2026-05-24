@@ -7,7 +7,11 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
-COPY . .
+# Explicit COPYs (not `COPY .`) so the build cannot pick up secrets or
+# build junk even if .dockerignore is deleted. Both files would have to
+# drift before something leaks.
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
 # CGO disabled → fully static binary; trimpath strips build-host paths
 # from the binary so it's reproducible.
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags '-s -w' \
