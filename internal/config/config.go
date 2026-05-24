@@ -66,18 +66,13 @@ type Heartbeat struct {
 
 // Kube is the auto-discovery block. When nil, no informer is started
 // and no kube monitors are materialized.
+//
+// Every monitor materialized from a discovered Ingress is the merge of
+// one or more rules in the Match tree. See ADR-0002 and
+// docs/config-schema.md §"Kube auto-discovery (`kube.match` cascade)".
 type Kube struct {
-	AnnotationDomain string       `yaml:"annotationDomain"`
-	ResyncInterval   Duration     `yaml:"resyncInterval"`
-	Pause            []KubePause  `yaml:"pause,omitempty"`
-	Presets          []KubePreset `yaml:"presets,omitempty"`
-
-	// Match resolves an ingress to a preset by namespace/host pattern
-	// when the kube.preset annotation is absent. Rules are evaluated
-	// in declaration order; the first matching rule wins. A rule with
-	// no `when:` clause acts as a wildcard fallback — must be the last
-	// rule (anything after it is unreachable).
-	Match []KubeMatch `yaml:"match,omitempty"`
+	ResyncInterval Duration        `yaml:"resyncInterval"`
+	Match          []KubeMatchRule `yaml:"match,omitempty"`
 
 	// FriendlyName picks the auto-generated monitor name style. One of:
 	//   "plain"   — `(ns) ingress-name` (host appended)
@@ -107,61 +102,199 @@ var KubeFriendlyNameStyles = []string{
 	KubeFriendlyNameTitle,
 }
 
-// KubeMatch is one conditional rule: when `when` fires, the ingress
-// is either materialized with `preset` or skipped entirely via
-// `ignore: true`. Exactly one of preset/ignore must be set per rule.
-// The `when` conditions AND together; both when-fields are optional.
-// A rule with neither namespace nor host set acts as a wildcard
-// fallback and must be the last rule in the slice. Globs use the
-// same `*`-per-segment syntax as KubePause.Host.
-type KubeMatch struct {
-	When   KubeMatchWhen `yaml:"when"`
-	Preset string        `yaml:"preset,omitempty"`
-	// Ignore=true skips the ingress entirely — no monitor is created,
-	// the discovery snapshot row is recorded with status="kube-ignored"
-	// so the operator can see the rule fired (and filter accordingly
-	// on /discovery). Useful for namespace globs like "test-*" that
-	// churn the listing without operational value.
-	Ignore bool `yaml:"ignore,omitempty"`
+// KubeMatchRule is one node in the cascading kube.match tree. See
+// ADR-0002 for the full semantics. `When` is the selector; `Config`
+// contributes to the merge stack when this rule matches; `Nested`
+// holds child rules traversed only when this rule matches; `Ignore`
+// and `Final` are rule-level directives that cascade like scalars.
+//
+// `When`, `Config`, and `Nested` may all be absent (e.g. a marker
+// rule that only carries `ignore: true`).
+type KubeMatchRule struct {
+	When   KubeMatchWhen   `yaml:"when,omitempty"`
+	Ignore bool            `yaml:"ignore,omitempty"`
+	Final  bool            `yaml:"final,omitempty"`
+	Config KubeConfig      `yaml:"config,omitempty"`
+	Nested []KubeMatchRule `yaml:"nested,omitempty"`
 }
 
-// KubeMatchWhen carries the conditions checked against an ingress.
+// KubeMatchWhen is the selector vocabulary for a kube.match rule.
+// All set fields AND together. Glob fields use path.Match semantics;
+// regex fields are Go regexp values auto-anchored as ^…$ at
+// validation / use time.
+//
+// Setting both glob and regex for the same dimension (namespace +
+// namespaceRegex, or host + hostRegex) is a validation error.
 type KubeMatchWhen struct {
-	Namespace string `yaml:"namespace,omitempty"`
-	Host      string `yaml:"host,omitempty"`
+	Namespace      string            `yaml:"namespace,omitempty"`
+	NamespaceRegex string            `yaml:"namespaceRegex,omitempty"`
+	Host           string            `yaml:"host,omitempty"`
+	HostRegex      string            `yaml:"hostRegex,omitempty"`
+	Labels         map[string]string `yaml:"labels,omitempty"`
 }
 
-// KubePause is one entry in the kube.pause list — a host or host
-// glob that, when matched, materializes as a kube-paused monitor.
-type KubePause struct {
-	Host   string `yaml:"host"`
-	Reason string `yaml:"reason,omitempty"`
+// KubeConfig is the monitor-field block inside a kube.match rule.
+// Every field is optional at the YAML level — the cascade lets
+// descendants override only what they care about. The root rule
+// (top-level rule with empty `when:`) must carry every required
+// field; that constraint is enforced by validation, not by the type.
+//
+// Fields are tracked via setFields so the merger can distinguish
+// "unset" from "explicitly set to the zero value". Use
+// KubeConfig.IsSet(fieldName) to check; the field name matches the
+// YAML key (e.g. "path", "httpMethod", "acceptedStatusCodes").
+type KubeConfig struct {
+	Scheme                 string         `yaml:"scheme,omitempty"`
+	Path                   string         `yaml:"path,omitempty"`
+	HTTPMethod             string         `yaml:"httpMethod,omitempty"`
+	AcceptedStatusCodes    StatusCodeList `yaml:"acceptedStatusCodes,omitempty"`
+	Interval               Duration       `yaml:"interval,omitempty"`
+	Timeout                Duration       `yaml:"timeout,omitempty"`
+	Retries                int            `yaml:"retries,omitempty"`
+	RetryBackoff           Duration       `yaml:"retryBackoff,omitempty"`
+	FollowRedirects        bool           `yaml:"followRedirects,omitempty"`
+	TLSInsecureSkipVerify  bool           `yaml:"tlsInsecureSkipVerify,omitempty"`
+	Proxy                  string         `yaml:"proxy,omitempty"`
+	ReminderInterval       Duration       `yaml:"reminderInterval,omitempty"`
+	SSLAlertThreshold      Duration       `yaml:"sslAlertThreshold,omitempty"`
+	SSLEscalationThreshold Duration       `yaml:"sslEscalationThreshold,omitempty"`
+	SSLReminderInterval    Duration       `yaml:"sslReminderInterval,omitempty"`
+	Slack                  string         `yaml:"slack,omitempty"`
+	Notify                 NotifyList     `yaml:"notify,omitempty"`
+	Tags                   TagList        `yaml:"tags,omitempty"`
+	DependsOn              DependsOnList  `yaml:"dependsOn,omitempty"`
+	Group                  string         `yaml:"group,omitempty"`
+
+	// setFields records which YAML keys were present in the input.
+	// Populated by UnmarshalYAML; consumed by the merger to tell
+	// "unset" apart from "explicitly set to the zero value".
+	setFields map[string]bool `yaml:"-"`
 }
 
-// KubePreset is the per-preset config block referenced by ingress
-// annotations to materialize a monitor with full settings.
-type KubePreset struct {
-	Slug                   string   `yaml:"slug"`
-	Scheme                 string   `yaml:"scheme"`
-	Path                   string   `yaml:"path"`
-	HTTPMethod             string   `yaml:"httpMethod"`
-	AcceptedStatusCodes    []int    `yaml:"acceptedStatusCodes"`
-	Interval               Duration `yaml:"interval"`
-	Timeout                Duration `yaml:"timeout"`
-	Retries                int      `yaml:"retries"`
-	RetryBackoff           Duration `yaml:"retryBackoff"`
-	FollowRedirects        bool     `yaml:"followRedirects"`
-	TLSInsecureSkipVerify  bool     `yaml:"tlsInsecureSkipVerify,omitempty"`
-	Proxy                  string   `yaml:"proxy,omitempty"`
-	ReminderInterval       Duration `yaml:"reminderInterval"`
-	SSLAlertThreshold      Duration `yaml:"sslAlertThreshold"`
-	SSLEscalationThreshold Duration `yaml:"sslEscalationThreshold"`
-	SSLReminderInterval    Duration `yaml:"sslReminderInterval"`
-	Slack                  string   `yaml:"slack"`
-	Notify                 []string `yaml:"notify,omitempty"`
-	Tags                   []string `yaml:"tags,omitempty"`
-	DependsOn              []string `yaml:"dependsOn,omitempty"`
-	Group                  string   `yaml:"group,omitempty"`
+// IsSet reports whether the given YAML key was present on this
+// KubeConfig block in the source YAML. Keys are the lower-camel-case
+// names matching the yaml struct tags (e.g. "path", "httpMethod").
+func (k *KubeConfig) IsSet(field string) bool {
+	if k == nil {
+		return false
+	}
+	return k.setFields[field]
+}
+
+// UnmarshalYAML decodes the KubeConfig and records which keys were
+// present so the merger can distinguish unset fields from
+// zero-valued ones.
+func (k *KubeConfig) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: kube.match[].config must be a mapping", node.Line)
+	}
+	// Decode the value into a shadow type that has no UnmarshalYAML,
+	// to avoid infinite recursion.
+	type kubeConfigShadow KubeConfig
+	var shadow kubeConfigShadow
+	if err := node.Decode(&shadow); err != nil {
+		return err
+	}
+	*k = KubeConfig(shadow)
+	k.setFields = make(map[string]bool, len(node.Content)/2)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		if key.Kind == yaml.ScalarNode {
+			k.setFields[key.Value] = true
+		}
+	}
+	return nil
+}
+
+// StatusCodeList is the list type for acceptedStatusCodes. It's a
+// distinct named type (rather than a bare []int) so the parsing
+// surface stays symmetrical with the other typed list wrappers
+// (NotifyList, TagList, DependsOnList). Unlike those, it has no
+// Override flag — acceptedStatusCodes is replace-by-default across
+// the cascade (see ADR-0002 §"Merge rules").
+type StatusCodeList []int
+
+// NotifyList is the !override-aware list type for kube config
+// notify entries. When Override is true the deeper rule's values
+// replace ancestors' values; otherwise the merger unions the lists.
+type NotifyList struct {
+	Values   []string
+	Override bool
+}
+
+// TagList — same shape as NotifyList, for tags.
+type TagList struct {
+	Values   []string
+	Override bool
+}
+
+// DependsOnList — same shape as NotifyList, for dependsOn.
+type DependsOnList struct {
+	Values   []string
+	Override bool
+}
+
+// overrideTag is the YAML custom tag that flips a list from
+// union-by-default to replace.
+const overrideTag = "!override"
+
+// decodeOverridableStringList is the shared UnmarshalYAML body for
+// NotifyList, TagList, and DependsOnList. It accepts a YAML sequence,
+// optionally tagged !override, and decodes its content into a string
+// slice.
+func decodeOverridableStringList(node *yaml.Node, values *[]string, override *bool) error {
+	if node.Kind != yaml.SequenceNode {
+		return fmt.Errorf("line %d: expected a sequence, got %s", node.Line, nodeKindName(node.Kind))
+	}
+	if node.Tag == overrideTag {
+		*override = true
+	}
+	// Decode the sequence content directly — yaml.v3 keeps the tag on
+	// the parent node but the children decode as plain strings.
+	out := make([]string, 0, len(node.Content))
+	for i, child := range node.Content {
+		if child.Kind != yaml.ScalarNode {
+			return fmt.Errorf("line %d: list entry %d must be a scalar string", child.Line, i)
+		}
+		out = append(out, child.Value)
+	}
+	*values = out
+	return nil
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler. Sets Override=true when
+// the YAML sequence carries the !override custom tag.
+func (l *NotifyList) UnmarshalYAML(node *yaml.Node) error {
+	return decodeOverridableStringList(node, &l.Values, &l.Override)
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler. Sets Override=true when
+// the YAML sequence carries the !override custom tag.
+func (l *TagList) UnmarshalYAML(node *yaml.Node) error {
+	return decodeOverridableStringList(node, &l.Values, &l.Override)
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler. Sets Override=true when
+// the YAML sequence carries the !override custom tag.
+func (l *DependsOnList) UnmarshalYAML(node *yaml.Node) error {
+	return decodeOverridableStringList(node, &l.Values, &l.Override)
+}
+
+func nodeKindName(k yaml.Kind) string {
+	switch k {
+	case yaml.DocumentNode:
+		return "document"
+	case yaml.SequenceNode:
+		return "sequence"
+	case yaml.MappingNode:
+		return "mapping"
+	case yaml.ScalarNode:
+		return "scalar"
+	case yaml.AliasNode:
+		return "alias"
+	default:
+		return "unknown"
+	}
 }
 
 // Slack is the consolidated Slack-related config block. v1 supports a
@@ -475,78 +608,13 @@ func (c *checker) validate(cfg *Config) {
 		c.errf([]any{"groups"}, "a group with slug %q is required", "kube-discovered")
 	}
 
-	if cfg.Kube != nil {
-		if cfg.Kube.AnnotationDomain == "" {
-			c.errf([]any{"kube", "annotationDomain"}, "required when kube block is set")
-		}
-		if cfg.Kube.ResyncInterval.AsDuration() < time.Minute {
-			c.errf([]any{"kube", "resyncInterval"}, "must be >= 1m, got %s", cfg.Kube.ResyncInterval)
-		}
-		seenPresets := map[string]struct{}{}
-		for i, p := range cfg.Kube.Presets {
-			base := []any{"kube", "presets", i}
-			if err := slug.Validate(p.Slug); err != nil {
-				c.errf(append(base, "slug"), "%v", err)
-			}
-			if _, dup := seenPresets[p.Slug]; dup {
-				c.errf(append(base, "slug"), "duplicate preset slug %q", p.Slug)
-			}
-			seenPresets[p.Slug] = struct{}{}
-			if p.Scheme != "" && p.Scheme != "http" && p.Scheme != "https" {
-				c.errf(append(base, "scheme"), "must be http or https, got %q", p.Scheme)
-			}
-			if p.Proxy != "" {
-				if _, ok := seenProxies[p.Proxy]; !ok {
-					c.errf(append(base, "proxy"), "unknown proxy slug %q", p.Proxy)
-				}
-			}
-			if p.Group != "" {
-				if _, ok := seenGroups[p.Group]; !ok {
-					c.errf(append(base, "group"), "unknown group %q", p.Group)
-				}
-			}
-		}
-		if n := nodeAt(c.root, "kube", "defaultPreset"); n != nil {
-			c.errf([]any{"kube", "defaultPreset"},
-				"removed — write a trailing match rule with no when: clause instead, e.g.\n  match:\n    ...\n    - preset: core-tools")
-		}
-		if v := cfg.Kube.FriendlyName; v != "" {
-			ok := false
-			for _, allowed := range KubeFriendlyNameStyles {
-				if v == allowed {
-					ok = true
-					break
-				}
-			}
-			if !ok {
-				c.errf([]any{"kube", "friendlyName"},
-					"must be one of %s (got %q)", strings.Join(KubeFriendlyNameStyles, ", "), v)
-			}
-		}
-		wildcardAt := -1
-		for i, r := range cfg.Kube.Match {
-			base := []any{"kube", "match", i}
-			switch {
-			case r.Preset == "" && !r.Ignore:
-				c.errf(base, "exactly one of preset or ignore is required")
-			case r.Preset != "" && r.Ignore:
-				c.errf(base, "preset and ignore are mutually exclusive")
-			case r.Preset != "":
-				if _, ok := seenPresets[r.Preset]; !ok {
-					c.errf(append(base, "preset"), "references unknown preset slug %q", r.Preset)
-				}
-			}
-			// A rule with no when conditions is the wildcard fallback.
-			// Any rule after it can never fire — flag that so the
-			// operator notices a dead branch in their config.
-			if wildcardAt >= 0 {
-				c.errf(base, "unreachable: match[%d] is a wildcard rule (no when:) so all later rules never fire", wildcardAt)
-			}
-			if r.When.Namespace == "" && r.When.Host == "" {
-				wildcardAt = i
-			}
-		}
-	}
+	// kube.match validation: see Task 3 / ADR-0002 §Validation.
+	// The previous flat-rule validator is intentionally deleted; the
+	// new cascading-tree validator (root-required, glob/regex
+	// exclusion, final/ignore semantics, label-key syntax, etc.) is
+	// implemented in a follow-up task. Until then the kube block is
+	// only structurally typed — parse errors still surface, but no
+	// cross-field rule is enforced.
 
 	if cfg.DBBodyMaxChars < cfg.Slack.BodyMaxChars {
 		c.errf([]any{"dbBodyMaxChars"},
@@ -588,54 +656,9 @@ func (c *checker) validate(cfg *Config) {
 		}
 	}
 
-	// Second-pass preset validation: fields whose validators need
-	// state built above (slack channels, userMapping). Presets are
-	// partial overlays — required-ness isn't enforced here, but any
-	// value that IS set must be valid.
-	if cfg.Kube != nil {
-		for i, p := range cfg.Kube.Presets {
-			base := []any{"kube", "presets", i}
-			if p.Slack != "" {
-				if _, ok := seenSlackChannels[p.Slack]; !ok {
-					c.errf(append(base, "slack"), "unknown channel slug %q", p.Slack)
-				}
-			}
-			for j, n := range p.Notify {
-				if !c.isValidNotifyEntry(cfg.Slack.UserMapping, n) {
-					c.errf(append(base, "notify", j),
-						"%q must be a userMapping slug or raw Slack markup wrapped in <…>", n)
-				}
-			}
-			// Timing constraints: only when both interval and timeout
-			// are set on the preset — otherwise the preset is leaving
-			// the timing to defaults the operator manages elsewhere
-			// (annotation overrides do not touch these fields today,
-			// but checking only what's set keeps the "validate defined
-			// values" contract honest).
-			interval := p.Interval.AsDuration()
-			timeout := p.Timeout.AsDuration()
-			backoff := p.RetryBackoff.AsDuration()
-			if interval > 0 && timeout > 0 {
-				if timeout >= interval {
-					c.errf(base, "timeout (%s) must be less than interval (%s)", timeout, interval)
-				}
-				retryWindow := time.Duration(p.Retries) * (timeout + backoff)
-				if retryWindow >= interval {
-					c.errf(base, "retries × (timeout + retryBackoff) = %s must be less than interval (%s)", retryWindow, interval)
-				}
-			}
-			// SSL threshold ordering: when both alert and escalation
-			// are set, alert must be strictly greater than escalation.
-			// The HTTPS-required check that the static-monitor side
-			// applies doesn't translate here — presets have no URL.
-			alert := p.SSLAlertThreshold.AsDuration()
-			esc := p.SSLEscalationThreshold.AsDuration()
-			if alert > 0 && esc > 0 && alert <= esc {
-				c.errf(append(base, "sslAlertThreshold"),
-					"must be strictly greater than sslEscalationThreshold (%s)", esc)
-			}
-		}
-	}
+	// Second-pass kube validation lived here; deleted along with
+	// KubePreset (Task 2). The new validator for KubeMatchRule blocks
+	// is Task 3's responsibility — see ADR-0002 §Validation.
 
 	// Monitor validation.
 	seenMonitors := map[string]struct{}{}
@@ -731,22 +754,10 @@ func (c *checker) validate(cfg *Config) {
 		c.errf([]any{"monitors"}, "dependsOn graph contains a cycle: %s", cycle)
 	}
 
-	// Kube preset dependsOn resolution. Same rule as the static-side
-	// pass: every parent must be a declared static monitor. No cycle
-	// check is needed beyond the static one — preset deps can only
-	// point at static monitors (kube monitors can't be parents), so
-	// any cycle is fully contained in the static graph already.
-	if cfg.Kube != nil {
-		for i, p := range cfg.Kube.Presets {
-			base := []any{"kube", "presets", i}
-			for j, dep := range p.DependsOn {
-				if _, ok := monitorByIdx[dep]; !ok {
-					c.errf(append(base, "dependsOn", j),
-						"unknown monitor slug %q (parents must be declared static monitors)", dep)
-				}
-			}
-		}
-	}
+	// Kube dependsOn resolution lived here; deleted along with
+	// KubePreset (Task 2). The new resolution for KubeMatchRule
+	// config blocks is Task 3's responsibility — see ADR-0002
+	// §Validation.
 
 	// statusPages validation. Per page: slug required + unique across
 	// the list. Per section: title + non-empty match; each selector

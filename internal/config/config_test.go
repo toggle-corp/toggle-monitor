@@ -324,267 +324,304 @@ func TestLoad_tlsInsecureSkipVerify_relaxesSSLThresholdsForHTTPS(t *testing.T) {
 	}
 }
 
-// kubeWith returns validMinimal with a kube: block appended, wired
-// to ops-alerts so SSL-threshold validation stays satisfied.
-func kubeWith(extra string) string {
-	return validMinimal + `
+// TODO(Task 3 validator): the test cases previously here covered
+// kube.presets and the flat kube.match validator that were deleted in
+// Task 2 along with the KubePreset/KubeMatch types (see ADR-0002).
+// The new validator for the KubeMatchRule tree (root rule required,
+// glob/regex mutual exclusion, final/ignore semantics, label-key
+// syntax, slug references, timing/SSL constraints in resolved values)
+// is Task 3's responsibility. The parsing-only tests below cover the
+// shape of the new types; full validation tests land with the new
+// validator.
+
+// canonicalKubeTree is a representative kube.match tree exercising
+// the rule shape: a root rule with empty when:, a kill-switch with
+// final:true + ignore:true, a namespace match with nested children,
+// !override on notify, and acceptedStatusCodes replace-by-default.
+const canonicalKubeTree = `
 kube:
-  annotationDomain: monitor.togglecorp.com
   resyncInterval: 30m
-  presets:
-    - slug: internal-api
-      scheme: https
-      path: /health
-      httpMethod: GET
-      acceptedStatusCodes: [200]
-      interval: 5m
-      timeout: 10s
-      retries: 2
-      retryBackoff: 5s
-      followRedirects: false
-      reminderInterval: 3d
-      sslAlertThreshold: 30d
-      sslEscalationThreshold: 7d
-      sslReminderInterval: 3d
-      slack: ops-alerts
-` + extra
-}
+  friendlyName: compact
+  match:
+    - when: {}
+      config:
+        scheme: https
+        path: /
+        httpMethod: GET
+        acceptedStatusCodes: [200]
+        interval: 5m
+        timeout: 10s
+        retries: 2
+        retryBackoff: 5s
+        followRedirects: false
+        reminderInterval: 3d
+        sslAlertThreshold: 30d
+        sslEscalationThreshold: 7d
+        sslReminderInterval: 3d
+        slack: ops-alerts
+        notify: ["<!subteam^S0123ABC>"]
+    - when:
+        labels:
+          monitor.togglecorp.com/disabled: "true"
+      ignore: true
+      final: true
+    - when: { namespace: "acme-*" }
+      config:
+        group: acme
+        notify: ["<@U0123ABC>"]
+      nested:
+        - when: { namespaceRegex: "acme-service-a-eoapi-\\d+" }
+          config:
+            tags: [service-a, eoapi]
+          nested:
+            - when:
+                labels:
+                  app.kubernetes.io/name: minio
+              config:
+                path: /minio/health/live
+                acceptedStatusCodes: [200, 204]
+              final: true
+`
 
-// defaultPreset is removed — the operator should be told to write a
-// trailing match rule instead, and the error should call out the
-// removed key explicitly so a config carried over from an older
-// version fails loudly.
-func TestLoad_kube_defaultPreset_isRemoved(t *testing.T) {
-	data := []byte(kubeWith("  defaultPreset: internal-api\n"))
-	_, err := config.Load(data)
-	if err == nil {
-		t.Fatal("expected validation error for the removed defaultPreset field")
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "defaultPreset") {
-		t.Errorf("error should call out defaultPreset, got: %v", err)
-	}
-	if !strings.Contains(msg, "match") {
-		t.Errorf("error should point operators at the match-rule replacement, got: %v", err)
-	}
-}
-
-// A wildcard match rule (no when:) is the new replacement for
-// defaultPreset; rules after it are unreachable.
-func TestLoad_kube_match_acceptsWildcardFallback(t *testing.T) {
-	data := []byte(kubeWith("  match:\n    - when: { namespace: prod }\n      preset: internal-api\n    - preset: internal-api\n"))
-	if _, err := config.Load(data); err != nil {
+func TestLoad_kube_parsesCascadingTree(t *testing.T) {
+	data := []byte(validMinimal + canonicalKubeTree)
+	cfg, err := config.Load(data)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if cfg.Kube == nil {
+		t.Fatal("expected cfg.Kube to be populated")
+	}
+	if got, want := len(cfg.Kube.Match), 3; got != want {
+		t.Fatalf("len(Kube.Match): got %d, want %d", got, want)
+	}
+
+	root := cfg.Kube.Match[0]
+	if root.When.Namespace != "" || root.When.Host != "" || len(root.When.Labels) != 0 {
+		t.Errorf("root rule's When should be zero-value, got %+v", root.When)
+	}
+	if root.Final || root.Ignore {
+		t.Errorf("root rule should have ignore=final=false, got ignore=%v final=%v", root.Ignore, root.Final)
+	}
+	if root.Config.Path != "/" {
+		t.Errorf("root path: got %q, want %q", root.Config.Path, "/")
+	}
+	if !root.Config.IsSet("path") {
+		t.Error("root.Config.IsSet(\"path\") should be true")
+	}
+	if !root.Config.IsSet("acceptedStatusCodes") {
+		t.Error("root.Config.IsSet(\"acceptedStatusCodes\") should be true")
+	}
+	if root.Config.IsSet("group") {
+		t.Error("root.Config.IsSet(\"group\") should be false (not in YAML)")
+	}
+	if got := []int(root.Config.AcceptedStatusCodes); len(got) != 1 || got[0] != 200 {
+		t.Errorf("acceptedStatusCodes: got %v, want [200]", got)
+	}
+	if root.Config.Notify.Override {
+		t.Error("root.Config.Notify.Override should be false (no !override tag)")
+	}
+	if got := root.Config.Notify.Values; len(got) != 1 || got[0] != "<!subteam^S0123ABC>" {
+		t.Errorf("root notify values: got %v", got)
+	}
+
+	killSwitch := cfg.Kube.Match[1]
+	if !killSwitch.Ignore || !killSwitch.Final {
+		t.Errorf("kill-switch rule should have ignore=final=true, got ignore=%v final=%v",
+			killSwitch.Ignore, killSwitch.Final)
+	}
+	if killSwitch.Config.IsSet("ignore") {
+		t.Error("ignore is a rule-level directive — should not appear in Config.setFields")
+	}
+	if killSwitch.Config.IsSet("final") {
+		t.Error("final is a rule-level directive — should not appear in Config.setFields")
+	}
+	if got, want := killSwitch.When.Labels["monitor.togglecorp.com/disabled"], "true"; got != want {
+		t.Errorf("kill-switch label value: got %q, want %q", got, want)
+	}
+
+	acme := cfg.Kube.Match[2]
+	if acme.When.Namespace != "acme-*" {
+		t.Errorf("acme namespace: got %q", acme.When.Namespace)
+	}
+	if len(acme.Nested) != 1 {
+		t.Fatalf("expected one nested rule under acme, got %d", len(acme.Nested))
+	}
+	eoapi := acme.Nested[0]
+	if eoapi.When.NamespaceRegex != `acme-service-a-eoapi-\d+` {
+		t.Errorf("eoapi namespaceRegex: got %q", eoapi.When.NamespaceRegex)
+	}
+	if len(eoapi.Nested) != 1 {
+		t.Fatalf("expected one nested rule under eoapi, got %d", len(eoapi.Nested))
+	}
+	minio := eoapi.Nested[0]
+	if !minio.Final {
+		t.Error("minio rule should have final: true")
+	}
+	if minio.Config.Path != "/minio/health/live" {
+		t.Errorf("minio path: got %q", minio.Config.Path)
+	}
+	if got := []int(minio.Config.AcceptedStatusCodes); len(got) != 2 || got[0] != 200 || got[1] != 204 {
+		t.Errorf("minio acceptedStatusCodes: got %v, want [200 204]", got)
+	}
 }
 
-func TestLoad_kube_match_rejectsRulesAfterWildcard(t *testing.T) {
-	data := []byte(kubeWith("  match:\n    - preset: internal-api\n    - when: { namespace: prod }\n      preset: internal-api\n"))
-	_, err := config.Load(data)
-	if err == nil {
-		t.Fatal("expected unreachable-after-wildcard error")
-	}
-	if !strings.Contains(err.Error(), "unreachable") {
-		t.Errorf("error should call out the unreachable rule, got: %v", err)
-	}
-}
-
-func TestLoad_kube_preset_acceptsKnownGroup(t *testing.T) {
-	// gateways is declared in validMinimal so this should pass.
-	data := []byte(kubeWith("      group: gateways\n"))
-	if _, err := config.Load(data); err != nil {
+func TestLoad_kube_notifyOverrideTagSetsOverrideFlag(t *testing.T) {
+	yaml := validMinimal + `
+kube:
+  resyncInterval: 30m
+  match:
+    - when: {}
+      config:
+        path: /
+        notify: !override ["<!here>", "<@U0123ABC>"]
+`
+	cfg, err := config.Load([]byte(yaml))
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-}
-
-func TestLoad_kube_preset_rejectsUnknownGroup(t *testing.T) {
-	data := []byte(kubeWith("      group: ghost-group\n"))
-	_, err := config.Load(data)
-	if err == nil {
-		t.Fatal("expected validation error for unknown preset group slug")
+	notify := cfg.Kube.Match[0].Config.Notify
+	if !notify.Override {
+		t.Error("expected Override=true after !override tag")
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, "ghost-group") {
-		t.Errorf("error should echo the bad group slug, got: %v", err)
-	}
-	if !strings.Contains(msg, "unknown group") || !strings.Contains(msg, "presets") {
-		t.Errorf("error should point at presets[].group, got: %v", err)
+	if got, want := notify.Values, []string{"<!here>", "<@U0123ABC>"}; !equalStringSlices(got, want) {
+		t.Errorf("notify values: got %v, want %v", got, want)
 	}
 }
 
-func TestLoad_kube_match_rejectsUnknownPresetSlug(t *testing.T) {
-	data := []byte(kubeWith("  match:\n    - when: { namespace: foo }\n      preset: ghost\n"))
-	_, err := config.Load(data)
-	if err == nil {
-		t.Fatal("expected validation error for unknown match preset slug")
+func TestLoad_kube_notifyWithoutOverrideTagLeavesOverrideFalse(t *testing.T) {
+	yaml := validMinimal + `
+kube:
+  resyncInterval: 30m
+  match:
+    - when: {}
+      config:
+        path: /
+        notify: ["<!here>"]
+`
+	cfg, err := config.Load([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "ghost") || !strings.Contains(err.Error(), "match") {
-		t.Errorf("error should mention match[].preset and the bad slug, got: %v", err)
+	if cfg.Kube.Match[0].Config.Notify.Override {
+		t.Error("expected Override=false without !override tag")
 	}
 }
 
-func TestLoad_kube_friendlyName_acceptsKnownValues(t *testing.T) {
-	for _, v := range []string{"plain", "compact", "dedupe", "title"} {
-		data := []byte(kubeWith("  friendlyName: " + v + "\n"))
-		if _, err := config.Load(data); err != nil {
-			t.Errorf("style %q rejected: %v", v, err)
+func TestLoad_kube_tagsAndDependsOnSupportOverride(t *testing.T) {
+	yaml := validMinimal + `
+kube:
+  resyncInterval: 30m
+  match:
+    - when: {}
+      config:
+        path: /
+        tags: !override [a, b]
+        dependsOn: !override [bastion]
+`
+	cfg, err := config.Load([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cfgBlock := cfg.Kube.Match[0].Config
+	if !cfgBlock.Tags.Override {
+		t.Error("tags.Override should be true")
+	}
+	if !cfgBlock.DependsOn.Override {
+		t.Error("dependsOn.Override should be true")
+	}
+	if got, want := cfgBlock.Tags.Values, []string{"a", "b"}; !equalStringSlices(got, want) {
+		t.Errorf("tags values: got %v, want %v", got, want)
+	}
+	if got, want := cfgBlock.DependsOn.Values, []string{"bastion"}; !equalStringSlices(got, want) {
+		t.Errorf("dependsOn values: got %v, want %v", got, want)
+	}
+}
+
+func TestLoad_kube_emptyWhenParsesAsZeroValue(t *testing.T) {
+	yaml := validMinimal + `
+kube:
+  resyncInterval: 30m
+  match:
+    - when: {}
+      config: { path: / }
+`
+	cfg, err := config.Load([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	when := cfg.Kube.Match[0].When
+	if when.Namespace != "" || when.NamespaceRegex != "" || when.Host != "" || when.HostRegex != "" || len(when.Labels) != 0 {
+		t.Errorf("empty when: should parse to zero-value, got %+v", when)
+	}
+}
+
+func TestLoad_kube_acceptedStatusCodesParsesWithoutOverrideTag(t *testing.T) {
+	yaml := validMinimal + `
+kube:
+  resyncInterval: 30m
+  match:
+    - when: {}
+      config:
+        path: /
+        acceptedStatusCodes: [200, 301, 302]
+`
+	cfg, err := config.Load([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := []int(cfg.Kube.Match[0].Config.AcceptedStatusCodes)
+	want := []int{200, 301, 302}
+	if !equalIntSlices(got, want) {
+		t.Errorf("acceptedStatusCodes: got %v, want %v", got, want)
+	}
+}
+
+func TestLoad_kube_friendlyNameAcceptsDefinedStyles(t *testing.T) {
+	// friendlyName has no validator yet (Task 3) but must parse for
+	// each documented style without erroring.
+	for _, style := range config.KubeFriendlyNameStyles {
+		yaml := validMinimal + `
+kube:
+  resyncInterval: 30m
+  friendlyName: ` + style + `
+  match:
+    - when: {}
+      config: { path: / }
+`
+		cfg, err := config.Load([]byte(yaml))
+		if err != nil {
+			t.Errorf("style %q rejected: %v", style, err)
+			continue
+		}
+		if cfg.Kube.FriendlyName != style {
+			t.Errorf("friendlyName: got %q, want %q", cfg.Kube.FriendlyName, style)
 		}
 	}
 }
 
-func TestLoad_kube_friendlyName_rejectsUnknownValue(t *testing.T) {
-	data := []byte(kubeWith("  friendlyName: cursive\n"))
-	_, err := config.Load(data)
-	if err == nil {
-		t.Fatal("expected validation error for unknown friendlyName")
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, "friendlyName") {
-		t.Errorf("error should call out the offending field, got: %v", err)
-	}
-	if !strings.Contains(msg, `"cursive"`) {
-		t.Errorf("error should echo the bad value, got: %v", err)
-	}
-	// Every allowed value should appear in the message so the user
-	// can copy-paste the right one without re-reading the docs.
-	for _, allowed := range config.KubeFriendlyNameStyles {
-		if !strings.Contains(msg, allowed) {
-			t.Errorf("error should list allowed value %q, got: %v", allowed, err)
+	for i := range a {
+		if a[i] != b[i] {
+			return false
 		}
 	}
+	return true
 }
 
-// Empty when: now means "wildcard fallback" and is valid (used to be
-// rejected because there was no concept of a fallback rule).
-func TestLoad_kube_match_acceptsEmptyWhenAsFallback(t *testing.T) {
-	data := []byte(kubeWith("  match:\n    - when: {}\n      preset: internal-api\n"))
-	if _, err := config.Load(data); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func equalIntSlices(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
 	}
-}
-
-func TestLoad_kube_match_acceptsIgnoreRule(t *testing.T) {
-	data := []byte(kubeWith("  match:\n    - when: { namespace: test-* }\n      ignore: true\n"))
-	if _, err := config.Load(data); err != nil {
-		t.Errorf("ignore rule should validate, got: %v", err)
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
 	}
-}
-
-func TestLoad_kube_match_rejectsNeitherPresetNorIgnore(t *testing.T) {
-	data := []byte(kubeWith("  match:\n    - when: { namespace: test-* }\n"))
-	_, err := config.Load(data)
-	if err == nil {
-		t.Fatal("expected validation error for match rule with neither preset nor ignore")
-	}
-	if !strings.Contains(err.Error(), "preset") || !strings.Contains(err.Error(), "ignore") {
-		t.Errorf("error should mention both preset and ignore, got: %v", err)
-	}
-}
-
-func TestLoad_kube_match_rejectsBothPresetAndIgnore(t *testing.T) {
-	data := []byte(kubeWith("  match:\n    - when: { namespace: test-* }\n      preset: internal-api\n      ignore: true\n"))
-	_, err := config.Load(data)
-	if err == nil {
-		t.Fatal("expected validation error for match rule with both preset and ignore")
-	}
-	if !strings.Contains(err.Error(), "mutually exclusive") {
-		t.Errorf("error should call out mutual exclusion, got: %v", err)
-	}
-}
-
-func TestLoad_kube_preset_acceptsKnownDependsOn(t *testing.T) {
-	// bastion is the static monitor declared in validMinimal.
-	data := []byte(kubeWith("      dependsOn: [bastion]\n"))
-	if _, err := config.Load(data); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestLoad_kube_preset_rejectsUnknownDependsOn(t *testing.T) {
-	data := []byte(kubeWith("      dependsOn: [ghost-parent]\n"))
-	_, err := config.Load(data)
-	if err == nil {
-		t.Fatal("expected validation error for unknown preset dependsOn slug")
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "ghost-parent") {
-		t.Errorf("error should echo the bad slug, got: %v", err)
-	}
-	if !strings.Contains(msg, "presets") || !strings.Contains(msg, "dependsOn") {
-		t.Errorf("error should point at presets[].dependsOn, got: %v", err)
-	}
-}
-
-func TestLoad_kube_preset_rejectsUnknownSlackChannel(t *testing.T) {
-	// Override only the preset's slack with an undeclared channel slug.
-	// kubeWith's preset is the second `slack: ops-alerts` in the
-	// payload; the first belongs to validMinimal's monitor.
-	src := kubeWith("")
-	idx := strings.LastIndex(src, "slack: ops-alerts")
-	if idx < 0 {
-		t.Fatalf("test fixture changed: kubeWith no longer contains the preset slack line")
-	}
-	data := []byte(src[:idx] + "slack: ghost-channel" + src[idx+len("slack: ops-alerts"):])
-	_, err := config.Load(data)
-	if err == nil {
-		t.Fatal("expected validation error for unknown preset slack channel")
-	}
-	if !strings.Contains(err.Error(), "ghost-channel") || !strings.Contains(err.Error(), "presets") {
-		t.Errorf("error should point at presets[].slack and echo the bad slug, got: %v", err)
-	}
-}
-
-func TestLoad_kube_preset_rejectsInvalidNotifyEntry(t *testing.T) {
-	// "bare-text" is neither a userMapping slug nor wrapped in <…>.
-	data := []byte(kubeWith("      notify: [bare-text]\n"))
-	_, err := config.Load(data)
-	if err == nil {
-		t.Fatal("expected validation error for invalid preset notify entry")
-	}
-	if !strings.Contains(err.Error(), "notify") || !strings.Contains(err.Error(), "presets") {
-		t.Errorf("error should point at presets[].notify, got: %v", err)
-	}
-}
-
-func TestLoad_kube_preset_rejectsTimeoutGreaterEqInterval(t *testing.T) {
-	// Bump timeout to >= interval (5m) by swapping in 10m via withReplaced
-	// on the kube preset block. Use a fresh literal to be unambiguous.
-	data := []byte(strings.Replace(kubeWith(""), "timeout: 10s", "timeout: 10m", 1))
-	_, err := config.Load(data)
-	if err == nil {
-		t.Fatal("expected timing validation error on preset")
-	}
-	if !strings.Contains(err.Error(), "timeout") || !strings.Contains(err.Error(), "interval") {
-		t.Errorf("error should mention timeout and interval, got: %v", err)
-	}
-}
-
-func TestLoad_kube_preset_partialTimingDoesNotErrorSpuriously(t *testing.T) {
-	// A preset that supplies no timing fields at all must not trip the
-	// timeout-vs-interval check. We strip the existing timing fields
-	// out of kubeWith's preset to simulate a thin preset.
-	thin := strings.NewReplacer(
-		"      interval: 5m\n", "",
-		"      timeout: 10s\n", "",
-		"      retries: 2\n", "",
-		"      retryBackoff: 5s\n", "",
-	).Replace(kubeWith(""))
-	if _, err := config.Load([]byte(thin)); err != nil {
-		t.Fatalf("partial preset should validate, got: %v", err)
-	}
-}
-
-func TestLoad_kube_preset_rejectsAlertNotGreaterThanEscalation(t *testing.T) {
-	// alert=7d, escalation=7d → alert is not strictly greater.
-	data := []byte(strings.Replace(kubeWith(""),
-		"sslAlertThreshold: 30d", "sslAlertThreshold: 7d", 1))
-	_, err := config.Load(data)
-	if err == nil {
-		t.Fatal("expected SSL-threshold ordering error on preset")
-	}
-	if !strings.Contains(err.Error(), "sslAlertThreshold") {
-		t.Errorf("error should point at sslAlertThreshold, got: %v", err)
-	}
+	return true
 }
 
 func TestLoad_rejectsDBBodyMaxCharsSmallerThanSlackBodyMaxChars(t *testing.T) {
