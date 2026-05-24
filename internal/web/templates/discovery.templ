@@ -141,17 +141,5 @@ templ DiscoveryDetail(row store.DiscoverySnapshotRow) {
 				}
 			</dl>
 		</section>
-		<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4">
-			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Annotations</h2>
-			if len(row.Annotations) == 0 {
-				<p class="text-sm text-slate-500 dark:text-slate-400">No annotations.</p>
-			} else {
-				<dl>
-					for _, k := range sortedKeys(row.Annotations) {
-						@kv(k, row.Annotations[k])
-					}
-				</dl>
-			}
-		</section>
 	}
 }

@@ -339,38 +339,40 @@ type GroupStats struct {
 }
 
 // DiscoverySnapshotRow is one row from the discovery_snapshot table.
+//
+// The `Annotations` field that used to surface the raw Ingress
+// annotation map is gone per ADR-0002 — annotations no longer drive
+// any monitor behaviour, so persisting them was just bloat.
+//
+// `PresetSlug` is retained as a nullable column for backwards
+// compatibility with older snapshot rows; the new merger never sets
+// it (presets were deleted alongside annotations).
 type DiscoverySnapshotRow struct {
 	ID          int64
 	Namespace   string
 	IngressName string
 	Host        string
-	Status      string // 'added' | 'kube-paused' | 'kube-invalid'
+	Status      string // 'added' | 'kube-paused' | 'kube-invalid' | 'kube-ignored'
 	Reason      *string
 	PresetSlug  *string
 	MonitorSlug *string
-	Annotations map[string]string
 	LastSeenAt  time.Time
 }
 
 // UpsertDiscoverySnapshot writes (or refreshes) one snapshot row.
 // Called per-ingress by the reconcile pass.
 func (r *Repo) UpsertDiscoverySnapshot(ctx context.Context, row DiscoverySnapshotRow) error {
-	anns := row.Annotations
-	if anns == nil {
-		anns = map[string]string{}
-	}
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO discovery_snapshot
-			(namespace, ingress_name, host, status, reason, preset_slug, monitor_slug, annotations, last_seen_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+			(namespace, ingress_name, host, status, reason, preset_slug, monitor_slug, last_seen_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now())
 		ON CONFLICT (namespace, ingress_name, host) DO UPDATE SET
 			status        = EXCLUDED.status,
 			reason        = EXCLUDED.reason,
 			preset_slug   = EXCLUDED.preset_slug,
 			monitor_slug  = EXCLUDED.monitor_slug,
-			annotations   = EXCLUDED.annotations,
 			last_seen_at  = now()
-	`, row.Namespace, row.IngressName, row.Host, row.Status, row.Reason, row.PresetSlug, row.MonitorSlug, anns)
+	`, row.Namespace, row.IngressName, row.Host, row.Status, row.Reason, row.PresetSlug, row.MonitorSlug)
 	if err != nil {
 		return fmt.Errorf("upsert snapshot %s/%s/%s: %w", row.Namespace, row.IngressName, row.Host, err)
 	}
@@ -425,7 +427,7 @@ func (r *Repo) CountKubeInvalid(ctx context.Context) (int, error) {
 // UI (Issue 12).
 func (r *Repo) ListDiscoverySnapshot(ctx context.Context) ([]DiscoverySnapshotRow, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, namespace, ingress_name, host, status, reason, preset_slug, monitor_slug, annotations, last_seen_at
+		SELECT id, namespace, ingress_name, host, status, reason, preset_slug, monitor_slug, last_seen_at
 		FROM discovery_snapshot
 		ORDER BY namespace, ingress_name, host
 	`)
@@ -439,7 +441,7 @@ func (r *Repo) ListDiscoverySnapshot(ctx context.Context) ([]DiscoverySnapshotRo
 		if err := rows.Scan(
 			&row.ID, &row.Namespace, &row.IngressName, &row.Host,
 			&row.Status, &row.Reason, &row.PresetSlug, &row.MonitorSlug,
-			&row.Annotations, &row.LastSeenAt,
+			&row.LastSeenAt,
 		); err != nil {
 			return nil, err
 		}

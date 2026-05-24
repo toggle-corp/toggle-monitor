@@ -45,18 +45,17 @@ type IngressLister interface {
 
 // Watcher owns the informer lifecycle and the periodic reconcile pass.
 type Watcher struct {
-	store            SnapshotStore
-	lister           IngressLister
-	annotationDomain string
-	resyncInterval   time.Duration
-	log              *slog.Logger
-	now              func() time.Time
+	store          SnapshotStore
+	lister         IngressLister
+	resyncInterval time.Duration
+	log            *slog.Logger
+	now            func() time.Time
 
 	// Optional materializer: when set, the watcher delegates per-host
-	// decisions (added / kube-paused / kube-invalid sub-reason) to
-	// this seam. When nil (Issue 8 observe-only), every observed
-	// host is recorded as kube-invalid with reason
-	// "no preset annotation".
+	// decisions (added / kube-ignored / kube-invalid sub-reason) to
+	// this seam. When nil — e.g. the kube block is missing or the
+	// merger couldn't be constructed — every observed host is
+	// recorded as kube-invalid with a generic placeholder reason.
 	materialize Materializer
 
 	// Optional removal sink: invoked once per materialized monitor
@@ -83,11 +82,10 @@ type Pruner interface {
 
 // Options configures a Watcher.
 type Options struct {
-	AnnotationDomain string
-	ResyncInterval   time.Duration
-	Materializer     Materializer
-	RemovalSink      RemovalSink
-	Logger           *slog.Logger
+	ResyncInterval time.Duration
+	Materializer   Materializer
+	RemovalSink    RemovalSink
+	Logger         *slog.Logger
 }
 
 // New constructs a Watcher against a SnapshotStore + IngressLister.
@@ -101,14 +99,13 @@ func New(s SnapshotStore, lister IngressLister, opts Options) *Watcher {
 		opts.Logger = slog.Default()
 	}
 	return &Watcher{
-		store:            s,
-		lister:           lister,
-		annotationDomain: opts.AnnotationDomain,
-		resyncInterval:   opts.ResyncInterval,
-		log:              opts.Logger,
-		now:              time.Now,
-		materialize:      opts.Materializer,
-		onRemoval:        opts.RemovalSink,
+		store:          s,
+		lister:         lister,
+		resyncInterval: opts.ResyncInterval,
+		log:            opts.Logger,
+		now:            time.Now,
+		materialize:    opts.Materializer,
+		onRemoval:      opts.RemovalSink,
 	}
 }
 
@@ -183,9 +180,11 @@ func (w *Watcher) Reconcile(ctx context.Context) error {
 }
 
 // snapshotRowFor builds the snapshot row for a single (ingress, host)
-// pair. When the watcher has a materializer (Issue 9+) it delegates;
-// otherwise it records every ingress as kube-invalid with reason
-// "no preset annotation" — the Issue-8 observe-only behavior.
+// pair. When the watcher has a materializer it delegates; otherwise it
+// records every ingress as kube-invalid with a generic placeholder
+// reason (this branch should not run in production — the materializer
+// is wired whenever cfg.Kube is non-nil — but keeping it ensures
+// observe-only deployments still leave a trace per discovered host).
 func (w *Watcher) snapshotRowFor(ctx context.Context, ing *networkingv1.Ingress, host string) (store.DiscoverySnapshotRow, error) {
 	if w.materialize != nil {
 		row, err := w.materialize.Materialize(ctx, ing, host)
@@ -194,14 +193,13 @@ func (w *Watcher) snapshotRowFor(ctx context.Context, ing *networkingv1.Ingress,
 		}
 		return row, nil
 	}
-	reason := "no preset annotation"
+	reason := "no materializer configured"
 	return store.DiscoverySnapshotRow{
 		Namespace:   ing.Namespace,
 		IngressName: ing.Name,
 		Host:        host,
 		Status:      "kube-invalid",
 		Reason:      &reason,
-		Annotations: copyAnnotations(ing.Annotations),
 	}, nil
 }
 
@@ -222,21 +220,6 @@ func uniqueHosts(ing *networkingv1.Ingress) []string {
 	}
 	return out
 }
-
-func copyAnnotations(in map[string]string) map[string]string {
-	if in == nil {
-		return map[string]string{}
-	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
-}
-
-// AnnotationDomain returns the configured base annotation domain
-// (e.g. "monitor.togglecorp.com"). Exposed for the materializer.
-func (w *Watcher) AnnotationDomain() string { return w.annotationDomain }
 
 // --- production client-go setup -----------------------------------
 

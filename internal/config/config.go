@@ -955,11 +955,16 @@ var validKubeSchemes = map[string]struct{}{
 	"http": {}, "https": {},
 }
 
-// kubeRequiredAtRoot is the set of KubeConfig YAML keys the root rule
+// KubeRequiredAtRoot is the set of KubeConfig YAML keys the root rule
 // (top-level rule with empty when:) must explicitly set. See
 // docs/config-schema.md §"kube.match[].config fields" — the column
 // "Req at root". Ordered for stable error-message ordering.
-var kubeRequiredAtRoot = []string{
+//
+// Exported so the merger can re-check the same set against the
+// resolved KubeConfig after the merge stack collapses — children
+// must not have overridden a required-at-root field to an
+// empty/invalid value.
+var KubeRequiredAtRoot = []string{
 	"path",
 	"httpMethod",
 	"acceptedStatusCodes",
@@ -1061,7 +1066,7 @@ func kubeWhenIsEmpty(w KubeMatchWhen) bool {
 // for fields like followRedirects where the zero value (false) is a
 // legitimate explicit choice.
 func (c *checker) checkKubeRequiredAtRoot(k *KubeConfig, slackChannels map[string]struct{}, base []any) {
-	for _, key := range kubeRequiredAtRoot {
+	for _, key := range KubeRequiredAtRoot {
 		if !k.IsSet(key) {
 			c.errf(append(append([]any{}, base...), key),
 				"required at the root rule (every materialized monitor inherits this)")

@@ -32,20 +32,48 @@ func Validate(s string) error {
 }
 
 // SanitizeKubeDiscovered builds a kube-discovered monitor slug from the
-// ingress namespace, name, and host per docs/design-decisions.md. Invalid
-// characters in any input are replaced with "-"; consecutive hyphens are
-// collapsed; leading/trailing hyphens are stripped. If the result is not
-// a valid toggle-monitor slug, returns an error so the caller can record
-// the ingress as kube-invalid with reason "slug generation failed".
+// ingress namespace, name, and host per ADR-0002 §Identity. The format
+// is `<namespace>__<ingress-name>__<host>`; the double-underscore
+// separator avoids collision with hyphen-bearing content in any of the
+// three parts (typical k8s names use single hyphens, hosts use dots
+// that we lower to single hyphens).
+//
+// Each part is independently sanitized: lower-cased, any character
+// outside [a-z0-9-] becomes '-', consecutive hyphens collapse, and
+// leading/trailing hyphens are trimmed. The three sanitized parts are
+// joined with `__`. An empty result (every part collapsed to nothing,
+// or only the separators left) is an error — the caller records the
+// ingress as kube-invalid with reason "slug generation failed".
+//
+// Output is NOT subject to Validate() — that regex is the rule for
+// human-authored slugs (lowercase, hyphen-separated, no `_`). Kube
+// slugs intentionally carry `__` to keep their structure parseable
+// back to (namespace, name, host).
 func SanitizeKubeDiscovered(namespace, name, host string) (string, error) {
-	parts := sanitizePart(namespace) + "-" + sanitizePart(name) + "-" + sanitizePart(host)
-	parts = trimAndCollapseHyphens(parts)
-	if parts == "" {
+	ns := trimAndCollapseHyphens(sanitizePart(namespace))
+	nm := trimAndCollapseHyphens(sanitizePart(name))
+	ho := trimAndCollapseHyphens(sanitizePart(host))
+	if ns == "" && nm == "" && ho == "" {
 		return "", fmt.Errorf("slug generation failed: namespace, name, and host all sanitized to empty")
 	}
-	out := "kube-" + parts
-	if err := Validate(out); err != nil {
-		return "", fmt.Errorf("slug generation failed: %w", err)
+	// At least one of the three parts must be non-empty for the slug to
+	// be useful as identity; allow individual parts to be empty (e.g. a
+	// rare cluster-scoped ingress with no namespace) and render them as
+	// adjacent separators so the structure stays positional.
+	out := ns + "__" + nm + "__" + ho
+	// Sanity: a slug consisting purely of separators (every part empty
+	// except for the one we already rejected above) shouldn't get
+	// through. The Validate-like character check is intentional but
+	// loose — `_`, `-`, lowercase alnum only.
+	for i := 0; i < len(out); i++ {
+		c := out[i]
+		ok := (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_'
+		if !ok {
+			return "", fmt.Errorf("slug generation failed: unexpected character %q in %q", c, out)
+		}
+	}
+	if len(out) > MaxLen {
+		return "", fmt.Errorf("slug generation failed: %q exceeds max length %d", out, MaxLen)
 	}
 	return out, nil
 }

@@ -81,15 +81,16 @@ func TestSanitizeKubeDiscovered_happyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if want := "kube-default-foo-foo-example-com"; got != want {
+	if want := "default__foo__foo-example-com"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 
-// TestSanitizeKubeDiscovered_rules pins the sanitization rule set from
-// docs/design-decisions.md: lowercase inputs, replace invalid chars
-// with "-", collapse consecutive "-", strip leading/trailing "-",
-// reject if the resulting slug is invalid.
+// TestSanitizeKubeDiscovered_rules pins the per-part sanitization
+// rules from ADR-0002 §Identity. Each (namespace, ingress-name, host)
+// part is independently sanitized — lowercase, non-alnum → '-',
+// consecutive hyphens collapse, leading/trailing trim — and then the
+// three sanitized parts are joined with `__`.
 func TestSanitizeKubeDiscovered_rules(t *testing.T) {
 	t.Parallel()
 
@@ -98,13 +99,13 @@ func TestSanitizeKubeDiscovered_rules(t *testing.T) {
 		ns, ing, h string
 		want       string // empty string means "expect error"
 	}{
-		{"basic single-segment host", "default", "foo", "bar", "kube-default-foo-bar"},
-		{"host with dots", "default", "foo", "foo.example.com", "kube-default-foo-foo-example-com"},
-		{"uppercase normalized", "ProdNS", "MyApp", "API.Example.COM", "kube-prodns-myapp-api-example-com"},
-		{"underscores replaced", "kube_system", "my_app", "api.example.com", "kube-kube-system-my-app-api-example-com"},
-		{"consecutive invalid collapsed", "ns", "name", "a..b", "kube-ns-name-a-b"},
-		{"trailing dot stripped", "ns", "name", "host.", "kube-ns-name-host"},
-		{"empty namespace still ok", "", "name", "host", "kube-name-host"},
+		{"basic single-segment host", "default", "foo", "bar", "default__foo__bar"},
+		{"host with dots", "default", "foo", "foo.example.com", "default__foo__foo-example-com"},
+		{"uppercase normalized", "ProdNS", "MyApp", "API.Example.COM", "prodns__myapp__api-example-com"},
+		{"underscores in inputs become hyphens", "kube_system", "my_app", "api.example.com", "kube-system__my-app__api-example-com"},
+		{"consecutive invalid collapsed", "ns", "name", "a..b", "ns__name__a-b"},
+		{"trailing dot stripped", "ns", "name", "host.", "ns__name__host"},
+		{"empty namespace still ok", "", "name", "host", "__name__host"},
 		{"all-invalid inputs fail", "...", "...", "...", ""},
 		{"empty everything fails", "", "", "", ""},
 	}

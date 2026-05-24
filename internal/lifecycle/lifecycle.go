@@ -347,11 +347,10 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	if kc := opts.Config.Kube; kc != nil {
 		removalSink := &kubeRemovalSink{repo: repo, notifier: notifier, log: log}
 		kubeOpts := kube.Options{
-			AnnotationDomain: kc.AnnotationDomain,
-			ResyncInterval:   kc.ResyncInterval.AsDuration(),
-			Materializer:     materializer,
-			RemovalSink:      removalSink,
-			Logger:           log,
+			ResyncInterval: kc.ResyncInterval.AsDuration(),
+			Materializer:   materializer,
+			RemovalSink:    removalSink,
+			Logger:         log,
 		}
 		var watcher *kube.Watcher
 		if opts.KubeIngressLister != nil {

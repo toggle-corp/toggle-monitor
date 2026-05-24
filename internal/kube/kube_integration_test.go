@@ -63,8 +63,7 @@ func TestWatcher_observeOnly_recordsKubeInvalidForEveryHost(t *testing.T) {
 		},
 	}
 	w := kube.New(repo, lister, kube.Options{
-		AnnotationDomain: "monitor.example.com",
-		ResyncInterval:   time.Minute,
+		ResyncInterval: time.Minute,
 	})
 	if err := w.Reconcile(ctx); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -81,8 +80,8 @@ func TestWatcher_observeOnly_recordsKubeInvalidForEveryHost(t *testing.T) {
 		if row.Status != "kube-invalid" {
 			t.Errorf("status: got %q for %s/%s/%s, want kube-invalid", row.Status, row.Namespace, row.IngressName, row.Host)
 		}
-		if row.Reason == nil || *row.Reason != "no preset annotation" {
-			t.Errorf("reason: got %v for %s/%s/%s, want 'no preset annotation'", row.Reason, row.Namespace, row.IngressName, row.Host)
+		if row.Reason == nil || *row.Reason != "no materializer configured" {
+			t.Errorf("reason: got %v for %s/%s/%s, want 'no materializer configured'", row.Reason, row.Namespace, row.IngressName, row.Host)
 		}
 	}
 }
@@ -97,7 +96,7 @@ func TestWatcher_reconcile_prunesDisappearedIngresses(t *testing.T) {
 			ingress("ns-a", "goes", "goes.example.com"),
 		},
 	}
-	w := kube.New(repo, lister, kube.Options{AnnotationDomain: "x", ResyncInterval: time.Minute})
+	w := kube.New(repo, lister, kube.Options{ResyncInterval: time.Minute})
 
 	if err := w.Reconcile(ctx); err != nil {
 		t.Fatal(err)

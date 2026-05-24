@@ -4,10 +4,12 @@ package merger_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"gopkg.in/yaml.v3"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -32,48 +34,83 @@ func newRepo(t *testing.T) *store.Repo {
 	return store.New(pool)
 }
 
-func ann(s ...string) map[string]string {
-	out := map[string]string{}
-	for i := 0; i+1 < len(s); i += 2 {
-		out[s[i]] = s[i+1]
-	}
-	return out
-}
-
-func ingress(ns, name string, annotations map[string]string, hosts ...string) *networkingv1.Ingress {
+// ingress builds a minimal *networkingv1.Ingress for a single (ns,
+// name, hosts) fixture. labels populates ObjectMeta.Labels (consumed
+// by KubeMatchWhen.Labels selectors). hosts seed spec.rules[*].host.
+func ingress(ns, name string, labels map[string]string, hosts ...string) *networkingv1.Ingress {
 	rules := make([]networkingv1.IngressRule, 0, len(hosts))
 	for _, h := range hosts {
 		rules = append(rules, networkingv1.IngressRule{Host: h})
 	}
 	return &networkingv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, Annotations: annotations},
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, Labels: labels},
 		Spec:       networkingv1.IngressSpec{Rules: rules},
 	}
 }
 
-const domain = "monitor.example.com"
+// rootMatchYAML is the canonical root-rule YAML that every test
+// fixture extends — every required-at-root field is set so the
+// validator passes. Tests inject extra rules via fixtureKube().
+const rootMatchYAML = `
+- when: {}
+  config:
+    scheme: https
+    path: /health
+    httpMethod: GET
+    acceptedStatusCodes: [200]
+    interval: 30s
+    timeout: 5s
+    retries: 0
+    retryBackoff: 1s
+    followRedirects: false
+    reminderInterval: 1h
+    sslAlertThreshold: 30d
+    sslEscalationThreshold: 7d
+    sslReminderInterval: 1h
+    slack: ops-alerts
+`
 
-func presetCfg() *config.Kube {
+// fixtureKube parses a YAML fragment as []KubeMatchRule, prepending
+// the canonical root if `withRoot` is true. The fragment is YAML
+// matching kube.match[]'s shape so the test reads close to the
+// real config a user would write.
+func fixtureKube(t *testing.T, matchYAML string, withRoot bool) *config.Kube {
+	t.Helper()
+	full := matchYAML
+	if withRoot {
+		full = rootMatchYAML + matchYAML
+	}
+	var rules []config.KubeMatchRule
+	if err := yaml.Unmarshal([]byte(full), &rules); err != nil {
+		t.Fatalf("parse match yaml: %v\nyaml was:\n%s", err, full)
+	}
 	return &config.Kube{
-		AnnotationDomain: domain,
-		ResyncInterval:   config.Duration(time.Minute),
-		Presets: []config.KubePreset{
-			{Slug: "internal-api", Scheme: "https", Path: "/health"},
-		},
+		ResyncInterval: config.Duration(time.Minute),
+		Match:          rules,
 	}
 }
 
 // withKube constructs a minimal config.Config whose only meaningful
-// content is the kube block + static monitors, mirroring what
-// merger.New cares about.
+// content is the kube block + static monitors. Slack.UserMapping is
+// pre-seeded with a couple of fixtures so notify-list tests can
+// resolve mentions.
 func withKube(kc *config.Kube, statics []config.Monitor) config.Config {
-	return config.Config{Kube: kc, Monitors: statics}
+	return config.Config{
+		Kube:     kc,
+		Monitors: statics,
+		Slack: config.Slack{
+			UserMapping: map[string]string{
+				"thenav56": "U111111111",
+				"barsha":   "U222222222",
+			},
+		},
+	}
 }
 
-func TestMaterializer_addedRowForHappyPath(t *testing.T) {
+func TestMaterializer_rootRuleAlwaysMaterializes(t *testing.T) {
 	repo := newRepo(t)
-	m := merger.New(repo, withKube(presetCfg(), nil), nil)
-	ing := ingress("default", "api", ann(domain+"/kube.preset", "internal-api"), "api.example.com")
+	m := merger.New(repo, withKube(fixtureKube(t, ``, true), nil), nil)
+	ing := ingress("default", "api", nil, "api.example.com")
 
 	row, err := m.Materialize(context.Background(), ing, "api.example.com")
 	if err != nil {
@@ -82,200 +119,185 @@ func TestMaterializer_addedRowForHappyPath(t *testing.T) {
 	if row.Status != "added" {
 		t.Errorf("status: got %q, want 'added'", row.Status)
 	}
-	if row.MonitorSlug == nil || *row.MonitorSlug != "kube-default-api-api-example-com" {
-		t.Errorf("monitor slug: got %v", row.MonitorSlug)
+	if want := "default__api__api-example-com"; row.MonitorSlug == nil || *row.MonitorSlug != want {
+		t.Errorf("monitor slug: got %v, want %q", row.MonitorSlug, want)
 	}
-	// Monitor reconciled.
 	mrow, err := repo.GetMonitor(context.Background(), *row.MonitorSlug)
 	if err != nil {
 		t.Fatalf("monitor lookup: %v", err)
 	}
 	if mrow.URL != "https://api.example.com/health" {
-		t.Errorf("URL: got %q", mrow.URL)
+		t.Errorf("URL: got %q, want https://api.example.com/health", mrow.URL)
 	}
 	if mrow.Source != store.SourceKube {
 		t.Errorf("source: got %q, want kube", mrow.Source)
 	}
-}
-
-func TestMaterializer_noPreset_reasonRecorded(t *testing.T) {
-	repo := newRepo(t)
-	m := merger.New(repo, withKube(presetCfg(), nil), nil)
-	ing := ingress("default", "naked", nil, "naked.example.com")
-
-	row, _ := m.Materialize(context.Background(), ing, "naked.example.com")
-	if row.Status != "kube-invalid" || row.Reason == nil || *row.Reason != "no preset annotation" {
-		t.Errorf("expected kube-invalid:no preset annotation, got %+v", row)
+	// reason carries the rule-chain summary so /discovery can render it.
+	if row.Reason == nil || !strings.Contains(*row.Reason, "match[0]") {
+		t.Errorf("reason should include match[0] in the rule chain, got %v", row.Reason)
 	}
 }
 
-func TestMaterializer_unknownPreset_reasonRecorded(t *testing.T) {
+func TestMaterializer_multiMatchAccumulate(t *testing.T) {
+	// Root sets path /health; namespace rule overrides to /v2; nested
+	// label rule overrides to /minio/health/live. Deepest matching
+	// scalar wins.
 	repo := newRepo(t)
-	m := merger.New(repo, withKube(presetCfg(), nil), nil)
-	ing := ingress("default", "wrong", ann(domain+"/kube.preset", "ghost"), "wrong.example.com")
-
-	row, _ := m.Materialize(context.Background(), ing, "wrong.example.com")
-	if row.Status != "kube-invalid" {
-		t.Errorf("status: got %q", row.Status)
-	}
-	if row.Reason == nil || !contains(*row.Reason, "ghost") {
-		t.Errorf("reason should mention missing preset, got %v", row.Reason)
-	}
-}
-
-func TestMaterializer_optOutViaEnabledFalse(t *testing.T) {
-	repo := newRepo(t)
-	m := merger.New(repo, withKube(presetCfg(), nil), nil)
-	ing := ingress("default", "off", ann(
-		domain+"/kube.preset", "internal-api",
-		domain+"/config.enabled", "false",
-	), "off.example.com")
-	row, _ := m.Materialize(context.Background(), ing, "off.example.com")
-	if row.Status != "kube-invalid" || row.Reason == nil || !contains(*row.Reason, "opt-out") {
-		t.Errorf("expected opt-out reason, got %+v", row)
-	}
-}
-
-func TestMaterializer_staticCollision(t *testing.T) {
-	repo := newRepo(t)
-	statics := []config.Monitor{{Slug: "kube-default-api-api-example-com"}}
-	m := merger.New(repo, withKube(presetCfg(), statics), nil)
-	ing := ingress("default", "api", ann(domain+"/kube.preset", "internal-api"), "api.example.com")
-	row, _ := m.Materialize(context.Background(), ing, "api.example.com")
-	if row.Status != "kube-invalid" || row.Reason == nil || !contains(*row.Reason, "conflicts with static") {
-		t.Errorf("expected static-collision reason, got %+v", row)
-	}
-}
-
-func TestMaterializer_pauseMatchesGlob(t *testing.T) {
-	repo := newRepo(t)
-	kc := presetCfg()
-	kc.Pause = []config.KubePause{{Host: "*.staging.example.com", Reason: "maintenance"}}
+	extra := `
+- when: {namespace: "acme-*"}
+  config:
+    path: /v2
+  nested:
+    - when: {labels: {"app.kubernetes.io/name": "minio"}}
+      config:
+        path: /minio/health/live
+`
+	kc := fixtureKube(t, extra, true)
 	m := merger.New(repo, withKube(kc, nil), nil)
-	ing := ingress("ns", "staging", ann(domain+"/kube.preset", "internal-api"), "api.staging.example.com")
+	ing := ingress("acme-api-1", "minio", map[string]string{"app.kubernetes.io/name": "minio"}, "minio.example.com")
 
-	row, err := m.Materialize(context.Background(), ing, "api.staging.example.com")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if row.Status != "kube-paused" {
-		t.Errorf("status: got %q, want kube-paused", row.Status)
-	}
-	if row.Reason == nil || !contains(*row.Reason, "maintenance") {
-		t.Errorf("reason should carry the pause reason, got %v", row.Reason)
-	}
-}
-
-// presetCfgWith returns a kube block carrying two presets so the
-// resolution tests can verify which one the materializer picked.
-func presetCfgWith() *config.Kube {
-	return &config.Kube{
-		AnnotationDomain: domain,
-		ResyncInterval:   config.Duration(time.Minute),
-		Presets: []config.KubePreset{
-			{Slug: "internal-api", Scheme: "https", Path: "/health"},
-			{Slug: "catchall", Scheme: "https", Path: "/"},
-		},
-	}
-}
-
-func TestMaterializer_wildcardFallback_appliedWhenNoAnnotation(t *testing.T) {
-	repo := newRepo(t)
-	kc := presetCfgWith()
-	kc.Match = []config.KubeMatch{{Preset: "catchall"}} // wildcard
-	m := merger.New(repo, withKube(kc, nil), nil)
-	ing := ingress("default", "naked", nil, "naked.example.com")
-
-	row, err := m.Materialize(context.Background(), ing, "naked.example.com")
+	row, err := m.Materialize(context.Background(), ing, "minio.example.com")
 	if err != nil {
 		t.Fatalf("materialize: %v", err)
 	}
 	if row.Status != "added" {
-		t.Errorf("status: got %q, want 'added'", row.Status)
+		t.Fatalf("status: got %q (reason=%v), want 'added'", row.Status, row.Reason)
 	}
-	if row.PresetSlug == nil || *row.PresetSlug != "catchall" {
-		t.Errorf("preset slug: got %v, want catchall", row.PresetSlug)
+	mrow, _ := repo.GetMonitor(context.Background(), *row.MonitorSlug)
+	if want := "https://minio.example.com/minio/health/live"; mrow.URL != want {
+		t.Errorf("URL: got %q, want %q (deepest path should win)", mrow.URL, want)
 	}
-	if row.Reason == nil || !contains(*row.Reason, "fallback") {
-		t.Errorf("reason should mention fallback, got %v", row.Reason)
-	}
-}
-
-func TestMaterializer_matchRule_firstMatchWins(t *testing.T) {
-	repo := newRepo(t)
-	kc := presetCfgWith()
-	kc.Match = []config.KubeMatch{
-		{When: config.KubeMatchWhen{Namespace: "betaco-core-backend-*"}, Preset: "internal-api"},
-		{Preset: "catchall"}, // wildcard fallback
-	}
-	m := merger.New(repo, withKube(kc, nil), nil)
-	ing := ingress("betaco-core-backend-1", "api", nil, "core-1.example.com")
-
-	row, _ := m.Materialize(context.Background(), ing, "core-1.example.com")
-	if row.Status != "added" {
-		t.Errorf("status: got %q", row.Status)
-	}
-	if row.PresetSlug == nil || *row.PresetSlug != "internal-api" {
-		t.Errorf("preset slug: got %v, want internal-api (specific rule should win over wildcard)", row.PresetSlug)
-	}
-	if row.Reason == nil || !contains(*row.Reason, "match[0]") {
-		t.Errorf("reason should call out the match rule, got %v", row.Reason)
+	// Rule chain should mention both layers.
+	if row.Reason == nil || !strings.Contains(*row.Reason, "match[1]") || !strings.Contains(*row.Reason, "nested[0]") {
+		t.Errorf("reason should chain match[1] → nested[0], got %v", row.Reason)
 	}
 }
 
-func TestMaterializer_annotationBeatsMatchAndFallback(t *testing.T) {
+func TestMaterializer_arrayUnionAndOverride(t *testing.T) {
 	repo := newRepo(t)
-	kc := presetCfgWith()
-	kc.Match = []config.KubeMatch{
-		{When: config.KubeMatchWhen{Namespace: "default"}, Preset: "catchall"},
-		{Preset: "catchall"}, // wildcard fallback
-	}
+	extra := `
+- when: {namespace: "acme-*"}
+  config:
+    tags: [region-asia]
+    notify: [thenav56]
+  nested:
+    - when: {host: "*.example.com"}
+      config:
+        tags: [tier-1]                       # unions with region-asia
+        notify: !override [barsha]           # replaces ancestor thenav56
+`
+	kc := fixtureKube(t, extra, true)
 	m := merger.New(repo, withKube(kc, nil), nil)
-	ing := ingress("default", "api", ann(domain+"/kube.preset", "internal-api"), "api.example.com")
+	ing := ingress("acme-api-1", "api", nil, "api.example.com")
+
+	row, err := m.Materialize(context.Background(), ing, "api.example.com")
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	mrow, _ := repo.GetMonitor(context.Background(), *row.MonitorSlug)
+	wantTags := map[string]bool{"region-asia": false, "tier-1": false}
+	for _, g := range mrow.Tags {
+		if _, ok := wantTags[g]; !ok {
+			t.Errorf("unexpected tag %q", g)
+		}
+		wantTags[g] = true
+	}
+	for tag, seen := range wantTags {
+		if !seen {
+			t.Errorf("missing tag %q in resolved monitor", tag)
+		}
+	}
+	// CurrentPlans carries the resolved Notify (after !override).
+	plans := m.CurrentPlans()
+	if len(plans) != 1 {
+		t.Fatalf("plans: got %d, want 1", len(plans))
+	}
+	mentions := plans[0].Mentions
+	// thenav56 → U111… should be GONE (overridden); barsha → U222… present.
+	for _, mt := range mentions {
+		if strings.Contains(mt, "U111111111") {
+			t.Errorf("ancestor mention thenav56 should have been overridden, got %v", mentions)
+		}
+	}
+	foundBarsha := false
+	for _, mt := range mentions {
+		if strings.Contains(mt, "U222222222") {
+			foundBarsha = true
+		}
+	}
+	if !foundBarsha {
+		t.Errorf("override list should contribute barsha, got %v", mentions)
+	}
+}
+
+func TestMaterializer_acceptedStatusCodesReplaceByDefault(t *testing.T) {
+	repo := newRepo(t)
+	extra := `
+- when: {namespace: "acme-*"}
+  config:
+    acceptedStatusCodes: [301]
+`
+	kc := fixtureKube(t, extra, true)
+	m := merger.New(repo, withKube(kc, nil), nil)
+	ing := ingress("acme-api-1", "api", nil, "api.example.com")
 
 	row, _ := m.Materialize(context.Background(), ing, "api.example.com")
-	if row.PresetSlug == nil || *row.PresetSlug != "internal-api" {
-		t.Errorf("annotation should win, got %v", row.PresetSlug)
+	if row.Status != "added" {
+		t.Fatalf("status: got %q, want 'added' (reason=%v)", row.Status, row.Reason)
 	}
-	if row.Reason == nil || *row.Reason != "added" {
-		t.Errorf("annotation path keeps reason 'added', got %v", row.Reason)
+	plans := m.CurrentPlans()
+	if len(plans) != 1 {
+		t.Fatalf("plans: got %d, want 1", len(plans))
+	}
+	got := plans[0].AcceptedStatusCodes
+	if len(got) != 1 || got[0] != 301 {
+		t.Errorf("acceptedStatusCodes should be REPLACED not unioned, got %v want [301]", got)
 	}
 }
 
-func TestMaterializer_matchRule_namespaceAndHostAND(t *testing.T) {
+func TestMaterializer_finalHaltsCascade(t *testing.T) {
 	repo := newRepo(t)
-	kc := presetCfgWith()
-	kc.Match = []config.KubeMatch{
-		{
-			When:   config.KubeMatchWhen{Namespace: "acme-*", Host: "*.example.com"},
-			Preset: "internal-api",
-		},
-		{Preset: "catchall"}, // wildcard fallback
-	}
+	// Two top-level rules. The first matches (with final:true) and
+	// sets path=/early; the second would otherwise overwrite path to
+	// /late. Final must halt traversal AFTER descending the first
+	// rule's own nested, so the late rule never contributes.
+	extra := `
+- when: {namespace: "acme-*"}
+  final: true
+  config:
+    path: /early
+  nested:
+    - when: {host: "*.example.com"}
+      config:
+        path: /nested-still-runs
+- when: {namespace: "acme-*"}
+  config:
+    path: /late
+`
+	kc := fixtureKube(t, extra, true)
 	m := merger.New(repo, withKube(kc, nil), nil)
+	ing := ingress("acme-api-1", "api", nil, "api.example.com")
 
-	// Namespace matches, host doesn't → rule skipped, falls through to wildcard.
-	ing1 := ingress("acme-api-1", "api", nil, "alpha-1.example.com")
-	row1, _ := m.Materialize(context.Background(), ing1, "alpha-1.example.com")
-	if row1.PresetSlug == nil || *row1.PresetSlug != "catchall" {
-		t.Errorf("ns match + host miss should fall through to wildcard, got %v", row1.PresetSlug)
+	row, _ := m.Materialize(context.Background(), ing, "api.example.com")
+	if row.Status != "added" {
+		t.Fatalf("status: %q (reason=%v)", row.Status, row.Reason)
 	}
-
-	// Both match → rule fires.
-	ing2 := ingress("acme-api-2", "api", nil, "alpha-2.example.com")
-	row2, _ := m.Materialize(context.Background(), ing2, "alpha-2.example.com")
-	if row2.PresetSlug == nil || *row2.PresetSlug != "internal-api" {
-		t.Errorf("both conditions match → rule should fire, got %v", row2.PresetSlug)
+	mrow, _ := repo.GetMonitor(context.Background(), *row.MonitorSlug)
+	if want := "https://api.example.com/nested-still-runs"; mrow.URL != want {
+		t.Errorf("URL: got %q, want %q (final's own nested still runs; later sibling does NOT)", mrow.URL, want)
+	}
+	if row.Reason == nil || !strings.Contains(*row.Reason, "[final]") {
+		t.Errorf("reason should mark the final rule, got %v", row.Reason)
 	}
 }
 
-func TestMaterializer_matchRule_ignoreSkipsMaterialization(t *testing.T) {
+func TestMaterializer_ignoreTrueProducesIgnoredRow(t *testing.T) {
 	repo := newRepo(t)
-	kc := presetCfgWith()
-	kc.Match = []config.KubeMatch{
-		{When: config.KubeMatchWhen{Namespace: "test-*"}, Ignore: true},
-		{Preset: "catchall"}, // wildcard fallback
-	}
+	extra := `
+- when: {namespace: "test-*"}
+  ignore: true
+`
+	kc := fixtureKube(t, extra, true)
 	m := merger.New(repo, withKube(kc, nil), nil)
 	ing := ingress("test-ephemeral", "api", nil, "ephemeral.example.com")
 
@@ -284,54 +306,134 @@ func TestMaterializer_matchRule_ignoreSkipsMaterialization(t *testing.T) {
 		t.Fatalf("materialize: %v", err)
 	}
 	if row.Status != "kube-ignored" {
-		t.Errorf("status: got %q, want 'kube-ignored'", row.Status)
+		t.Errorf("status: got %q, want kube-ignored", row.Status)
 	}
-	if row.Reason == nil || !contains(*row.Reason, "match[0]") || !contains(*row.Reason, "test-*") {
-		t.Errorf("reason should call out the match rule + namespace glob, got %v", row.Reason)
+	if row.Reason == nil || !strings.Contains(*row.Reason, "match[1]") {
+		t.Errorf("reason should mention the matching rule, got %v", row.Reason)
 	}
 	if row.MonitorSlug != nil {
-		t.Errorf("ignored row must not point at a materialized monitor, got %v", row.MonitorSlug)
+		t.Errorf("ignored row must NOT carry a monitor slug, got %v", row.MonitorSlug)
 	}
-	// No plan should land in CurrentPlans either — otherwise the
-	// scheduler would still spawn a goroutine for an ingress the
-	// operator explicitly opted out of.
 	if plans := m.CurrentPlans(); len(plans) != 0 {
-		t.Errorf("expected zero plans for an ignored ingress, got %d", len(plans))
-	}
-	// And no monitor row should exist in the DB.
-	slug := "kube-test-ephemeral-api-ephemeral-example-com"
-	if _, err := repo.GetMonitor(context.Background(), slug); err == nil {
-		t.Errorf("expected no monitor row for ignored ingress (slug %q exists)", slug)
+		t.Errorf("ignored ingress should not produce a plan, got %d", len(plans))
 	}
 }
 
-func TestMaterializer_unknownExplicitPreset_stillFlags(t *testing.T) {
-	// Wildcard fallback + match[] do NOT rescue an explicit-but-unknown
-	// annotation. Typos should stay visible.
+func TestMaterializer_ignoreFalseUnignoresAncestor(t *testing.T) {
 	repo := newRepo(t)
-	kc := presetCfgWith()
-	kc.Match = []config.KubeMatch{{Preset: "catchall"}} // wildcard fallback
+	extra := `
+- when: {namespace: "test-*"}
+  ignore: true
+  nested:
+    - when: {namespace: "test-critical-*"}
+      ignore: false
+`
+	kc := fixtureKube(t, extra, true)
 	m := merger.New(repo, withKube(kc, nil), nil)
-	ing := ingress("default", "wrong", ann(domain+"/kube.preset", "ghost"), "wrong.example.com")
+	ing := ingress("test-critical-1", "api", nil, "critical.example.com")
 
-	row, _ := m.Materialize(context.Background(), ing, "wrong.example.com")
+	row, err := m.Materialize(context.Background(), ing, "critical.example.com")
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if row.Status != "added" {
+		t.Errorf("status: got %q, want 'added' (child ignore:false should override ancestor's true; reason=%v)",
+			row.Status, row.Reason)
+	}
+}
+
+func TestMaterializer_resolvedIntervalLessThanTimeoutIsInvalid(t *testing.T) {
+	repo := newRepo(t)
+	// Child overrides timeout to 60s while root interval is 30s →
+	// interval < timeout after the merge.
+	extra := `
+- when: {namespace: "broken-*"}
+  config:
+    timeout: 60s
+`
+	kc := fixtureKube(t, extra, true)
+	m := merger.New(repo, withKube(kc, nil), nil)
+	ing := ingress("broken-1", "api", nil, "api.example.com")
+
+	row, _ := m.Materialize(context.Background(), ing, "api.example.com")
 	if row.Status != "kube-invalid" {
-		t.Errorf("unknown explicit annotation should stay invalid, got %q", row.Status)
+		t.Errorf("status: got %q, want kube-invalid (resolved interval<timeout)", row.Status)
 	}
-	if row.Reason == nil || !contains(*row.Reason, "ghost") {
-		t.Errorf("reason should call out the typo, got %v", row.Reason)
+	if row.Reason == nil || !strings.Contains(*row.Reason, "interval") {
+		t.Errorf("reason should explain the timeout/interval violation, got %v", row.Reason)
 	}
 }
 
-func contains(s, sub string) bool {
-	return len(sub) > 0 && len(s) >= len(sub) && (s == sub || indexOf(s, sub) >= 0)
+func TestMaterializer_resolvedSlackOverriddenEmptyIsInvalid(t *testing.T) {
+	repo := newRepo(t)
+	// Root sets slack=ops-alerts; child overrides to empty string —
+	// post-merge resolution must catch this.
+	extra := `
+- when: {namespace: "broken-*"}
+  config:
+    slack: ""
+`
+	kc := fixtureKube(t, extra, true)
+	m := merger.New(repo, withKube(kc, nil), nil)
+	ing := ingress("broken-1", "api", nil, "api.example.com")
+
+	row, _ := m.Materialize(context.Background(), ing, "api.example.com")
+	if row.Status != "kube-invalid" {
+		t.Errorf("status: got %q, want kube-invalid (slack overridden to empty)", row.Status)
+	}
+	if row.Reason == nil || !strings.Contains(*row.Reason, "slack") {
+		t.Errorf("reason should call out the slack field, got %v", row.Reason)
+	}
 }
 
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
+func TestMaterializer_staticCollisionIsInvalid(t *testing.T) {
+	repo := newRepo(t)
+	statics := []config.Monitor{{Slug: "default__api__api-example-com"}}
+	m := merger.New(repo, withKube(fixtureKube(t, ``, true), statics), nil)
+	ing := ingress("default", "api", nil, "api.example.com")
+
+	row, _ := m.Materialize(context.Background(), ing, "api.example.com")
+	if row.Status != "kube-invalid" || row.Reason == nil || !strings.Contains(*row.Reason, "conflicts with static") {
+		t.Errorf("expected static-collision reason, got %+v", row)
+	}
+}
+
+func TestMaterializer_slugFormat(t *testing.T) {
+	// Pin the ADR-0002 §Identity format: <ns>__<name>__<host>, with
+	// per-part sanitization (lowercase, non-alnum→'-', collapse).
+	repo := newRepo(t)
+	m := merger.New(repo, withKube(fixtureKube(t, ``, true), nil), nil)
+	ing := ingress("Prod-NS", "MyApp", nil, "api.dev.example.com")
+
+	row, err := m.Materialize(context.Background(), ing, "api.dev.example.com")
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if want := "prod-ns__myapp__api-dev-example-com"; row.MonitorSlug == nil || *row.MonitorSlug != want {
+		t.Errorf("slug: got %v, want %q", row.MonitorSlug, want)
+	}
+}
+
+func TestMaterializer_ruleChainShape(t *testing.T) {
+	// Two nested levels — confirm the chain renders match[N] →
+	// nested[M] with selector summaries.
+	repo := newRepo(t)
+	extra := `
+- when: {namespace: "acme-*"}
+  nested:
+    - when: {host: "*.example.com"}
+`
+	kc := fixtureKube(t, extra, true)
+	m := merger.New(repo, withKube(kc, nil), nil)
+	ing := ingress("acme-api-1", "api", nil, "api.example.com")
+
+	row, _ := m.Materialize(context.Background(), ing, "api.example.com")
+	if row.Reason == nil {
+		t.Fatalf("no reason set; row=%+v", row)
+	}
+	for _, want := range []string{"match[0]", "match[1]", "ns=acme-*", "nested[0]", "host=*.example.com"} {
+		if !strings.Contains(*row.Reason, want) {
+			t.Errorf("rule chain missing %q; got %q", want, *row.Reason)
 		}
 	}
-	return -1
 }
