@@ -5,6 +5,17 @@ two state machines (uptime + SSL). Aimed at someone who has read
 [`prd-v1.md`](prd-v1.md) and wants to find their way around the
 code.
 
+> **Stale section notice (ADR-0002).** The `kube.match` design has
+> been redesigned as a cascading rule tree — see
+> [ADR-0002](./adr/0002-kube-match-tree-cascade.md). The ASCII
+> module diagram, the `merger` description ("preset + annotation
+> merge"), and the per-Ingress status table below still reference
+> `kube.presets`, `kube.pause`, `kube.annotationDomain`, the
+> `kube-paused` status, and per-ingress `/kube.*` / `/config.*`
+> annotations — all of which were removed by ADR-0002. The body
+> text is preserved here for historical context and should not be
+> treated as the current implementation contract.
+
 ## High-level shape
 
 A single Go binary running as a single Kubernetes replica. Three

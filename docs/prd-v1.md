@@ -2,6 +2,8 @@
 
 Source of truth for the v1 implementation. Synthesized from [`initial-spec.md`](./initial-spec.md), [`design-decisions.md`](./design-decisions.md), and [`config-schema.md`](./config-schema.md). Where this PRD and those docs disagree, those docs win — they are the per-decision and per-field references.
 
+> **Stale section notice (ADR-0002).** The `kube.match` design has been redesigned as a cascading rule tree — see [ADR-0002](./adr/0002-kube-match-tree-cascade.md). User stories, acceptance criteria, observability notes, and test-plan items below that reference `kube.presets`, `kube.pause`, `kube.annotationDomain`, the `kube-paused` status, or per-ingress `/kube.*` and `/config.*` annotations describe the **prior** design and are superseded by ADR-0002. The body text is preserved here for historical context and should not be treated as the current implementation contract.
+
 ## Problem Statement
 
 The team runs a Kubernetes cluster fronted by an external bastion that terminates TLS. They need to know when any of their services — both static endpoints (legacy hosts, external SaaS, gateways) and the dynamic set of in-cluster ingresses — stops responding or is about to lose its certificate. Today there is no consolidated view: ingresses appear and disappear with deploys, SSL expiries surprise on-call, and Slack alerts (where they exist) are noisy, scattered across ad-hoc threads, and lack a clear "still down" cadence.

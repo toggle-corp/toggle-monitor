@@ -229,11 +229,15 @@ with a labels selector" — same review surface as any other change.
 ### Root rule required, with all required fields
 
 A rule with `when: {}` at the top level is **mandatory** and must
-carry all required monitor fields (`interval`, `timeout`,
-`httpMethod`, `acceptedStatusCodes`, `path`, plus SSL thresholds and
-notify defaults). Children override selectively but don't have to
-set anything. Missing root or missing required fields at the root
-is a validation error at startup.
+carry all required monitor fields: `path`, `httpMethod`,
+`acceptedStatusCodes`, `interval`, `timeout`, `retries`,
+`retryBackoff`, `followRedirects`, `reminderInterval`,
+`sslAlertThreshold`, `sslEscalationThreshold`, `sslReminderInterval`,
+`slack`. (See [`config-schema.md`](../config-schema.md) §
+"`kube.match[].config` fields" for the authoritative `Req at root`
+column.) Children override selectively but don't have to set
+anything. Missing root or missing required fields at the root is a
+validation error at startup.
 
 The "no rule matched → kube-invalid" safety net of the old design
 disappears: under the new model the root always matches, so every
@@ -255,11 +259,12 @@ leaf rule with a non-empty `config:` (dead config unless a child
 un-ignores).
 
 **Resolved-value (errors at materialization time).** `interval >=
-timeout`, `SSL alert > escalation > 0`, all required fields present
-in the resolved config. These produce `status="kube-invalid"`
-discovery rows pointing at the rule chain that produced the bad
-config — they don't block startup, because they depend on which
-ingresses actually exist at materialization time.
+timeout`, `SSL alert > escalation > 0`, a required-at-root field
+that root did set was overridden to an empty / invalid value deeper
+in the tree. These produce `status="kube-invalid"` discovery rows
+pointing at the rule chain that produced the bad config — they don't
+block startup, because they depend on which ingresses actually exist
+at materialization time.
 
 **Reachability validation is not performed.** Under multi-match
 accumulate, every matching rule contributes; "unreachable rule" only

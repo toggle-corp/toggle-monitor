@@ -188,6 +188,11 @@ groups:
     description: Public-facing websites and landing pages
     color: "#10b981"
 
+  - slug: acme
+    friendlyName: ACME
+    description: ACME project namespaces (acme-* family)
+    color: "#a855f7"
+
   - slug: kube-discovered                            # REQUIRED — fallback for ingresses without config.group
     friendlyName: Kube Discovered
     description: Auto-discovered ingresses that didn't specify a group

@@ -4,6 +4,8 @@ Tracer-bullet vertical slices derived from [`prd-v1.md`](./prd-v1.md). Each slic
 
 Two are marked **HITL** (bootstrap + tracer bullet — both crystallize architectural choices and deserve human review). The rest are **AFK**.
 
+> **Stale section notice (ADR-0002).** The `kube.match` design has been redesigned as a cascading rule tree — see [ADR-0002](./adr/0002-kube-match-tree-cascade.md). Issues below that describe `kube.presets[]`, `kube.pause:`, `kube.annotationDomain`, or per-ingress `/kube.*` / `/config.*` annotations as the implementation contract (notably the `kube.pause:` hard-pause issue and the materializer issue's preset/annotation handling) describe the **prior** design and are superseded by ADR-0002. The body text is preserved for historical context and should not be treated as the current implementation contract; the ADR is the authoritative spec for any new work in this area.
+
 References:
 - [`docs/prd-v1.md`](./prd-v1.md) — the v1 PRD
 - [`docs/design-decisions.md`](./design-decisions.md) — every resolved design decision
