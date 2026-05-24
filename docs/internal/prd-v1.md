@@ -1,8 +1,15 @@
 # toggle-monitor — PRD (v1)
 
-Source of truth for the v1 implementation. Synthesized from [`initial-spec.md`](./initial-spec.md), [`design-decisions.md`](./design-decisions.md), and [`config-schema.md`](./config-schema.md). Where this PRD and those docs disagree, those docs win — they are the per-decision and per-field references.
+> **Internal working notes — preserved for historical context.** This is the
+> v1 product requirements document. v1 has shipped. For current authoritative
+> references see [`docs/architecture.md`](../architecture.md),
+> [`docs/operations.md`](../operations.md),
+> [`docs/config-schema.md`](../config-schema.md), and the ADRs under
+> [`docs/adr/`](../adr/).
 
-> **Stale section notice (ADR-0002).** The `kube.match` design has been redesigned as a cascading rule tree — see [ADR-0002](./adr/0002-kube-match-tree-cascade.md). User stories, acceptance criteria, observability notes, and test-plan items below that reference `kube.presets`, `kube.pause`, `kube.annotationDomain`, the `kube-paused` status, or per-ingress `/kube.*` and `/config.*` annotations describe the **prior** design and are superseded by ADR-0002. The body text is preserved here for historical context and should not be treated as the current implementation contract.
+Source of truth for the v1 implementation. Synthesized from [`initial-spec.md`](./initial-spec.md), [`design-decisions.md`](./design-decisions.md), and [`config-schema.md`](../config-schema.md). Where this PRD and those docs disagree, those docs win — they are the per-decision and per-field references.
+
+> **Stale section notice (ADR-0002).** The `kube.match` design has been redesigned as a cascading rule tree — see [ADR-0002](../adr/0002-kube-match-tree-cascade.md). User stories, acceptance criteria, observability notes, and test-plan items below that reference `kube.presets`, `kube.pause`, `kube.annotationDomain`, the `kube-paused` status, or per-ingress `/kube.*` and `/config.*` annotations describe the **prior** design and are superseded by ADR-0002. The body text is preserved here for historical context and should not be treated as the current implementation contract.
 
 ## Problem Statement
 
@@ -345,10 +352,10 @@ The following are explicitly out of v1 and deferred for later (per design-decisi
 ## Further Notes
 
 - Reference docs in this repo, in order of authority for v1 implementation:
-  1. [`docs/config-schema.md`](./config-schema.md) — locked per-field schema.
+  1. [`docs/config-schema.md`](../config-schema.md) — locked per-field schema.
   2. [`docs/design-decisions.md`](./design-decisions.md) — every resolved design decision with rationale.
   3. [`docs/initial-spec.md`](./initial-spec.md) — original brief; superseded where it conflicts.
-  4. [`docs/config-example.yaml`](./config-example.yaml) — hand-written example exercising the schema.
+  4. [`docs/config-example.yaml`](../config-example.yaml) — hand-written example exercising the schema.
 
 - Suggested values (interval 5m, timeout 10s, retries 2, retryBackoff 5s, reminderInterval 3d, accepted codes `[200]`, method `GET`, SSL alert 30d / escalation 7d, followRedirects false) are reference values for writing the first config; the binary applies no defaults.
 

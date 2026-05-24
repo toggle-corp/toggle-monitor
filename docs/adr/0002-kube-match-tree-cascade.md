@@ -5,7 +5,7 @@
 **Supersedes:** the `kube.presets:` + flat `kube.match[]` design captured in
 [`config-schema.md`](../config-schema.md) and the per-ingress
 `/kube.*` / `/config.*` annotation layer described in
-[`design-decisions.md`](../design-decisions.md).
+[`design-decisions.md`](../internal/design-decisions.md).
 
 ## Context
 
@@ -438,7 +438,7 @@ Net: roughly 400–500 LOC deleted, 500–600 LOC added.
   following this ADR.
 - [`docs/config-example.yaml`](../config-example.yaml) — to be
   rewritten following this ADR.
-- [`docs/design-decisions.md`](../design-decisions.md) — to be
+- [`docs/design-decisions.md`](../internal/design-decisions.md) — to be
   cross-linked to this ADR.
 - Commit `32abbed` — established the `<field>` / `<field>Regex`
   selector convention in `statusPage.match[]` that this ADR adopts.

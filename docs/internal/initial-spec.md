@@ -1,3 +1,16 @@
+# toggle-monitor — initial spec
+
+> **Internal working notes — preserved for historical context.** The original
+> one-page brief that seeded the project. Superseded in detail by
+> [`prd-v1.md`](./prd-v1.md) and [`design-decisions.md`](./design-decisions.md).
+> For current authoritative references see
+> [`docs/architecture.md`](../architecture.md),
+> [`docs/operations.md`](../operations.md),
+> [`docs/config-schema.md`](../config-schema.md), and the ADRs under
+> [`docs/adr/`](../adr/).
+
+---
+
 Need to setup a tool
 - runs inside a k8s cluster
 - Configs

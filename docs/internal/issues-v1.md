@@ -1,21 +1,27 @@
 # toggle-monitor — v1 issues
 
+> **Internal working notes — preserved for historical context.** These are the
+> tracer-bullet implementation tickets that drove the v1 build. All issues
+> listed here have shipped on `main`. For the current authoritative
+> references see [`docs/architecture.md`](../architecture.md),
+> [`docs/operations.md`](../operations.md),
+> [`docs/config-schema.md`](../config-schema.md), and the ADRs under
+> [`docs/adr/`](../adr/).
+
 Tracer-bullet vertical slices derived from [`prd-v1.md`](./prd-v1.md). Each slice cuts end-to-end through config → DB → scheduler/checker → state → output, and is independently demoable.
 
-Two are marked **HITL** (bootstrap + tracer bullet — both crystallize architectural choices and deserve human review). The rest are **AFK**.
-
-> **Stale section notice (ADR-0002).** The `kube.match` design has been redesigned as a cascading rule tree — see [ADR-0002](./adr/0002-kube-match-tree-cascade.md). Issues below that describe `kube.presets[]`, `kube.pause:`, `kube.annotationDomain`, or per-ingress `/kube.*` / `/config.*` annotations as the implementation contract (notably the `kube.pause:` hard-pause issue and the materializer issue's preset/annotation handling) describe the **prior** design and are superseded by ADR-0002. The body text is preserved for historical context and should not be treated as the current implementation contract; the ADR is the authoritative spec for any new work in this area.
+> **Stale section notice (ADR-0002).** The `kube.match` design has been redesigned as a cascading rule tree — see [ADR-0002](../adr/0002-kube-match-tree-cascade.md). Issues below that describe `kube.presets[]`, `kube.pause:`, `kube.annotationDomain`, or per-ingress `/kube.*` / `/config.*` annotations as the implementation contract (notably the `kube.pause:` hard-pause issue and the materializer issue's preset/annotation handling) describe the **prior** design and are superseded by ADR-0002. The body text is preserved for historical context and should not be treated as the current implementation contract; the ADR is the authoritative spec for any new work in this area.
 
 References:
 - [`docs/prd-v1.md`](./prd-v1.md) — the v1 PRD
 - [`docs/design-decisions.md`](./design-decisions.md) — every resolved design decision
-- [`docs/config-schema.md`](./config-schema.md) — per-field schema
+- [`docs/config-schema.md`](../config-schema.md) — per-field schema
 - [`docs/initial-spec.md`](./initial-spec.md) — original brief
-- [`docs/config-example.yaml`](./config-example.yaml) — hand-written example
+- [`docs/config-example.yaml`](../config-example.yaml) — hand-written example
 
 ---
 
-## Issue 1 — Project bootstrap & scaffolding (HITL)
+## Issue 1 — Project bootstrap & scaffolding
 
 ### What to build
 
@@ -50,7 +56,7 @@ None — can start immediately.
 
 ---
 
-## Issue 2 — Tracer bullet: single static monitor → UI status (HITL)
+## Issue 2 — Tracer bullet: single static monitor → UI status
 
 ### What to build
 
@@ -89,7 +95,7 @@ Includes:
 
 ---
 
-## Issue 3 — Slack uptime alert lifecycle (AFK)
+## Issue 3 — Slack uptime alert lifecycle
 
 ### What to build
 
@@ -130,7 +136,7 @@ Includes:
 
 ---
 
-## Issue 4 — SSL inspection + SSL alert thread (AFK)
+## Issue 4 — SSL inspection + SSL alert thread
 
 ### What to build
 
@@ -164,7 +170,7 @@ Includes:
 
 ---
 
-## Issue 5 — Config polish: anchors, `x-*` ignore, env interpolation, multi-error reporting (AFK)
+## Issue 5 — Config polish: anchors, `x-*` ignore, env interpolation, multi-error reporting
 
 ### What to build
 
@@ -197,7 +203,7 @@ Includes:
 
 ---
 
-## Issue 6 — `validate` and `config show` CLI subcommands (AFK)
+## Issue 6 — `validate` and `config show` CLI subcommands
 
 ### What to build
 
@@ -224,7 +230,7 @@ Includes:
 
 ---
 
-## Issue 7 — `dependsOn` + `temporary-paused` (AFK)
+## Issue 7 — `dependsOn` + `temporary-paused`
 
 ### What to build
 
@@ -254,7 +260,7 @@ Includes:
 
 ---
 
-## Issue 8 — Kube informer + auto-discovery snapshot (observe-only) (AFK)
+## Issue 8 — Kube informer + auto-discovery snapshot (observe-only)
 
 ### What to build
 
@@ -285,7 +291,7 @@ Includes:
 
 ---
 
-## Issue 9 — Preset + annotation merging → materialized kube monitors (AFK)
+## Issue 9 — Preset + annotation merging → materialized kube monitors
 
 ### What to build
 
@@ -330,7 +336,7 @@ Includes:
 
 ---
 
-## Issue 10 — `kube.pause:` hard-pause list (AFK)
+## Issue 10 — `kube.pause:` hard-pause list
 
 ### What to build
 
@@ -360,7 +366,7 @@ Includes:
 
 ---
 
-## Issue 11 — Monitor removal: soft-delete, warning, closeout (AFK)
+## Issue 11 — Monitor removal: soft-delete, warning, closeout
 
 ### What to build
 
@@ -392,7 +398,7 @@ Includes:
 
 ---
 
-## Issue 12 — Auto-discovery UI + monitor-detail provenance + archive filter (AFK)
+## Issue 12 — Auto-discovery UI + monitor-detail provenance + archive filter
 
 ### What to build
 
@@ -422,7 +428,7 @@ Includes:
 
 ---
 
-## Issue 13 — `slack.userMapping` + mention resolution + periodic revalidation (AFK)
+## Issue 13 — `slack.userMapping` + mention resolution + periodic revalidation
 
 ### What to build
 
@@ -461,7 +467,7 @@ Includes:
 
 ---
 
-## Issue 14 — Prometheus `/metrics` (AFK)
+## Issue 14 — Prometheus `/metrics`
 
 ### What to build
 
@@ -495,7 +501,7 @@ Includes:
 
 ---
 
-## Issue 15 — Heartbeat + stalled-worker detection (AFK)
+## Issue 15 — Heartbeat + stalled-worker detection
 
 ### What to build
 
@@ -525,7 +531,7 @@ Includes:
 
 ---
 
-## Issue 16 — Graceful SIGTERM ordering (AFK)
+## Issue 16 — Graceful SIGTERM ordering
 
 ### What to build
 
@@ -559,7 +565,7 @@ Includes:
 
 ---
 
-## Issue 17 — HTMX filters, URL state, pagination, empty state (AFK)
+## Issue 17 — HTMX filters, URL state, pagination, empty state
 
 ### What to build
 

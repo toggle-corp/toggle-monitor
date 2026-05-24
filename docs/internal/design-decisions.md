@@ -1,13 +1,21 @@
 # toggle-monitor — design decisions
 
+> **Internal working notes — preserved for historical context.** Running log of
+> the v1 design grilling. v1 has shipped; subsequent design changes live as
+> ADRs. For current authoritative references see
+> [`docs/architecture.md`](../architecture.md),
+> [`docs/operations.md`](../operations.md),
+> [`docs/config-schema.md`](../config-schema.md), and the ADRs under
+> [`docs/adr/`](../adr/).
+
 In-progress design conversation built on top of [`initial-spec.md`](./initial-spec.md). Captures resolved decisions and open branches so the design grilling can be resumed across sessions.
 
 ## Architecture Decision Records
 
-Subsystem-scale design changes that supersede sections of this document live as ADRs under [`adr/`](./adr/):
+Subsystem-scale design changes that supersede sections of this document live as ADRs under [`adr/`](../adr/):
 
-- [ADR-0002 — `kube.match` as a cascading rule tree](./adr/0002-kube-match-tree-cascade.md). Replaces the `kube.presets:` registry, the `kube.pause:` block, the `kube.annotationDomain` field, and the entire per-ingress `/kube.*` / `/config.*` annotation layer with a single tree of `when:` / `config:` / `nested:` rules. The kube subsections of "Auto-discovery from k8s ingress", "Presets & DRY", "`kube.pause:` hard-pause list", "K8s ingress annotation convention", and "Kube monitor statuses & lifecycle" below describe the *prior* design and are superseded in-place by ADR-0002.
-- [ADR-0003 — StatusPage replaces Group](./adr/0003-statuspage-replaces-group.md). Deletes `Group` (the entity, the `groups:` block, `monitor.group`, `kube.config.group`, `theme.defaultGroupColor`, `Group.Notify`) in favour of `StatusPage` as the sole collection entity. Section membership is tag-driven via an `any:` / `all:` boolean predicate tree with `tags:` (AND-internally) and `hostRegex:` leaves; N:M monitor↔section. Status pages render with the operator nav + theme toggle; `/group/<slug>` and `/groups` are gone. References to "groups" in this document — sharding, slug regex, annotation overrides, monitor body context lines, etc. — are superseded.
+- [ADR-0002 — `kube.match` as a cascading rule tree](../adr/0002-kube-match-tree-cascade.md). Replaces the `kube.presets:` registry, the `kube.pause:` block, the `kube.annotationDomain` field, and the entire per-ingress `/kube.*` / `/config.*` annotation layer with a single tree of `when:` / `config:` / `nested:` rules. The kube subsections of "Auto-discovery from k8s ingress", "Presets & DRY", "`kube.pause:` hard-pause list", "K8s ingress annotation convention", and "Kube monitor statuses & lifecycle" below describe the *prior* design and are superseded in-place by ADR-0002.
+- [ADR-0003 — StatusPage replaces Group](../adr/0003-statuspage-replaces-group.md). Deletes `Group` (the entity, the `groups:` block, `monitor.group`, `kube.config.group`, `theme.defaultGroupColor`, `Group.Notify`) in favour of `StatusPage` as the sole collection entity. Section membership is tag-driven via an `any:` / `all:` boolean predicate tree with `tags:` (AND-internally) and `hostRegex:` leaves; N:M monitor↔section. Status pages render with the operator nav + theme toggle; `/group/<slug>` and `/groups` are gone. References to "groups" in this document — sharding, slug regex, annotation overrides, monitor body context lines, etc. — are superseded.
 
 ## Resolved decisions
 
@@ -379,7 +387,7 @@ Then post a thread reply: `✅ Resolved at <time>. Total downtime: Xd Yh Zm.`
 
 ## Open branches
 
-Design grilling complete. Full per-field schema lives in [`config-schema.md`](./config-schema.md).
+Design grilling complete. Full per-field schema lives in [`config-schema.md`](../config-schema.md).
 
 **Deferred to implementation phase:**
 

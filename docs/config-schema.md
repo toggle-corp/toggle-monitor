@@ -1,6 +1,6 @@
 # toggle-monitor — config schema (v1)
 
-Locked field-by-field schema for the YAML ConfigMap. Companion to [`design-decisions.md`](./design-decisions.md). Built incrementally during the design grilling.
+Locked field-by-field schema for the YAML ConfigMap. Companion to [`design-decisions.md`](./internal/design-decisions.md). Built incrementally during the design grilling.
 
 The binary refuses to start if any required field is missing or fails validation. The CLI subcommand `toggle-monitor validate <path>` runs the same validation locally for CI use.
 

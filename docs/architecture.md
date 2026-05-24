@@ -2,7 +2,7 @@
 
 A tour of the binary's modules, the data flow at runtime, and the
 two state machines (uptime + SSL). Aimed at someone who has read
-[`prd-v1.md`](prd-v1.md) and wants to find their way around the
+[`prd-v1.md`](internal/prd-v1.md) and wants to find their way around the
 code.
 
 > **Stale section notice (ADR-0002).** The `kube.match` design has
@@ -294,8 +294,8 @@ header, and the workspace-check call.
 
 ## See also
 
-- [PRD](prd-v1.md) — the v1 problem statement and user stories.
-- [Design decisions](design-decisions.md) — every locked choice.
+- [PRD](internal/prd-v1.md) — the v1 problem statement and user stories.
+- [Design decisions](internal/design-decisions.md) — every locked choice.
 - [Config schema](config-schema.md) — per-field reference.
 - [ADRs](adr/) — bootstrap dependencies + tooling.
 - [Operations](operations.md) — endpoints, metrics, log format,

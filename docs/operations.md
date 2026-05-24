@@ -304,7 +304,7 @@ worker wasn't running to observe them).
 ## See also
 
 - [Architecture](architecture.md) — how the modules fit together.
-- [Design decisions](design-decisions.md) — the rationale behind
+- [Design decisions](internal/design-decisions.md) — the rationale behind
   every locked choice.
 - [Config schema](config-schema.md) — per-field reference.
 - [Helm chart README](../deploy/helm/toggle-monitor/README.md) —

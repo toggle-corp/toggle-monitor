@@ -1,14 +1,14 @@
 # ADR 0001 — Bootstrap dependencies and tooling
 
-**Status:** Accepted (Issue 1 of [`issues-v1.md`](../issues-v1.md))
+**Status:** Accepted (Issue 1 of [`issues-v1.md`](../internal/issues-v1.md))
 **Date:** 2026-05-21
 
 ## Context
 
 toggle-monitor v1 ships as a single static Go binary that runs as a
 single replica inside a Kubernetes cluster (see
-[`prd-v1.md`](../prd-v1.md) and
-[`design-decisions.md`](../design-decisions.md)). Issue 1 is the
+[`prd-v1.md`](../internal/prd-v1.md) and
+[`design-decisions.md`](../internal/design-decisions.md)). Issue 1 is the
 foundation slice — its job is to lock the module path, dependency set,
 tooling choices, and CI surface so every later vertical slice builds on
 a stable substrate.
@@ -82,7 +82,7 @@ The canonical client. Used by the ingress informer (Issue 8) over the
 
 ### UI stack: `a-h/templ` + HTMX + precompiled Tailwind
 
-Locked decision per [`prd-v1.md`](../prd-v1.md). This ADR records the
+Locked decision per [`prd-v1.md`](../internal/prd-v1.md). This ADR records the
 build-time toolchain:
 
 - **templ** for type-safe Go-native templates with codegen via
@@ -178,8 +178,8 @@ one (some empty); later issues fill them in.
 
 ## References
 
-- [`docs/issues-v1.md`](../issues-v1.md) — Issue 1 (bootstrap) and
+- [`docs/issues-v1.md`](../internal/issues-v1.md) — Issue 1 (bootstrap) and
   Issue 2 (tracer bullet) acceptance criteria.
-- [`docs/prd-v1.md`](../prd-v1.md) — v1 PRD.
-- [`docs/design-decisions.md`](../design-decisions.md) — locked
+- [`docs/prd-v1.md`](../internal/prd-v1.md) — v1 PRD.
+- [`docs/design-decisions.md`](../internal/design-decisions.md) — locked
   design decisions.
