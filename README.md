@@ -1,5 +1,8 @@
 # toggle-monitor
 
+[![CI](https://github.com/toggle-corp/toggle-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/toggle-corp/toggle-monitor/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A single-binary uptime + SSL monitor that runs inside Kubernetes,
 auto-discovers Ingress resources, and posts Block Kit alerts to Slack.
 
@@ -17,9 +20,13 @@ auto-discovers Ingress resources, and posts Block Kit alerts to Slack.
   detail with provenance, and an auto-discovery view that explains
   why every Ingress did or did not materialize into a monitor.
 
-> Status: **v1 feature-complete** as of `main`. See
-> [`docs/issues-v1.md`](docs/issues-v1.md) for the full breakdown and
-> [`docs/prd-v1.md`](docs/prd-v1.md) for the product requirements.
+> Status: **v1 feature-complete** as of `main`. Historical context — the
+> v1 PRD, design log, and tracer-bullet issues — lives under
+> [`docs/internal/`](docs/internal/); the day-to-day references are
+> [`docs/architecture.md`](docs/architecture.md),
+> [`docs/operations.md`](docs/operations.md),
+> [`docs/config-schema.md`](docs/config-schema.md), and the ADRs under
+> [`docs/adr/`](docs/adr/).
 
 ## Quick start
 
@@ -60,14 +67,12 @@ Chart structure + production checklist:
 
 | Doc | Audience | What it covers |
 |---|---|---|
-| [docs/prd-v1.md](docs/prd-v1.md) | Product / new contributors | The v1 problem statement, user stories, and out-of-scope list. Start here for a top-down view. |
-| [docs/design-decisions.md](docs/design-decisions.md) | Architects | Every resolved design decision with rationale (slugs, reminders, kube auto-discovery, SSL, Slack mechanics, retention, etc.). |
-| [docs/config-schema.md](docs/config-schema.md) | Operators writing the YAML | Per-field schema reference. Field types, validation rules, examples. |
-| [docs/config-example.yaml](docs/config-example.yaml) | Operators | Hand-written example exercising the full schema. |
 | [docs/architecture.md](docs/architecture.md) | New contributors | Module map, data-flow diagrams, state machines, single-replica rationale. |
 | [docs/operations.md](docs/operations.md) | SREs running it in prod | Endpoints, metrics, log format, schema migrations, troubleshooting. |
-| [docs/issues-v1.md](docs/issues-v1.md) | Implementers | Vertical-slice breakdown of v1. Each issue includes acceptance criteria and the commit it landed in. |
+| [docs/config-schema.md](docs/config-schema.md) | Operators writing the YAML | Per-field schema reference. Field types, validation rules, examples. |
+| [docs/config-example.yaml](docs/config-example.yaml) | Operators | Hand-written example exercising the full schema. |
 | [docs/adr/](docs/adr/) | Anyone curious why | Architecture Decision Records for the consequential choices (tooling, deps, layout). |
+| [docs/internal/](docs/internal/) | Archaeology | The original PRD, design-decisions log, tracer-bullet issues, and initial brief — preserved for historical context; superseded in detail by the docs above and the ADRs. |
 | [deploy/local/README.md](deploy/local/README.md) | Developers | docker-compose dev stack with autoreload. |
 | [deploy/helm/toggle-monitor/README.md](deploy/helm/toggle-monitor/README.md) | Operators | Helm chart, values reference, production checklist. |
 
@@ -174,10 +179,8 @@ Full checklist:
 
 ## Contributing
 
-Pick a slice from
-[`docs/issues-v1.md`](docs/issues-v1.md) (most are already landed; some
-follow-ups are open — see commit messages for the deferred items),
-follow the development workflow above, and open a PR.
+Issues and PRs are welcome. Follow the development workflow above and
+open a PR against `main`.
 
 PRs are expected to:
 
@@ -187,4 +190,9 @@ PRs are expected to:
   machine, the config validator, the kube materializer, or the
   store.
 - Update `docs/` if a design decision changes (don't let docs and
-  code drift).
+  code drift). Subsystem-scale changes that supersede earlier
+  decisions land as a new ADR under [`docs/adr/`](docs/adr/).
+
+## License
+
+Released under the [MIT License](LICENSE). © 2026 Toggle Corp.
