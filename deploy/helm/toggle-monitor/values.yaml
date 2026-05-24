@@ -74,11 +74,39 @@ config:
   httpClient:
     userAgent: "toggle-monitor/0.1"
   heartbeat: null                             # uncomment to enable; matches schema
+  # Kube auto-discovery. `kube.match` is a cascading rule tree: for
+  # every (Ingress, host), each rule whose `when:` matches contributes
+  # its `config:` to a merge stack (deeper/later wins for scalars;
+  # arrays union by default, `!override` to replace). The root rule
+  # (empty `when:`) is REQUIRED and must carry every monitor field
+  # needed to produce a valid monitor on its own — leaf-most matches
+  # only need to override what differs. See docs/config-example.yaml
+  # for a richer example and ADR-0002 for the full model.
   kube:
-    annotationDomain: monitor.togglecorp.com
     resyncInterval: 30m
-    pause: []
-    presets: []
+    friendlyName: compact                     # plain | compact | dedupe | title
+    match:
+      # Root rule (REQUIRED) — every required monitor field set here.
+      - when: {}
+        config:
+          scheme: https
+          path: /
+          httpMethod: GET
+          acceptedStatusCodes: [200]
+          interval: 5m
+          timeout: 10s
+          retries: 2
+          retryBackoff: 5s
+          followRedirects: false
+          reminderInterval: 3d
+          sslAlertThreshold: 30d
+          sslEscalationThreshold: 7d
+          sslReminderInterval: 3d
+          slack: ops-alerts
+      # Example child rule: skip short-lived test namespaces. A nested
+      # rule could flip `ignore: false` to un-ignore a critical subset.
+      - when: { namespace: "test-*" }
+        ignore: true
   slack:
     bodyMaxChars: 200
     channels:

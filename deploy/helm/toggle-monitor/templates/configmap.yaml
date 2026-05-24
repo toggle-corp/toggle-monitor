@@ -45,16 +45,12 @@ data:
 
     {{- with .Values.config.kube }}
     kube:
-      annotationDomain: {{ .annotationDomain | quote }}
       resyncInterval: {{ .resyncInterval | quote }}
-      {{- with .pause }}
-      pause:
-        {{- toYaml . | nindent 8 }}
+      {{- with .friendlyName }}
+      friendlyName: {{ . | quote }}
       {{- end }}
-      {{- with .presets }}
-      presets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+      match:
+        {{- toYaml .match | nindent 8 }}
     {{- end }}
 
     slack:
