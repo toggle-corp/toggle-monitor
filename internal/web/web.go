@@ -222,19 +222,8 @@ func (s *Server) handleHomepage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	// Per-status-page tiles. Skip the DB roundtrip if no status pages
-	// are configured.
-	var pageStats []templates.StatusPageStats
-	if len(s.statusConfigs) > 0 {
-		monitors, err := s.repo.ListActiveMonitors(ctx)
-		if err != nil {
-			s.renderDBUnavailable(ctx, w, err)
-			return
-		}
-		pageStats = computeStatusPageStats(s.statusConfigs, monitors)
-	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.Homepage(stats, alerts, page, perPage, mapping, pageStats).Render(ctx, w)
+	_ = templates.Homepage(stats, alerts, page, perPage, mapping).Render(ctx, w)
 }
 
 func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
@@ -336,42 +325,14 @@ func collectMonitorSlugsForPage(pageCfg *templates.StatusConfig, active []store.
 }
 
 // computeStatusPageStats produces one StatusPageStats per configured
-// status page — Total/Up/Down/Paused/SSL-expiring (deduped across the
-// page's sections).
+// status page — Total/Up/Down/Paused/SSL-expiring/SSL-skipped (deduped
+// across the page's sections). Delegates per-page computation to
+// statsForPage so the /status/<slug> detail handler can call the
+// single-page form directly.
 func computeStatusPageStats(cfgs []*templates.StatusConfig, active []store.MonitorRow) []templates.StatusPageStats {
 	out := make([]templates.StatusPageStats, 0, len(cfgs))
 	for _, cfg := range cfgs {
-		stat := templates.StatusPageStats{Slug: cfg.Slug, FriendlyName: cfg.FriendlyName, Color: cfg.Color}
-		seen := make(map[string]struct{})
-		for _, m := range active {
-			tagSet := templates.StatusTagSet(m.Tags)
-			host := monitorHost(m.URL)
-			if !cfg.PageMatches(tagSet, host) {
-				continue
-			}
-			if _, dup := seen[m.Slug]; dup {
-				continue
-			}
-			seen[m.Slug] = struct{}{}
-			stat.Total++
-			switch string(m.Status) {
-			case "up":
-				stat.Up++
-			case "down":
-				stat.Down++
-			case "temporary-paused":
-				stat.TemporaryPaused++
-			}
-			if m.SSLStatus != nil {
-				switch string(*m.SSLStatus) {
-				case "ssl-expiring":
-					stat.SSLExpiring++
-				case "ssl-skipped":
-					stat.SSLSkipped++
-				}
-			}
-		}
-		out = append(out, stat)
+		out = append(out, statsForPage(cfg, active))
 	}
 	return out
 }
@@ -428,16 +389,25 @@ func (s *Server) issueCount(ctx context.Context) int {
 	return count
 }
 
-// handleStatusIndex renders /status — a directory of every
-// configured status page, alphabetical by FriendlyName.
+// handleStatusIndex renders /status — a directory tile per
+// configured status page, alphabetical by FriendlyName, each carrying
+// the page's at-a-glance rollup.
 func (s *Server) handleStatusIndex(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	sorted := append([]*templates.StatusConfig(nil), s.statusConfigs...)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		return strings.ToLower(sorted[i].FriendlyName) < strings.ToLower(sorted[j].FriendlyName)
-	})
+	var entries []templates.StatusPageStats
+	if len(s.statusConfigs) > 0 {
+		monitors, err := s.repo.ListActiveMonitors(ctx)
+		if err != nil {
+			s.renderDBUnavailable(ctx, w, err)
+			return
+		}
+		entries = computeStatusPageStats(s.statusConfigs, monitors)
+		sort.SliceStable(entries, func(i, j int) bool {
+			return strings.ToLower(entries[i].FriendlyName) < strings.ToLower(entries[j].FriendlyName)
+		})
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.StatusIndexPage(sorted).Render(ctx, w)
+	_ = templates.StatusIndexPage(entries).Render(ctx, w)
 }
 
 // handleStatusBySlug renders one configured status page at
@@ -460,8 +430,50 @@ func (s *Server) handleStatusBySlug(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sections := templates.BuildStatusSections(cfg, monitors)
+	stats := statsForPage(cfg, monitors)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.StatusPage(cfg, sections).Render(ctx, w)
+	_ = templates.StatusPage(cfg, sections, stats).Render(ctx, w)
+}
+
+// statsForPage computes a single StatusPageStats for cfg — same metric
+// vocabulary as computeStatusPageStats but for one page only.
+func statsForPage(cfg *templates.StatusConfig, active []store.MonitorRow) templates.StatusPageStats {
+	stat := templates.StatusPageStats{
+		Slug:         cfg.Slug,
+		FriendlyName: cfg.FriendlyName,
+		Description:  cfg.Description,
+		Color:        cfg.Color,
+	}
+	seen := make(map[string]struct{})
+	for _, m := range active {
+		tagSet := templates.StatusTagSet(m.Tags)
+		host := monitorHost(m.URL)
+		if !cfg.PageMatches(tagSet, host) {
+			continue
+		}
+		if _, dup := seen[m.Slug]; dup {
+			continue
+		}
+		seen[m.Slug] = struct{}{}
+		stat.Total++
+		switch string(m.Status) {
+		case "up":
+			stat.Up++
+		case "down":
+			stat.Down++
+		case "temporary-paused":
+			stat.TemporaryPaused++
+		}
+		if m.SSLStatus != nil {
+			switch string(*m.SSLStatus) {
+			case "ssl-expiring":
+				stat.SSLExpiring++
+			case "ssl-skipped":
+				stat.SSLSkipped++
+			}
+		}
+	}
+	return stat
 }
 
 func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {

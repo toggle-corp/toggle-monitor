@@ -18,13 +18,15 @@ templ statTile(label string, count int, kind, href string) {
 	</a>
 }
 
-// StatusPageStats is the per-status-page rollup the homepage tile
-// surfaces — same metric vocabulary as the global Overview, scoped to
-// the monitors that any section of the page selects. Computed by the
-// web layer at render time.
+// StatusPageStats is the per-status-page rollup — same metric
+// vocabulary as the global Overview, scoped to the monitors any
+// section of the page selects. Computed by the web layer at render
+// time. Powers both the /status index tiles and the at-a-glance
+// stats row on /status/<slug>.
 type StatusPageStats struct {
 	Slug            string
 	FriendlyName    string
+	Description     string
 	Color           string // hex
 	Total           int
 	Up              int
@@ -34,16 +36,20 @@ type StatusPageStats struct {
 	SSLSkipped      int
 }
 
-// statusPageTile renders one status-page tile on /. Click → page detail.
+// statusPageTile renders one status-page tile on the /status index.
+// Click → page detail.
 templ statusPageTile(s StatusPageStats) {
 	<a href={ templ.URL("/status/" + s.Slug) } class="block rounded border bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 p-4 transition hover:shadow-sm">
-		<div class="flex items-center gap-2 mb-2">
+		<div class="flex items-center gap-2 mb-1">
 			if s.Color != "" {
 				<span class="inline-block w-2 h-4 rounded shrink-0" style={ "background-color: " + s.Color }></span>
 			}
 			<span class="font-medium truncate">{ s.FriendlyName }</span>
 			<code class="ml-auto font-mono text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 shrink-0">{ s.Slug }</code>
 		</div>
+		if s.Description != "" {
+			<p class="text-xs text-slate-500 dark:text-slate-400 mb-2 truncate">{ s.Description }</p>
+		}
 		<div class="grid grid-cols-5 gap-1.5 text-xs">
 			<div class={ "rounded px-2 py-1 text-center", statTileAccent("", s.Total) }>
 				<div class="text-slate-500 dark:text-slate-400">Total</div>
@@ -96,7 +102,7 @@ type MissingParent struct {
 	LastSeen time.Time
 }
 
-templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page, perPage int, mapping MappingHealth, statusPages []StatusPageStats) {
+templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page, perPage int, mapping MappingHealth) {
 	@Layout("Home") {
 		<section class="mb-8">
 			<h1 class="text-xl font-semibold mb-3">Overview</h1>
@@ -107,21 +113,11 @@ templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page
 				@statTile("SSL expiring", stats.SSLExpiring, "warn", "/monitors?ssl=ssl-expiring")
 				@statTile("SSL skipped", stats.SSLSkipped, "", "/monitors?ssl=ssl-skipped")
 			</div>
-			<div class="mt-3">
-				<a href="/monitors" class="text-sm text-blue-700 dark:text-blue-400 hover:underline">All monitors →</a>
+			<div class="mt-3 flex flex-wrap gap-4 text-sm">
+				<a href="/monitors" class="text-blue-700 dark:text-blue-400 hover:underline">All monitors →</a>
+				<a href="/status" class="text-blue-700 dark:text-blue-400 hover:underline">Status pages →</a>
 			</div>
 		</section>
-
-		if len(statusPages) > 0 {
-			<section class="mb-8">
-				<h2 class="text-lg font-semibold mb-3">Status pages</h2>
-				<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-					for _, sp := range statusPages {
-						@statusPageTile(sp)
-					}
-				</div>
-			</section>
-		}
 
 		if len(mapping.Invalid) > 0 {
 			<section class="mb-6">

@@ -228,7 +228,7 @@ func pageTitle(cfg *StatusConfig) string {
 // cfg == nil means no statusPages were configured — the page renders
 // an empty placeholder rather than 404ing so a bookmark still
 // resolves to something explanatory.
-templ StatusPage(cfg *StatusConfig, sections []StatusSection) {
+templ StatusPage(cfg *StatusConfig, sections []StatusSection, stats StatusPageStats) {
 	@Layout(pageTitle(cfg)) {
 		if cfg == nil {
 			<div class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-6 text-sm text-slate-500 dark:text-slate-400 text-center">
@@ -237,7 +237,7 @@ templ StatusPage(cfg *StatusConfig, sections []StatusSection) {
 			</div>
 		} else {
 			{{ kind := statusBadgeKind(sections) }}
-			<div class={ "flex items-stretch gap-4 rounded border bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 p-4 mb-6" }>
+			<div class={ "flex items-stretch gap-4 rounded border bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 p-4 mb-4" }>
 				if cfg.Color != "" {
 					<div class="w-1 rounded shrink-0" style={ "background-color: " + cfg.Color }></div>
 				}
@@ -257,6 +257,15 @@ templ StatusPage(cfg *StatusConfig, sections []StatusSection) {
 					}
 				</div>
 			</div>
+
+			<div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+				@statTile("Total", stats.Total, "", statusListingURL(cfg.Slug, -1, ""))
+				@statTile("Up", stats.Up, "up", statusListingURL(cfg.Slug, -1, "up"))
+				@statTile("Down", stats.Down, "down", statusListingURL(cfg.Slug, -1, "down"))
+				@statTile("Paused", stats.TemporaryPaused, "warn", statusListingURL(cfg.Slug, -1, "temporary-paused"))
+				@statTile("SSL expiring", stats.SSLExpiring, "warn", statusListingURL(cfg.Slug, -1, "ssl-expiring"))
+			</div>
+
 			for idx, sec := range sections {
 				<section class="mb-6">
 					<h2 class="text-lg font-semibold mb-2">
@@ -301,9 +310,31 @@ templ StatusPage(cfg *StatusConfig, sections []StatusSection) {
 }
 
 // sectionListingURL is the operator drill-down URL for a specific
-// section on /monitors. ?page=<slug>&section=<idx>.
+// section on /monitors. ?status_page=<slug>&section=<idx>.
 func sectionListingURL(slug string, idx int) string {
 	return "/monitors?status_page=" + slug + "&section=" + sectionIndexString(idx)
+}
+
+// statusListingURL builds a /monitors filter URL scoped to a status
+// page (optionally a specific section) with an extra status/ssl
+// filter applied. sectionIdx < 0 means "any section in the page".
+// kind is one of "" / "up" / "down" / "temporary-paused" /
+// "ssl-expiring" / "ssl-skipped". SSL kinds set ?ssl=; the rest set
+// ?status=. Empty kind drops the extra filter entirely.
+func statusListingURL(slug string, sectionIdx int, kind string) string {
+	q := "/monitors?status_page=" + slug
+	if sectionIdx >= 0 {
+		q += "&section=" + sectionIndexString(sectionIdx)
+	}
+	switch kind {
+	case "":
+		// no extra filter
+	case "ssl-expiring", "ssl-skipped", "ok":
+		q += "&ssl=" + kind
+	default:
+		q += "&status=" + kind
+	}
+	return q
 }
 
 func sectionIndexString(idx int) string {
@@ -329,33 +360,23 @@ func sectionIndexString(idx int) string {
 }
 
 // StatusIndexPage renders /status — alphabetical by FriendlyName.
-// Sorting is done by the caller (web layer) so this template can stay
-// pure.
-templ StatusIndexPage(configs []*StatusConfig) {
+// Each entry is a tile carrying the page's friendlyName + description
+// + a 5-count stat row. Sorting + stats computation are done by the
+// caller (web layer) so this template can stay pure.
+templ StatusIndexPage(entries []StatusPageStats) {
 	@Layout("Status pages") {
 		<h1 class="text-2xl font-semibold mb-4">Status pages</h1>
-		if len(configs) == 0 {
+		if len(entries) == 0 {
 			<div class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-6 text-sm text-slate-500 dark:text-slate-400 text-center">
 				<p>No status pages configured.</p>
 				<p class="text-xs mt-1">Add a <code class="font-mono">statusPages:</code> block to config.yaml to populate this page.</p>
 			</div>
 		} else {
-			<ul class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 divide-y divide-slate-100 dark:divide-slate-800">
-				for _, c := range configs {
-					<li>
-						<a href={ templ.SafeURL("/status/" + c.Slug) } class="flex flex-wrap items-center gap-3 py-3 px-4 hover:bg-slate-50 dark:hover:bg-slate-800/40">
-							if c.Color != "" {
-								<span class="inline-block w-2 h-6 rounded shrink-0" style={ "background-color: " + c.Color }></span>
-							}
-							<span class="font-medium">{ pageTitle(c) }</span>
-							<span class="inline-block px-2 py-0.5 rounded text-xs font-mono bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">{ c.Slug }</span>
-							if c.Description != "" {
-								<span class="text-sm text-slate-500 dark:text-slate-400 truncate">{ c.Description }</span>
-							}
-						</a>
-					</li>
+			<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+				for _, e := range entries {
+					@statusPageTile(e)
 				}
-			</ul>
+			</div>
 		}
 	}
 }
