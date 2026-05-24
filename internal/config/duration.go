@@ -22,9 +22,16 @@ func (d Duration) String() string { return time.Duration(d).String() }
 // MarshalYAML implements yaml.Marshaler so the Duration round-trips as
 // a human-readable scalar (e.g., "5m0s") instead of a raw nanosecond
 // integer. Used by `toggle-monitor config show` and `toggle-monitor
-// explain` to keep the printed config legible.
+// explain` to keep the printed config legible. Whole-day multiples are
+// emitted with the `d` suffix (e.g., "3d") so values written by
+// operators round-trip identically through the config commands.
 func (d Duration) MarshalYAML() (any, error) {
-	return time.Duration(d).String(), nil
+	td := time.Duration(d)
+	const day = 24 * time.Hour
+	if td > 0 && td%day == 0 {
+		return fmt.Sprintf("%dd", td/day), nil
+	}
+	return td.String(), nil
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler so YAML scalar strings get
