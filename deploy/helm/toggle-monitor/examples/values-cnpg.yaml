@@ -1,0 +1,105 @@
+# CNPG-backed production install.
+#
+# Binds every interesting field on the CNPG-generated Secret (named
+# `<cluster>-app` by default) into env vars on the toggle-monitor pod.
+# The binary's `${VAR}` interpolation then plugs the non-secret values
+# (host / port / user / dbname) into config.inline.database.*, while
+# the password flows through the `passwordEnv:` indirection that
+# triggers SecretString-wrapping for log masking.
+#
+# Replace `my-cnpg-cluster` everywhere with your actual CNPG cluster
+# name, and `my-slack-secret` with the Secret holding the bot token.
+
+envFromSecrets:
+  - name: DB_PASSWORD
+    secret: { name: my-cnpg-cluster-app, key: password }
+  - name: DB_HOST
+    secret: { name: my-cnpg-cluster-app, key: host }
+  - name: DB_PORT
+    secret: { name: my-cnpg-cluster-app, key: port }
+  - name: DB_USER
+    secret: { name: my-cnpg-cluster-app, key: username }
+  - name: DB_NAME
+    secret: { name: my-cnpg-cluster-app, key: dbname }
+  - name: SLACK_BOT_TOKEN
+    secret: { name: my-slack-secret, key: bot-token }
+
+config:
+  inline:
+    displayTimezone: Asia/Kathmandu
+    publicBaseURL: https://monitor.internal.example.com
+    dbBodyMaxChars: 4000
+
+    database:
+      host: ${DB_HOST}
+      port: "${DB_PORT}"           # quoted so YAML sees a string before int coercion
+      user: ${DB_USER}
+      name: ${DB_NAME}
+      sslMode: require
+      passwordEnv: DB_PASSWORD     # masked: the only way to feed a secret to the binary
+
+    ui:
+      pageSize:
+        homepageAlerts: 20
+        monitorListing: 50
+        monitorHistory: 50
+        discoveryListing: 50
+      maxPerPage: 200
+
+    httpClient:
+      userAgent: "toggle-monitor/0.1 (+https://monitor.internal.example.com/about)"
+
+    kube:
+      resyncInterval: 30m
+      friendlyName: compact
+      match:
+        - when: {}
+          config:
+            scheme: https
+            path: /
+            httpMethod: GET
+            acceptedStatusCodes: [200]
+            interval: 5m
+            timeout: 10s
+            retries: 2
+            retryBackoff: 5s
+            followRedirects: false
+            reminderInterval: 3d
+            sslAlertThreshold: 30d
+            sslEscalationThreshold: 7d
+            sslReminderInterval: 3d
+            slack: ops-alerts
+        - when: { namespace: "test-*" }
+          ignore: true
+
+    slack:
+      bodyMaxChars: 200
+      channels:
+        - slug: ops-alerts
+          channelId: C0123ABCD     # replace with your real channel ID
+          tokenEnv: SLACK_BOT_TOKEN
+      userMapping: {}
+
+    monitors: []
+    statusPages: []
+
+# Surface the UI behind nginx-ingress, restricted to internal CIDRs.
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8,192.168.0.0/16"
+  hosts:
+    - host: monitor.internal.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Hand metrics to kube-prometheus-stack.
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+  # labels:
+  #   release: kube-prometheus-stack  # match your Prometheus instance's serviceMonitorSelector

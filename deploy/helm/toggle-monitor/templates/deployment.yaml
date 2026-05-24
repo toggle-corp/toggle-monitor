@@ -5,9 +5,9 @@ metadata:
   labels: {{- include "toggle-monitor.labels" . | nindent 4 }}
   {{- if .Values.reloader.enabled }}
   annotations:
-    # stakater/reloader restarts the pod when the ConfigMap or referenced
-    # Secrets change. Required so a YAML config edit (or a Slack-token
-    # rotation) takes effect without a manual `kubectl rollout restart`.
+    # Stakater Reloader restarts the pod when a referenced ConfigMap or
+    # Secret changes. Required for Secret rotation pickup, or for picking
+    # up edits to an externally-managed ConfigMap.
     reloader.stakater.com/auto: "true"
   {{- end }}
 spec:
@@ -21,6 +21,14 @@ spec:
   template:
     metadata:
       labels: {{- include "toggle-monitor.selectorLabels" . | nindent 8 }}
+      {{- if not .Values.config.existingConfigMap.name }}
+      annotations:
+        # Hashes the rendered ConfigMap content so any helm upgrade that
+        # changes the inline config triggers a rolling restart. Not
+        # emitted when an external ConfigMap is mounted — the chart
+        # can't see its data.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+      {{- end }}
     spec:
       serviceAccountName: {{ include "toggle-monitor.serviceAccountName" . }}
       securityContext:
@@ -35,20 +43,19 @@ spec:
           args:
             - serve
             - --config
-            - /etc/toggle-monitor/config.yaml
+            - /etc/toggle-monitor/{{ .Values.config.existingConfigMap.key }}
             - --listen
             - ":8080"
+          {{- with .Values.envFromSecrets }}
           env:
-            - name: DB_PASSWORD
+            {{- range . }}
+            - name: {{ .name }}
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "toggle-monitor.dbSecretName" . }}
-                  key: {{ include "toggle-monitor.dbSecretKey" . }}
-            - name: SLACK_BOT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "toggle-monitor.slackSecretName" . }}
-                  key: {{ include "toggle-monitor.slackSecretKey" . }}
+                  name: {{ .secret.name }}
+                  key: {{ .secret.key }}
+            {{- end }}
+          {{- end }}
           ports:
             - name: http
               containerPort: 8080
@@ -66,7 +73,7 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: {{ include "toggle-monitor.fullname" . }}
+            name: {{ .Values.config.existingConfigMap.name | default (include "toggle-monitor.fullname" .) }}
       {{- with .Values.nodeSelector }}
       nodeSelector: {{- toYaml . | nindent 8 }}
       {{- end }}

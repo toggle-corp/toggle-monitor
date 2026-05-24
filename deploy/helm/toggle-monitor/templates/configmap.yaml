@@ -1,70 +1,20 @@
+{{/*
+  Chart-managed ConfigMap. Skipped when the operator points at an
+  externally-managed CM via `config.existingConfigMap.name`.
+
+  Body is `toYaml .Values.config.inline` — no per-field templating —
+  so any schema field the binary accepts flows through without chart
+  changes. Anchors and `!override` tags do NOT survive this round-trip
+  (Helm parses values.yaml into JSON-shaped Go data first); operators
+  who need those features must use the existingConfigMap path.
+*/}}
+{{- if not .Values.config.existingConfigMap.name }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ include "toggle-monitor.fullname" . }}
   labels: {{- include "toggle-monitor.labels" . | nindent 4 }}
 data:
-  config.yaml: |
-    # Generated from values.yaml at install/upgrade time.
-    # Edit `config:` in your values.yaml — never edit this directly.
-
-    displayTimezone: {{ .Values.config.displayTimezone | quote }}
-    {{- if .Values.config.publicBaseURL }}
-    publicBaseURL: {{ .Values.config.publicBaseURL | quote }}
-    {{- end }}
-    dbBodyMaxChars: {{ .Values.config.dbBodyMaxChars }}
-
-    database:
-      host: {{ .Values.postgres.host | quote }}
-      port: {{ .Values.postgres.port }}
-      user: {{ .Values.postgres.user | quote }}
-      name: {{ .Values.postgres.name | quote }}
-      sslMode: {{ .Values.postgres.sslMode | quote }}
-      passwordEnv: DB_PASSWORD
-
-    ui:
-      pageSize:
-        homepageAlerts: {{ .Values.config.ui.pageSize.homepageAlerts }}
-        monitorListing: {{ .Values.config.ui.pageSize.monitorListing }}
-        monitorHistory: {{ .Values.config.ui.pageSize.monitorHistory }}
-        discoveryListing: {{ .Values.config.ui.pageSize.discoveryListing }}
-      maxPerPage: {{ .Values.config.ui.maxPerPage }}
-
-    httpClient:
-      userAgent: {{ .Values.config.httpClient.userAgent | quote }}
-
-    {{- with .Values.config.heartbeat }}
-    heartbeat:
-      url: {{ .url | quote }}
-      interval: {{ .interval | quote }}
-      failOnStalledWorker: {{ .failOnStalledWorker }}
-    {{- end }}
-
-    {{- with .Values.config.kube }}
-    kube:
-      resyncInterval: {{ .resyncInterval | quote }}
-      {{- with .friendlyName }}
-      friendlyName: {{ . | quote }}
-      {{- end }}
-      match:
-        {{- toYaml .match | nindent 8 }}
-    {{- end }}
-
-    slack:
-      bodyMaxChars: {{ .Values.config.slack.bodyMaxChars }}
-      channels:
-        {{- toYaml .Values.config.slack.channels | nindent 8 }}
-      {{- with .Values.config.slack.userMapping }}
-      userMapping:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-
-    {{- with .Values.config.monitors }}
-    monitors:
-      {{- toYaml . | nindent 6 }}
-    {{- end }}
-
-    {{- with .Values.config.statusPages }}
-    statusPages:
-      {{- toYaml . | nindent 6 }}
-    {{- end }}
+  {{ .Values.config.existingConfigMap.key }}: |
+{{ toYaml .Values.config.inline | indent 4 }}
+{{- end }}

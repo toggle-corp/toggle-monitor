@@ -25,6 +25,14 @@ jobs:
         with:
           just-version: "1.51.0"
 
+      - name: Install helm
+        # Needed for internal/helmcharttest: shells out to `helm template`
+        # against deploy/helm/toggle-monitor to verify chart-rendered
+        # ConfigMaps are accepted by the binary's config loader.
+        uses: azure/setup-helm@v4
+        with:
+          version: latest
+
       - name: Module cache
         uses: actions/cache@v4
         with:

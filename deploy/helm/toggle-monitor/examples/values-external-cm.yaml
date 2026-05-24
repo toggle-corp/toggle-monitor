@@ -1,0 +1,71 @@
+# GitOps install: the toggle-monitor config.yaml is an
+# operator-managed artifact (kubectl / Kustomize / Argo / Flux), not
+# generated from helm values. Use this shape when the config file
+# needs YAML features that don't survive a `toYaml` round-trip
+# through values.yaml — anchors, `!override` tags, or inline comments
+# (e.g. labels next to channel / user IDs).
+#
+# Before `helm install`, create the ConfigMap and Secret separately:
+#
+#   kubectl -n monitoring create configmap toggle-monitor-config \
+#     --from-file=config.yaml=./toggle-monitor-config.yaml
+#
+#   # ExternalSecrets / SealedSecrets are typical here. A worked
+#   # ExternalSecret pulling the CNPG password into the env var the
+#   # chart binds below:
+#   #
+#   # apiVersion: external-secrets.io/v1beta1
+#   # kind: ExternalSecret
+#   # metadata:
+#   #   name: toggle-monitor-secrets
+#   # spec:
+#   #   refreshInterval: 1h
+#   #   secretStoreRef: { name: cluster-store, kind: ClusterSecretStore }
+#   #   target:
+#   #     name: toggle-monitor-secrets       # the Secret envFromSecrets points at
+#   #   data:
+#   #     - secretKey: db-password
+#   #       remoteRef: { key: cnpg/app, property: password }
+#   #     - secretKey: slack-bot-token
+#   #       remoteRef: { key: slack/bot-token }
+
+envFromSecrets:
+  - name: DB_PASSWORD
+    secret: { name: toggle-monitor-secrets, key: db-password }
+  - name: SLACK_BOT_TOKEN
+    secret: { name: toggle-monitor-secrets, key: slack-bot-token }
+
+config:
+  existingConfigMap:
+    name: toggle-monitor-config
+    key: config.yaml
+  # `inline:` is ignored when existingConfigMap.name is set; the chart
+  # mounts the named ConfigMap directly. Left as `{}` so the values
+  # file stays small.
+  inline: {}
+
+# Secret rotations and external-ConfigMap edits can't trigger pod
+# restarts via the chart's `checksum/config` mechanism (the chart
+# doesn't own the data). Stakater Reloader watches all referenced
+# CMs/Secrets and rolls the Deployment when they change — required
+# here for the rotation path. Without it, every config or secret
+# update needs a manual `kubectl rollout restart deploy/<name>`.
+reloader:
+  enabled: true
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8,192.168.0.0/16"
+  hosts:
+    - host: monitor.internal.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s

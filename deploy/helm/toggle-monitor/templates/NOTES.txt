@@ -1,8 +1,7 @@
 toggle-monitor {{ .Chart.AppVersion }} is installing into namespace {{ .Release.Namespace }}.
 
 The ArgoCD PreSync (or Helm pre-install) hook runs `toggle-monitor migrate`
-against {{ .Values.postgres.host }}:{{ .Values.postgres.port }}/{{ .Values.postgres.name }}
-before the app pod rolls out.
+against the database described in your config before the app pod rolls out.
 
 Health endpoints:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "toggle-monitor.fullname" . }} 8080:{{ .Values.service.port }}
@@ -18,16 +17,18 @@ access via your network policy / nginx whitelist annotations, OR keep
 the Service ClusterIP-only and reach the UI via port-forward.
 {{- end }}
 
-{{- if and (not .Values.postgres.passwordSecret.name) (not .Values.postgres.password) }}
+{{- if not .Values.envFromSecrets }}
 
-WARNING: no postgres password configured. Set either
-postgres.passwordSecret.name (recommended — external Secret) or
-postgres.password (NOT recommended — inline value).
+WARNING: envFromSecrets is empty. The binary needs at least the env var
+named by `config.inline.database.passwordEnv` (default DB_PASSWORD) and
+the env vars named by every `slack.channels[].tokenEnv`. Bind them by
+listing entries under envFromSecrets that point at pre-existing Secrets.
+See examples/values-cnpg.yaml for the CNPG mapping pattern.
 {{- end }}
 
-{{- if and (not .Values.slack.tokenSecret.name) (not .Values.slack.token) }}
+{{- if and (not .Values.config.existingConfigMap.name) (eq .Values.config.inline.database.host "REPLACE_ME") }}
 
-WARNING: no slack bot token configured. Slack output will fail at
-runtime; the workspace check will surface the failure in the UI but
-won't block startup.
+WARNING: config.inline.database.host is still REPLACE_ME. Override it
+in your values file (or use config.existingConfigMap.name to mount an
+operator-managed ConfigMap instead).
 {{- end }}

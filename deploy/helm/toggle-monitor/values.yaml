@@ -7,16 +7,37 @@ image:
 
 # v1 is single-replica by design (the worker is a single in-process loop).
 # Horizontal scale-out is deferred — keep this at 1 unless you know what
-# you're doing. The deployment uses strategy: Recreate so the old pod
+# you're doing. The Deployment uses strategy: Recreate so the old pod
 # fully exits before the new one starts (avoids two workers racing).
 replicas: 1
 
-# Restart pods when the ConfigMap or Secret changes. Requires
-# stakater/reloader to be installed cluster-wide. Set to false if you
-# don't have reloader; you'll need to roll the deployment manually
-# after a config edit.
+# Each entry projects a Secret key into an env var on both the serve
+# Deployment and the migrate Job. The chart never creates Secrets —
+# they must exist before `helm install`. Non-secret values that happen
+# to live in a Secret (e.g. CNPG's `host` / `username` / `dbname` /
+# `port` keys) bind here too; the binary consumes them via ${VAR}
+# interpolation in config.inline.database.* below.
+#
+# See examples/values-cnpg.yaml for the full CNPG-mapping pattern.
+envFromSecrets: []
+# - name: DB_PASSWORD
+#   secret:
+#     name: toggle-monitor-db                 # or e.g. my-cnpg-cluster-app
+#     key: password
+# - name: SLACK_BOT_TOKEN
+#   secret:
+#     name: toggle-monitor-slack
+#     key: bot-token
+
+# By default the Deployment carries a `checksum/config` annotation
+# (sha256 of the rendered ConfigMap data) so any `helm upgrade` that
+# changes the inline config triggers a rolling restart automatically.
+# Set `reloader.enabled: true` ONLY if Stakater Reloader is installed
+# cluster-wide AND you want pod restarts to also be triggered by Secret
+# rotations or by edits to an externally-managed ConfigMap (the
+# checksum mechanism can't cover those — chart doesn't own the data).
 reloader:
-  enabled: true
+  enabled: false
 
 # The ServiceAccount the Deployment uses. With ingress auto-discovery
 # enabled, it gets a cluster-wide ClusterRole granting
@@ -31,100 +52,100 @@ rbac:
   # (i.e., you've removed the kube block from config).
   ingressWatch: true
 
-# The Postgres connection. SecretName, when set, takes precedence —
-# the chart pulls DB_PASSWORD from there. Otherwise password is the
-# inline value (NOT recommended for production).
-postgres:
-  host: cnpg-cluster-rw.cnpg-system.svc.cluster.local
-  port: 5432
-  user: toggle_monitor
-  name: toggle_monitor
-  sslMode: require
-  passwordSecret:
-    # External Secret: name + key of an existing Secret holding the DB
-    # password under `password`. Recommended.
-    name: ""                                  # e.g. "toggle-monitor-db"
-    key: password
-  # Inline fallback. NOT recommended; use passwordSecret in production.
-  password: ""
-
-# Slack workspace token. Same pattern as postgres.
-slack:
-  tokenSecret:
-    name: ""                                  # e.g. "toggle-monitor-slack"
-    key: bot-token
-  token: ""                                   # inline fallback (avoid)
-
-# The toggle-monitor YAML config, mounted into the pod at
-# /etc/toggle-monitor/config.yaml via a ConfigMap. Edit this block to
-# describe your actual monitors / groups / Slack channels.
+# Config provisioning. Two paths, mutually exclusive:
+#
+#   - existingConfigMap.name unset → chart renders a ConfigMap from
+#     `config.inline:` below. Quickstart-friendly, but YAML anchors are
+#     expanded and `!override` tags / comments do NOT survive the
+#     `toYaml` round-trip through values.yaml.
+#
+#   - existingConfigMap.name set → chart mounts that ConfigMap and
+#     skips rendering. The named CM is owned by the operator
+#     (kubectl/Kustomize/Argo). Full YAML fidelity preserved — use this
+#     path if your config relies on anchors, `!override`, or inline
+#     comments.
 config:
-  displayTimezone: UTC
-  publicBaseURL: ""                           # e.g. https://monitor.internal.example.com
-  dbBodyMaxChars: 4000
-  ui:
-    pageSize:
-      homepageAlerts: 20
-      monitorListing: 50
-      monitorHistory: 50
-      discoveryListing: 50
-    maxPerPage: 200
-  httpClient:
-    userAgent: "toggle-monitor/0.1"
-  heartbeat: null                             # uncomment to enable; matches schema
-  # Kube auto-discovery. `kube.match` is a cascading rule tree: for
-  # every (Ingress, host), each rule whose `when:` matches contributes
-  # its `config:` to a merge stack (deeper/later wins for scalars;
-  # arrays union by default, `!override` to replace). The root rule
-  # (empty `when:`) is REQUIRED and must carry every monitor field
-  # needed to produce a valid monitor on its own — leaf-most matches
-  # only need to override what differs. See docs/config-example.yaml
-  # for a richer example and ADR-0002 for the full model.
-  kube:
-    resyncInterval: 30m
-    friendlyName: compact                     # plain | compact | dedupe | title
-    match:
-      # Root rule (REQUIRED) — every required monitor field set here.
-      - when: {}
-        config:
-          scheme: https
-          path: /
-          httpMethod: GET
-          acceptedStatusCodes: [200]
-          interval: 5m
-          timeout: 10s
-          retries: 2
-          retryBackoff: 5s
-          followRedirects: false
-          reminderInterval: 3d
-          sslAlertThreshold: 30d
-          sslEscalationThreshold: 7d
-          sslReminderInterval: 3d
-          slack: ops-alerts
-      # Example child rule: skip short-lived test namespaces. A nested
-      # rule could flip `ignore: false` to un-ignore a critical subset.
-      - when: { namespace: "test-*" }
-        ignore: true
-  slack:
-    bodyMaxChars: 200
-    channels:
-      - slug: ops-alerts
-        channelId: REPLACE_ME                 # e.g. C0123ABCD
-        tokenEnv: SLACK_BOT_TOKEN
-    userMapping: {}
-  monitors: []
-  # Status pages — see ADR-0003. Each section's `match` is a single
-  # predicate node (leaf or branch). Example:
-  #   statusPages:
-  #     - slug: acme
-  #       friendlyName: ACME
-  #       sections:
-  #         - title: Production
-  #           match:
-  #             any:
-  #               - { tags: [prod, acme] }
-  #               - { tags: [prod, acme] }
-  statusPages: []
+  existingConfigMap:
+    name: ""
+    key: config.yaml                          # data key inside the CM; also the filename at mount time
+
+  # Inline content rendered into a chart-managed ConfigMap when
+  # `existingConfigMap.name` is empty. REPLACE_ME entries must be
+  # overridden before the binary will start — see the schema in
+  # docs/config-schema.md for the full reference.
+  inline:
+    displayTimezone: UTC
+    publicBaseURL: ""                         # e.g. https://monitor.internal.example.com
+    dbBodyMaxChars: 4000
+
+    database:
+      host: REPLACE_ME                        # e.g. my-cnpg-rw.cnpg-system.svc.cluster.local
+      port: 5432
+      user: toggle_monitor
+      name: toggle_monitor
+      sslMode: require
+      passwordEnv: DB_PASSWORD
+
+    ui:
+      pageSize:
+        homepageAlerts: 20
+        monitorListing: 50
+        monitorHistory: 50
+        discoveryListing: 50
+      maxPerPage: 200
+
+    httpClient:
+      userAgent: "toggle-monitor/0.1"
+
+    # heartbeat:                              # optional; uncomment + edit to enable
+    #   url: https://hc-ping.com/<uuid>
+    #   interval: 1m
+    #   failOnStalledWorker: true
+
+    # Kube auto-discovery. `kube.match` is a cascading rule tree. The
+    # root rule (empty `when:`) is REQUIRED and must carry every
+    # required monitor field; leaf rules only override what differs.
+    # See docs/config-example.yaml and ADR-0002 for the full model.
+    kube:
+      resyncInterval: 30m
+      friendlyName: compact                   # plain | compact | dedupe | title
+      match:
+        - when: {}
+          config:
+            scheme: https
+            path: /
+            httpMethod: GET
+            acceptedStatusCodes: [200]
+            interval: 5m
+            timeout: 10s
+            retries: 2
+            retryBackoff: 5s
+            followRedirects: false
+            reminderInterval: 3d
+            sslAlertThreshold: 30d
+            sslEscalationThreshold: 7d
+            sslReminderInterval: 3d
+            slack: ops-alerts
+        - when: { namespace: "test-*" }
+          ignore: true
+
+    slack:
+      bodyMaxChars: 200
+      # summaryChannel: ops-summary           # optional; channel for the weekly operational summary
+      # dependentsNoteMax: 50                 # optional override of the dependents-listing cap in alerts
+      channels:
+        - slug: ops-alerts
+          channelId: REPLACE_ME               # e.g. C0123ABCD
+          tokenEnv: SLACK_BOT_TOKEN
+      userMapping: {}
+
+    # proxies: []                             # optional; SOCKS5 proxies referenced by monitor `proxy:` slugs
+
+    monitors: []
+
+    # statusPages — see ADR-0003. Each section's `match` is a single
+    # predicate node (leaf or branch).
+    statusPages: []
 
 # Container service + ingress for the UI. Restrict the ingress to your
 # internal network — there is no auth in v1.
@@ -178,7 +199,7 @@ serviceMonitor:
 
 # ArgoCD PreSync hook: a one-shot Job that runs `toggle-monitor migrate`
 # before the new app pod rolls out. Disable if you're not on ArgoCD —
-# you'll need to apply migrations another way (e.g. a manual job).
+# the chart falls back to Helm pre-install/pre-upgrade hooks.
 migrate:
   argoCDPreSyncHook: true
   resources:

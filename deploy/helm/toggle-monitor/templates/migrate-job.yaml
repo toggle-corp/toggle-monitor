@@ -35,21 +35,17 @@ spec:
           args:
             - migrate
             - --config
-            - /etc/toggle-monitor/config.yaml
+            - /etc/toggle-monitor/{{ .Values.config.existingConfigMap.key }}
+          {{- with .Values.envFromSecrets }}
           env:
-            - name: DB_PASSWORD
+            {{- range . }}
+            - name: {{ .name }}
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "toggle-monitor.dbSecretName" . }}
-                  key: {{ include "toggle-monitor.dbSecretKey" . }}
-            # SLACK_BOT_TOKEN is named-but-unused by `migrate`; the
-            # binary still validates env-var presence at startup so we
-            # wire it through here too.
-            - name: SLACK_BOT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "toggle-monitor.slackSecretName" . }}
-                  key: {{ include "toggle-monitor.slackSecretKey" . }}
+                  name: {{ .secret.name }}
+                  key: {{ .secret.key }}
+            {{- end }}
+          {{- end }}
           resources: {{- toYaml .Values.migrate.resources | nindent 12 }}
           volumeMounts:
             - name: config
@@ -58,4 +54,4 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: {{ include "toggle-monitor.fullname" . }}
+            name: {{ .Values.config.existingConfigMap.name | default (include "toggle-monitor.fullname" .) }}
