@@ -442,6 +442,7 @@ func statsForPage(cfg *templates.StatusConfig, active []store.MonitorRow) templa
 		Slug:         cfg.Slug,
 		FriendlyName: cfg.FriendlyName,
 		Description:  cfg.Description,
+		LogoURL:      cfg.LogoURL,
 		Color:        cfg.Color,
 	}
 	seen := make(map[string]struct{})

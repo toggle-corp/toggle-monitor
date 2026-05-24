@@ -27,6 +27,7 @@ type StatusPageStats struct {
 	Slug            string
 	FriendlyName    string
 	Description     string
+	LogoURL         string
 	Color           string // hex
 	Total           int
 	Up              int
@@ -36,43 +37,162 @@ type StatusPageStats struct {
 	SSLSkipped      int
 }
 
-// statusPageTile renders one status-page tile on the /status index.
-// Click → page detail.
-templ statusPageTile(s StatusPageStats) {
-	<a href={ templ.URL("/status/" + s.Slug) } class="block rounded border bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 p-4 transition hover:shadow-sm">
-		<div class="flex items-center gap-2 mb-1">
-			if s.Color != "" {
-				<span class="inline-block w-2 h-4 rounded shrink-0" style={ "background-color: " + s.Color }></span>
-			}
-			<span class="font-medium truncate">{ s.FriendlyName }</span>
-			<code class="ml-auto font-mono text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 shrink-0">{ s.Slug }</code>
-		</div>
-		if s.Description != "" {
-			<p class="text-xs text-slate-500 dark:text-slate-400 mb-2 truncate">{ s.Description }</p>
+// pageBadgeKind picks the 3-state badge for a page rollup, mirroring
+// status.templ's statusBadgeKind but driven by deduped page totals
+// rather than per-section monitor lists.
+func pageBadgeKind(s StatusPageStats) string {
+	switch {
+	case s.Total == 0:
+		return "none"
+	case s.Down > 0:
+		return "down"
+	case s.TemporaryPaused > 0 || s.SSLExpiring > 0 || s.SSLSkipped > 0:
+		return "warn"
+	default:
+		return "up"
+	}
+}
+
+// firstInitial returns the first letter of s upper-cased, "?" when s
+// is empty. Used as the avatar fallback when a status page has no
+// logoUrl.
+func firstInitial(s string) string {
+	for _, r := range s {
+		if r == ' ' || r == '\t' {
+			continue
 		}
-		<div class="grid grid-cols-5 gap-1.5 text-xs">
-			<div class={ "rounded px-2 py-1 text-center", statTileAccent("", s.Total) }>
-				<div class="text-slate-500 dark:text-slate-400">Total</div>
-				<div class="font-semibold tabular-nums">{ fmt.Sprint(s.Total) }</div>
+		if r >= 'a' && r <= 'z' {
+			return string(r - 32)
+		}
+		return string(r)
+	}
+	return "?"
+}
+
+// statusPageTile renders one status-page card on the /status index.
+// Layout: a top stripe in the page colour, then a header band with
+// logo + name + slug + 3-state badge, then optional description,
+// then a stats footer with a large Total + only-when-non-zero
+// problem chips so healthy pages stay calm.
+templ statusPageTile(s StatusPageStats) {
+	{{ kind := pageBadgeKind(s) }}
+	<a href={ templ.URL("/status/" + s.Slug) } class="group block rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden transition hover:shadow-md hover:-translate-y-0.5 hover:border-slate-300 dark:hover:border-slate-600">
+		if s.Color != "" {
+			<div class="h-1 w-full" style={ "background-color: " + s.Color }></div>
+		} else {
+			<div class="h-1 w-full bg-slate-200 dark:bg-slate-700"></div>
+		}
+		<div class="p-5">
+			<div class="flex items-start gap-4 mb-3">
+				if s.LogoURL != "" {
+					<img src={ s.LogoURL } alt="" class="h-11 w-11 rounded-md object-contain shrink-0 bg-slate-50 dark:bg-slate-800 p-1 border border-slate-200 dark:border-slate-700"/>
+				} else {
+					<div class={ "h-11 w-11 rounded-md flex items-center justify-center shrink-0 text-base font-semibold border border-slate-200 dark:border-slate-700", logoFallbackClasses(s.Color) } style={ logoFallbackStyle(s.Color) }>
+						{ firstInitial(s.FriendlyName) }
+					</div>
+				}
+				<div class="flex-1 min-w-0">
+					<div class="flex items-center gap-2 flex-wrap">
+						<h3 class="text-base font-semibold text-slate-900 dark:text-slate-100 truncate">{ s.FriendlyName }</h3>
+						<code class="font-mono text-[11px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 shrink-0">{ s.Slug }</code>
+					</div>
+					if s.Description != "" {
+						<p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-2">{ s.Description }</p>
+					}
+				</div>
+				<span class={ "shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border", statusBadgeClasses(kind) }>
+					<span class={ "inline-block w-1.5 h-1.5 rounded-full", badgeDotClasses(kind) }></span>
+					{ statusBadgeLabel(kind) }
+				</span>
 			</div>
-			<div class={ "rounded px-2 py-1 text-center", statTileAccent("up", s.Up) }>
-				<div class="text-slate-500 dark:text-slate-400">Up</div>
-				<div class={ "font-semibold tabular-nums", statTileCount("up", s.Up) }>{ fmt.Sprint(s.Up) }</div>
-			</div>
-			<div class={ "rounded px-2 py-1 text-center", statTileAccent("down", s.Down) }>
-				<div class="text-slate-500 dark:text-slate-400">Down</div>
-				<div class={ "font-semibold tabular-nums", statTileCount("down", s.Down) }>{ fmt.Sprint(s.Down) }</div>
-			</div>
-			<div class={ "rounded px-2 py-1 text-center", statTileAccent("warn", s.TemporaryPaused) }>
-				<div class="text-slate-500 dark:text-slate-400">Paused</div>
-				<div class={ "font-semibold tabular-nums", statTileCount("warn", s.TemporaryPaused) }>{ fmt.Sprint(s.TemporaryPaused) }</div>
-			</div>
-			<div class={ "rounded px-2 py-1 text-center", statTileAccent("warn", s.SSLExpiring) }>
-				<div class="text-slate-500 dark:text-slate-400">SSL</div>
-				<div class={ "font-semibold tabular-nums", statTileCount("warn", s.SSLExpiring) }>{ fmt.Sprint(s.SSLExpiring) }</div>
+			<div class="flex items-end justify-between pt-3 border-t border-slate-100 dark:border-slate-800">
+				<div>
+					<div class="text-3xl font-semibold tabular-nums text-slate-900 dark:text-slate-100 leading-none">{ fmt.Sprint(s.Total) }</div>
+					<div class="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mt-1">
+						if s.Total == 1 {
+							monitor
+						} else {
+							monitors
+						}
+					</div>
+				</div>
+				<div class="flex flex-wrap items-center gap-1.5 justify-end">
+					if s.Total == 0 {
+						<span class="text-xs text-slate-500 dark:text-slate-400 italic">no monitors selected</span>
+					} else {
+						@problemChip("down", s.Down, "down")
+						@problemChip("paused", s.TemporaryPaused, "warn")
+						@problemChip("SSL expiring", s.SSLExpiring, "warn")
+						@problemChip("SSL skipped", s.SSLSkipped, "")
+						if s.Down == 0 && s.TemporaryPaused == 0 && s.SSLExpiring == 0 && s.SSLSkipped == 0 {
+							<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+								all { fmt.Sprint(s.Up) } up
+							</span>
+						}
+					}
+				</div>
 			</div>
 		</div>
 	</a>
+}
+
+// problemChip renders a small chip — only when count > 0 — so a
+// healthy page card stays visually quiet and a degraded one
+// surfaces what's wrong at a glance.
+templ problemChip(label string, count int, kind string) {
+	if count > 0 {
+		<span class={ "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium border", chipClasses(kind) }>
+			<span class="tabular-nums font-semibold">{ fmt.Sprint(count) }</span>
+			<span>{ label }</span>
+		</span>
+	}
+}
+
+// chipClasses returns the colour palette for a problem chip. Empty
+// kind is the neutral slate variant for "SSL skipped" which isn't an
+// active problem, just an audited fact.
+func chipClasses(kind string) string {
+	switch kind {
+	case "down":
+		return "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800"
+	case "warn":
+		return "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800"
+	default:
+		return "bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700"
+	}
+}
+
+// badgeDotClasses returns the indicator-dot colour for the page
+// badge. Solid emerald/rose, amber for warn, slate for none.
+func badgeDotClasses(kind string) string {
+	switch kind {
+	case "down":
+		return "bg-rose-500"
+	case "warn":
+		return "bg-amber-500"
+	case "none":
+		return "bg-slate-400"
+	default:
+		return "bg-emerald-500"
+	}
+}
+
+// logoFallbackClasses styles the initial-letter avatar that stands in
+// when a status page lacks a logoUrl. When the page has a color, we
+// render a colored chip with white text via inline style (so any hex
+// works); otherwise fall back to a neutral slate panel.
+func logoFallbackClasses(color string) string {
+	if color != "" {
+		return "text-white"
+	}
+	return "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300"
+}
+
+func logoFallbackStyle(color string) string {
+	if color == "" {
+		return ""
+	}
+	return "background-color: " + color
 }
 
 // MappingEntry is the per-row payload the homepage renders in the
