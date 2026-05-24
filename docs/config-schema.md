@@ -414,10 +414,10 @@ All monitor fields below are settable inside any `config:` block. The root must 
 Monitor slug is:
 
 ```
-<namespace>__<ingress-name>__<host>
+kube-<namespace>__<ingress-name>__<host>
 ```
 
-Double-underscore separator avoids collision with single-dash content in any of the three parts. The slug carries no rule-derived component: the monitored thing is an `(Ingress, host)` pair and already has stable k8s identity. Pulling slug from config would mean a config edit can rename a monitor (breaking history, bookmarks, `dependsOn` references).
+Double-underscore separator avoids collision with single-dash content in any of the three parts. The `kube-` prefix is reserved: the config validator rejects any static `monitor.slug` starting with `kube-`, so a `kube-…` slug always means auto-discovered. The slug carries no rule-derived component: the monitored thing is an `(Ingress, host)` pair and already has stable k8s identity. Pulling slug from config would mean a config edit can rename a monitor (breaking history, bookmarks, `dependsOn` references).
 
 Friendly display name remains controlled by `kube.friendlyName:` (compact / plain / dedupe / title styles).
 

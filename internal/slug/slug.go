@@ -53,19 +53,28 @@ func ValidateTag(s string) error {
 	return nil
 }
 
+// KubeSlugPrefix is reserved for kube-discovered monitors. Every slug
+// produced by SanitizeKubeDiscovered starts with this prefix, and the
+// config validator rejects any static monitor.slug that begins with
+// it — together this guarantees `kube-…` always means auto-discovered.
+const KubeSlugPrefix = "kube-"
+
 // SanitizeKubeDiscovered builds a kube-discovered monitor slug from the
 // ingress namespace, name, and host per ADR-0002 §Identity. The format
-// is `<namespace>__<ingress-name>__<host>`; the double-underscore
+// is `kube-<namespace>__<ingress-name>__<host>`; the double-underscore
 // separator avoids collision with hyphen-bearing content in any of the
 // three parts (typical k8s names use single hyphens, hosts use dots
-// that we lower to single hyphens).
+// that we lower to single hyphens), and the `kube-` prefix is the
+// reserved namespace that distinguishes auto-discovered monitors from
+// statically-authored ones.
 //
 // Each part is independently sanitized: lower-cased, any character
 // outside [a-z0-9-] becomes '-', consecutive hyphens collapse, and
 // leading/trailing hyphens are trimmed. The three sanitized parts are
-// joined with `__`. An empty result (every part collapsed to nothing,
-// or only the separators left) is an error — the caller records the
-// ingress as kube-invalid with reason "slug generation failed".
+// joined with `__` and the result is prefixed with `kube-`. An empty
+// result (every part collapsed to nothing) is an error — the caller
+// records the ingress as kube-invalid with reason "slug generation
+// failed".
 //
 // Output is NOT subject to Validate() — that regex is the rule for
 // human-authored slugs (lowercase, hyphen-separated, no `_`). Kube
@@ -82,7 +91,7 @@ func SanitizeKubeDiscovered(namespace, name, host string) (string, error) {
 	// be useful as identity; allow individual parts to be empty (e.g. a
 	// rare cluster-scoped ingress with no namespace) and render them as
 	// adjacent separators so the structure stays positional.
-	out := ns + "__" + nm + "__" + ho
+	out := KubeSlugPrefix + ns + "__" + nm + "__" + ho
 	// Sanity: a slug consisting purely of separators (every part empty
 	// except for the one we already rejected above) shouldn't get
 	// through. The Validate-like character check is intentional but

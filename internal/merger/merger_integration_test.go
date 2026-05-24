@@ -121,7 +121,7 @@ func TestMaterializer_rootRuleAlwaysMaterializes(t *testing.T) {
 	if row.Status != "added" {
 		t.Errorf("status: got %q, want 'added'", row.Status)
 	}
-	if want := "default__api__api-example-com"; row.MonitorSlug == nil || *row.MonitorSlug != want {
+	if want := "kube-default__api__api-example-com"; row.MonitorSlug == nil || *row.MonitorSlug != want {
 		t.Errorf("monitor slug: got %v, want %q", row.MonitorSlug, want)
 	}
 	mrow, err := repo.GetMonitor(context.Background(), *row.MonitorSlug)
@@ -584,7 +584,10 @@ func TestMaterializer_resolvedSlackOverriddenEmptyIsInvalid(t *testing.T) {
 
 func TestMaterializer_staticCollisionIsInvalid(t *testing.T) {
 	repo := newRepo(t)
-	statics := []config.Monitor{{Slug: "default__api__api-example-com"}}
+	// Static slug deliberately shaped to collide with the kube-discovered
+	// slug for this ingress; the config validator would reject this prefix
+	// in real configs, but the merger keeps the defensive check.
+	statics := []config.Monitor{{Slug: "kube-default__api__api-example-com"}}
 	m := merger.New(repo, withKube(fixtureKube(t, ``, true), statics), nil)
 	ing := ingress("default", "api", nil, "api.example.com")
 
@@ -595,7 +598,7 @@ func TestMaterializer_staticCollisionIsInvalid(t *testing.T) {
 }
 
 func TestMaterializer_slugFormat(t *testing.T) {
-	// Pin the ADR-0002 §Identity format: <ns>__<name>__<host>, with
+	// Pin the ADR-0002 §Identity format: kube-<ns>__<name>__<host>, with
 	// per-part sanitization (lowercase, non-alnum→'-', collapse).
 	repo := newRepo(t)
 	m := merger.New(repo, withKube(fixtureKube(t, ``, true), nil), nil)
@@ -605,7 +608,7 @@ func TestMaterializer_slugFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("materialize: %v", err)
 	}
-	if want := "prod-ns__myapp__api-dev-example-com"; row.MonitorSlug == nil || *row.MonitorSlug != want {
+	if want := "kube-prod-ns__myapp__api-dev-example-com"; row.MonitorSlug == nil || *row.MonitorSlug != want {
 		t.Errorf("slug: got %v, want %q", row.MonitorSlug, want)
 	}
 }

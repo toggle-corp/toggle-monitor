@@ -110,7 +110,7 @@ func TestExplain_hypotheticalMaterialized(t *testing.T) {
 		"- alice",
 		"- bob",
 		"outcome: materialized",
-		"slug: acme-eoapi-3__hypothetical__api-example-com",
+		"slug: kube-acme-eoapi-3__hypothetical__api-example-com",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in output:\n%s", want, out)

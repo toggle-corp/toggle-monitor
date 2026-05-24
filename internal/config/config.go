@@ -752,6 +752,11 @@ func (c *checker) validate(cfg *Config) {
 		if err := slug.Validate(m.Slug); err != nil {
 			c.errf(append(base, "slug"), "%v", err)
 		}
+		if strings.HasPrefix(m.Slug, slug.KubeSlugPrefix) {
+			c.errf(append(base, "slug"),
+				"monitor slug %q must not start with %q — that prefix is reserved for kube-discovered monitors",
+				m.Slug, slug.KubeSlugPrefix)
+		}
 		if _, dup := seenMonitors[m.Slug]; dup {
 			c.errf(append(base, "slug"), "duplicate slug %q", m.Slug)
 		}

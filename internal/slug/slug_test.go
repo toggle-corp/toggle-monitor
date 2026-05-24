@@ -132,7 +132,7 @@ func TestSanitizeKubeDiscovered_happyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if want := "default__foo__foo-example-com"; got != want {
+	if want := "kube-default__foo__foo-example-com"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
@@ -150,13 +150,13 @@ func TestSanitizeKubeDiscovered_rules(t *testing.T) {
 		ns, ing, h string
 		want       string // empty string means "expect error"
 	}{
-		{"basic single-segment host", "default", "foo", "bar", "default__foo__bar"},
-		{"host with dots", "default", "foo", "foo.example.com", "default__foo__foo-example-com"},
-		{"uppercase normalized", "ProdNS", "MyApp", "API.Example.COM", "prodns__myapp__api-example-com"},
-		{"underscores in inputs become hyphens", "kube_system", "my_app", "api.example.com", "kube-system__my-app__api-example-com"},
-		{"consecutive invalid collapsed", "ns", "name", "a..b", "ns__name__a-b"},
-		{"trailing dot stripped", "ns", "name", "host.", "ns__name__host"},
-		{"empty namespace still ok", "", "name", "host", "__name__host"},
+		{"basic single-segment host", "default", "foo", "bar", "kube-default__foo__bar"},
+		{"host with dots", "default", "foo", "foo.example.com", "kube-default__foo__foo-example-com"},
+		{"uppercase normalized", "ProdNS", "MyApp", "API.Example.COM", "kube-prodns__myapp__api-example-com"},
+		{"underscores in inputs become hyphens", "kube_system", "my_app", "api.example.com", "kube-kube-system__my-app__api-example-com"},
+		{"consecutive invalid collapsed", "ns", "name", "a..b", "kube-ns__name__a-b"},
+		{"trailing dot stripped", "ns", "name", "host.", "kube-ns__name__host"},
+		{"empty namespace still ok", "", "name", "host", "kube-__name__host"},
 		{"all-invalid inputs fail", "...", "...", "...", ""},
 		{"empty everything fails", "", "", "", ""},
 	}

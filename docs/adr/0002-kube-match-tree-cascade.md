@@ -274,9 +274,12 @@ documented; operators learn it.
 
 ### Identity: monitor slug derives from the ingress only
 
-Monitor slug is `<namespace>__<ingress-name>__<host>` (double
+Monitor slug is `kube-<namespace>__<ingress-name>__<host>` (double
 underscore separator avoids collision with single-dash content in
-any of the three parts). No rule-derived component.
+any of the three parts; the `kube-` prefix is the reserved namespace
+that distinguishes auto-discovered monitors — the config validator
+rejects any static `monitor.slug` that starts with `kube-`). No
+rule-derived component.
 
 Rationale: the slug's job is stable identity for the monitored thing.
 The thing is an (Ingress, host) pair, which already has a stable
