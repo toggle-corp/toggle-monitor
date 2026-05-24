@@ -155,7 +155,7 @@ func pageBadgeKind(s StatusPageStats) string {
 		return "none"
 	case s.Down > 0:
 		return "down"
-	case s.TemporaryPaused > 0 || s.SSLExpiring > 0 || s.SSLSkipped > 0:
+	case s.TemporaryPaused > 0 || s.SSLExpiring > 0:
 		return "warn"
 	default:
 		return "up"
@@ -494,7 +494,7 @@ func statusPageTile(s StatusPageStats) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			if s.Down == 0 && s.TemporaryPaused == 0 && s.SSLExpiring == 0 && s.SSLSkipped == 0 {
+			if s.Down == 0 && s.TemporaryPaused == 0 && s.SSLExpiring == 0 {
 				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 40, "<span class=\"inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800\">all ")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err

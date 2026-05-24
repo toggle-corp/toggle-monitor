@@ -290,6 +290,7 @@ Then post a thread reply: `✅ Resolved at <time>. Total downtime: Xd Yh Zm.`
 
   No Slack alerts on individual `kube-invalid` transitions — they're surfaced via the **weekly Slack summary** (see below).
 - **`ssl-skipped`** — possible only on static `http://` monitors (kube-discovered defaults to `https`).
+- **Page-level badge mapping:** the 3-state badge shown on `/status` cards and `/status/<slug>` is **Down** if any monitor is `down`, **Degraded** if any is `temporary-paused` or `ssl-expiring`, otherwise **Operational**. `ssl-skipped` is intentional configuration (HTTP-only static monitors, or `tlsInsecureSkipVerify: true`) and never degrades the badge — it surfaces as a neutral audit chip alongside the count.
 
 ### `kube.pause:` hard-pause list
 - Declarative entries identify ingresses by **host** (not slug), with optional reason and glob support:

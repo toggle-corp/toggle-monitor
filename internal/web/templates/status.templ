@@ -157,8 +157,11 @@ func hostFromURL(s string) string {
 // statusBadgeKind picks the page-level 3-state badge:
 //   - "none"  → no monitors selected on this page
 //   - "down"  → any monitor down
-//   - "warn"  → any monitor paused / ssl-expiring / ssl-skipped
+//   - "warn"  → any monitor paused / ssl-expiring
 //   - "up"    → everything operational
+//
+// ssl-skipped is intentional configuration (HTTP-only static monitors,
+// or tlsInsecureSkipVerify) and never degrades the badge.
 func statusBadgeKind(sections []StatusSection) string {
 	var total, anyDown, anyWarn int
 	for _, sec := range sections {
@@ -170,11 +173,8 @@ func statusBadgeKind(sections []StatusSection) string {
 			case "temporary-paused":
 				anyWarn++
 			}
-			if m.SSLStatus != nil {
-				switch string(*m.SSLStatus) {
-				case "ssl-expiring", "ssl-skipped":
-					anyWarn++
-				}
+			if m.SSLStatus != nil && string(*m.SSLStatus) == "ssl-expiring" {
+				anyWarn++
 			}
 		}
 	}
