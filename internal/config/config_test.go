@@ -454,6 +454,58 @@ func TestLoad_kube_parsesCascadingTree(t *testing.T) {
 	}
 }
 
+// TestLoad_kube_anchorMergeInConfig confirms that a YAML merge key
+// (`<<: *anchor`) inside a kube.match[].config: block both
+// populates the struct fields AND marks them as Set on the
+// setFields map. Without merge-key expansion in UnmarshalYAML,
+// IsSet("path") would return false even though the decoded struct
+// has Path populated, and the validator would reject the root rule
+// as missing required-at-root fields.
+func TestLoad_kube_anchorMergeInConfig(t *testing.T) {
+	yaml := validMinimal + `
+x-kube-root-config: &x-kube-root-config
+  scheme: https
+  path: /
+  httpMethod: GET
+  acceptedStatusCodes: [200]
+  interval: 5m
+  timeout: 10s
+  retries: 2
+  retryBackoff: 5s
+  followRedirects: false
+  reminderInterval: 3d
+  sslAlertThreshold: 30d
+  sslEscalationThreshold: 7d
+  sslReminderInterval: 3d
+  slack: ops-alerts
+
+kube:
+  resyncInterval: 30m
+  match:
+    - when: {}
+      config:
+        <<: *x-kube-root-config
+`
+	cfg, err := config.Load([]byte(yaml))
+	if err != nil {
+		t.Fatalf("anchor merge inside config: should validate, got: %v", err)
+	}
+	root := cfg.Kube.Match[0].Config
+	// Struct fields populated by Decode.
+	if root.Path != "/" {
+		t.Errorf("path: got %q, want %q", root.Path, "/")
+	}
+	if root.HTTPMethod != "GET" {
+		t.Errorf("httpMethod: got %q, want GET", root.HTTPMethod)
+	}
+	// setFields reflects the anchor-side keys.
+	for _, key := range []string{"path", "httpMethod", "acceptedStatusCodes", "interval", "timeout", "retries", "retryBackoff", "followRedirects", "reminderInterval", "sslAlertThreshold", "sslEscalationThreshold", "sslReminderInterval", "slack"} {
+		if !root.IsSet(key) {
+			t.Errorf("IsSet(%q) should be true after merge-key expansion", key)
+		}
+	}
+}
+
 func TestLoad_kube_notifyOverrideTagSetsOverrideFlag(t *testing.T) {
 	// Override tag lives on a *descendant* rule; the root carries the
 	// required-at-root baseline so validation has nothing to flag.

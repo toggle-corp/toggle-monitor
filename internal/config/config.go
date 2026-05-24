@@ -188,6 +188,14 @@ func (k *KubeConfig) IsSet(field string) bool {
 // UnmarshalYAML decodes the KubeConfig and records which keys were
 // present so the merger can distinguish unset fields from
 // zero-valued ones.
+//
+// YAML merge keys (`<<: *anchor`) are expanded recursively when
+// populating setFields so anchor-side keys are recorded as "set".
+// Without this, `config: { <<: *defaults }` would decode correctly
+// (the struct fields land via yaml.v3's merge handling at Decode
+// time) but `IsSet("path")` would return false because the raw AST
+// only carries the `<<` key — and the validator would then complain
+// the root rule is missing every required-at-root field.
 func (k *KubeConfig) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind != yaml.MappingNode {
 		return fmt.Errorf("line %d: kube.match[].config must be a mapping", node.Line)
@@ -200,14 +208,46 @@ func (k *KubeConfig) UnmarshalYAML(node *yaml.Node) error {
 		return err
 	}
 	*k = KubeConfig(shadow)
-	k.setFields = make(map[string]bool, len(node.Content)/2)
+	k.setFields = make(map[string]bool)
+	collectMappingKeys(node, k.setFields)
+	return nil
+}
+
+// collectMappingKeys walks a mapping node and records every present
+// key in set. YAML merge keys (`<<:`) are followed recursively —
+// either a single alias (`<<: *a`), a list of aliases (`<<: [*a,*b]`),
+// or an inline mapping — so the resulting set reflects the same
+// fields yaml.v3 would populate at Decode time.
+func collectMappingKeys(node *yaml.Node, set map[string]bool) {
+	if node == nil {
+		return
+	}
+	if node.Kind == yaml.AliasNode && node.Alias != nil {
+		collectMappingKeys(node.Alias, set)
+		return
+	}
+	if node.Kind != yaml.MappingNode {
+		return
+	}
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		key := node.Content[i]
-		if key.Kind == yaml.ScalarNode {
-			k.setFields[key.Value] = true
+		val := node.Content[i+1]
+		if key.Kind != yaml.ScalarNode {
+			continue
 		}
+		if key.Value == "<<" {
+			switch val.Kind {
+			case yaml.AliasNode, yaml.MappingNode:
+				collectMappingKeys(val, set)
+			case yaml.SequenceNode:
+				for _, child := range val.Content {
+					collectMappingKeys(child, set)
+				}
+			}
+			continue
+		}
+		set[key.Value] = true
 	}
-	return nil
 }
 
 // StatusCodeList is the list type for acceptedStatusCodes. It's a
