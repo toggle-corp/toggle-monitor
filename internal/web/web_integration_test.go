@@ -335,7 +335,7 @@ func TestStatusIndex_emptyWhenNoConfig(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("/status status: got %d, want 200", resp.StatusCode)
 	}
-	if !strings.Contains(body, "No public status configured.") {
+	if !strings.Contains(body, "No status pages configured.") {
 		t.Errorf("empty placeholder expected; first 400:\n%s", firstN(body, 400))
 	}
 }
@@ -433,8 +433,8 @@ func TestStatusPage_sectionsAndMatching(t *testing.T) {
 		"API",
 		"UI",
 		"Internal",
-		"All systems operational",
-		">public<", // slug chip in the header
+		"Operational", // page-level 3-state badge (kind=up)
+		">public<",    // slug chip in the header
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q; first 600:\n%s", want, firstN(body, 600))
