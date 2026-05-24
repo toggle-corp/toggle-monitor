@@ -1530,3 +1530,237 @@ func TestLoad_kube_recursiveWalkPathIncludesNested(t *testing.T) {
 // when: deeper than root; ignore:true at a leaf with non-empty
 // config). Skipped here pending a warning channel — see
 // validateKube's TODO comment.
+
+// ----------------------------------------------------------------------
+// Unknown-key validation — strict schema enforcement at every level.
+// ----------------------------------------------------------------------
+
+// (1) Typo at the rule level inside kube.match — the original
+// bug-report case: `nestedd:` instead of `nested:`.
+func TestLoad_unknownKey_kubeMatchRule(t *testing.T) {
+	tree := kubeRootBaseline + `    - when: { namespace: "toggle-*" }
+      nestedd:
+        - when: { namespace: "toggle-capnnepal" }
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected unknown key 'nestedd' to be rejected")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "kube.match[1]") {
+		t.Errorf("error path should point at the rule, got: %s", msg)
+	}
+	if !strings.Contains(msg, `unknown key "nestedd"`) {
+		t.Errorf("error should name the unknown key, got: %s", msg)
+	}
+	if !strings.Contains(msg, "allowed keys here: [config, final, ignore, nested, when]") {
+		t.Errorf("error should list the allowed keys for KubeMatchRule, got: %s", msg)
+	}
+}
+
+// (2) Misplaced rule-level key inside config: the original bug-report
+// case — `final: true` belongs as a sibling of `config:`, not inside
+// it.
+func TestLoad_unknownKey_kubeConfigBlock(t *testing.T) {
+	tree := kubeRootBaseline + `    - when: { namespace: "toggle-*" }
+      config:
+        tags: [prod]
+        final: true
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected misplaced 'final' inside config: to be rejected")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "kube.match[1].config") {
+		t.Errorf("error path should point at the config block, got: %s", msg)
+	}
+	if !strings.Contains(msg, `unknown key "final"`) {
+		t.Errorf("error should name the unknown key, got: %s", msg)
+	}
+}
+
+// (3) Typo at the Monitor level.
+func TestLoad_unknownKey_monitor(t *testing.T) {
+	data := withReplaced(t, "    slack: ops-alerts",
+		"    slack: ops-alerts\n    timeoutt: 1s")
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected unknown 'timeoutt' on a monitor to be rejected")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "monitors[0]") {
+		t.Errorf("error path should point at monitors[0], got: %s", msg)
+	}
+	if !strings.Contains(msg, `unknown key "timeoutt"`) {
+		t.Errorf("error should name the unknown key, got: %s", msg)
+	}
+}
+
+// (4) Typo at the Slack block level.
+func TestLoad_unknownKey_slackBlock(t *testing.T) {
+	data := withReplaced(t,
+		"slack:\n  bodyMaxChars: 200",
+		"slack:\n  bodyMaxCharz: 200\n  bodyMaxChars: 200")
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected unknown key in slack block to be rejected")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `unknown key "bodyMaxCharz"`) {
+		t.Errorf("error should name the unknown key, got: %s", msg)
+	}
+	if !strings.Contains(msg, "slack:") {
+		t.Errorf("error path should mention slack, got: %s", msg)
+	}
+}
+
+// (4b) Typo inside a SlackChannel.
+func TestLoad_unknownKey_slackChannel(t *testing.T) {
+	data := withReplaced(t,
+		"      tokenEnv: SLACK_BOT_TOKEN",
+		"      tokenEnv: SLACK_BOT_TOKEN\n      channelIdd: C0123ABCD")
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected unknown key in slack channel to be rejected")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `unknown key "channelIdd"`) {
+		t.Errorf("error should name the unknown key, got: %s", msg)
+	}
+	if !strings.Contains(msg, "slack.channels[0]") {
+		t.Errorf("error path should descend into channels[0], got: %s", msg)
+	}
+}
+
+// (5) Typo inside a StatusPage tree.
+func TestLoad_unknownKey_statusPageSection(t *testing.T) {
+	data := []byte(validMinimal + `
+statusPages:
+  - slug: public
+    friendlyName: Public
+    sections:
+      - title: Bad
+        matchh:
+          tags: [gateways]
+`)
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected unknown 'matchh' in section to be rejected")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `unknown key "matchh"`) {
+		t.Errorf("error should name the unknown key, got: %s", msg)
+	}
+	if !strings.Contains(msg, "statusPages[0].sections[0]") {
+		t.Errorf("error path should descend into sections[0], got: %s", msg)
+	}
+}
+
+// (6) Merge keys are validated against the destination struct's
+// allowlist — a typo behind an anchor still fails.
+func TestLoad_unknownKey_mergeKey(t *testing.T) {
+	yaml := `
+x-monitor-defaults: &staticDefaults
+  httpMethod: GET
+  acceptedStatusCodes: [200]
+  interval: 5m
+  timeout: 10s
+  retries: 2
+  retryBackoff: 5s
+  followRedirects: false
+  reminderInterval: 3d
+  slack: ops-alerts
+  bogusKey: 1
+displayTimezone: UTC
+dbBodyMaxChars: 4000
+database:
+  host: pg
+  port: 5432
+  user: tm
+  name: tm
+  sslMode: require
+  passwordEnv: DB_PASSWORD
+ui:
+  pageSize: { homepageAlerts: 20, monitorListing: 50, monitorHistory: 50, discoveryListing: 50 }
+  maxPerPage: 200
+httpClient: { userAgent: "x" }
+slack:
+  bodyMaxChars: 200
+  channels:
+    - { slug: ops-alerts, channelId: C0123ABCD, tokenEnv: SLACK_BOT_TOKEN }
+monitors:
+  - <<: *staticDefaults
+    slug: a
+    friendlyName: A
+    url: http://a/health
+    tags: [gw]
+`
+	_, err := config.Load([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected merged-in unknown key to be rejected")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `unknown key "bogusKey"`) {
+		t.Errorf("error should name the unknown key carried via merge, got: %s", msg)
+	}
+}
+
+// (7) x-* escape hatch is honoured only at the top level — a nested
+// x-foo: is still a typo.
+func TestLoad_unknownKey_xPrefixNestedFails(t *testing.T) {
+	data := withReplaced(t, "    slack: ops-alerts",
+		"    slack: ops-alerts\n    x-note: \"nested anchors not allowed\"")
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected nested x-* key to be rejected (top-level only)")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `unknown key "x-note"`) {
+		t.Errorf("error should name the unknown key, got: %s", msg)
+	}
+}
+
+// (8a) User-keyed maps (Labels) accept arbitrary keys — no false
+// positive from the walker.
+func TestLoad_unknownKey_labelsAcceptArbitraryKeys(t *testing.T) {
+	tree := kubeRootBaseline + `    - when:
+        labels:
+          app.kubernetes.io/name: anything
+          weird.example.com/key: also-fine
+`
+	if _, err := config.Load(withKubeBlock(tree)); err != nil {
+		t.Fatalf("k8s label keys must not be flagged as unknown, got: %v", err)
+	}
+}
+
+// (8b) UserMapping is also user-keyed — arbitrary slug keys are valid.
+func TestLoad_unknownKey_userMappingAcceptsArbitraryKeys(t *testing.T) {
+	data := strings.Replace(validMinimal,
+		"      tokenEnv: SLACK_BOT_TOKEN\n",
+		"      tokenEnv: SLACK_BOT_TOKEN\n  userMapping:\n    arbitrary-slug: U01ABCDEF12\n    another-one: S02GHIJKL34\n",
+		1)
+	if _, err := config.Load([]byte(data)); err != nil {
+		t.Fatalf("userMapping keys must not be flagged as unknown, got: %v", err)
+	}
+}
+
+// (9) errf now includes column numbers — assert the prefix shape on a
+// known-failing fixture. Other tests deliberately rely only on path +
+// message contents so they don't churn when prefix formatting changes.
+func TestLoad_errorsCarryLineAndColumn(t *testing.T) {
+	tree := kubeRootBaseline + `    - when: { namespace: "toggle-*" }
+      nestedd: []
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected unknown-key error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "col ") {
+		t.Errorf("expected error prefix to include column, got: %s", msg)
+	}
+	if !strings.Contains(msg, "line ") {
+		t.Errorf("expected error prefix to include line, got: %s", msg)
+	}
+}

@@ -566,9 +566,6 @@ func Load(data []byte) (Config, error) {
 	if err := yaml.Unmarshal(expanded, &root); err != nil {
 		return Config{}, fmt.Errorf("parse yaml: %w", err)
 	}
-	if err := checkTopLevelKeys(&root); err != nil {
-		return Config{}, err
-	}
 
 	var cfg Config
 	if err := root.Decode(&cfg); err != nil {
@@ -582,42 +579,6 @@ func Load(data []byte) (Config, error) {
 	return cfg, nil
 }
 
-// knownTopLevelKeys is the schema's allowlist (see
-// docs/config-schema.md §6). Keys prefixed with "x-" are also
-// accepted, regardless of their value, for anchor-only hosts.
-var knownTopLevelKeys = map[string]struct{}{
-	"displayTimezone": {}, "publicBaseURL": {}, "dbBodyMaxChars": {},
-	"kube": {}, "ui": {}, "httpClient": {}, "heartbeat": {}, "database": {},
-	"slack":   {},
-	"proxies": {},
-	"monitors":    {},
-	"statusPages": {},
-}
-
-func checkTopLevelKeys(root *yaml.Node) error {
-	if root == nil || root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
-		return nil
-	}
-	top := root.Content[0]
-	if top.Kind != yaml.MappingNode {
-		return nil
-	}
-	for i := 0; i+1 < len(top.Content); i += 2 {
-		key := top.Content[i]
-		if key.Kind != yaml.ScalarNode {
-			continue
-		}
-		name := key.Value
-		if strings.HasPrefix(name, "x-") {
-			continue
-		}
-		if _, ok := knownTopLevelKeys[name]; !ok {
-			return fmt.Errorf("line %d: unknown top-level key %q (use an x-* prefix for anchor-only blocks)", key.Line, name)
-		}
-	}
-	return nil
-}
-
 // checker accumulates validation errors with line numbers resolved
 // against the original YAML node tree.
 type checker struct {
@@ -627,16 +588,32 @@ type checker struct {
 
 func (c *checker) errf(path []any, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
-	line := 0
+	line, col := 0, 0
 	if n := nodeAt(c.root, path...); n != nil {
-		line = n.Line
+		line, col = n.Line, n.Column
 	}
 	p := pathStr(path)
-	if line > 0 {
+	switch {
+	case line > 0 && col > 0:
+		c.errs = append(c.errs, fmt.Errorf("line %d, col %d: %s: %s", line, col, p, msg))
+	case line > 0:
 		c.errs = append(c.errs, fmt.Errorf("line %d: %s: %s", line, p, msg))
-	} else {
+	default:
 		c.errs = append(c.errs, fmt.Errorf("%s: %s", p, msg))
 	}
+}
+
+// errfNode is the variant used when the caller already holds the
+// offending yaml.Node (typically the key node, so the column points at
+// the unknown key itself, not at the value).
+func (c *checker) errfNode(node *yaml.Node, path []any, format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	p := pathStr(path)
+	if node != nil && node.Line > 0 {
+		c.errs = append(c.errs, fmt.Errorf("line %d, col %d: %s: %s", node.Line, node.Column, p, msg))
+		return
+	}
+	c.errs = append(c.errs, fmt.Errorf("%s: %s", p, msg))
 }
 
 func (c *checker) err() error {
@@ -649,6 +626,12 @@ func (c *checker) err() error {
 // validate runs every cross-field check against cfg, accumulating
 // errors with line numbers from the underlying yaml.Node tree.
 func (c *checker) validate(cfg *Config) {
+	// Unknown-key check first — typos cascade into otherwise-confusing
+	// downstream errors (missing required-at-root fields, unknown
+	// references, etc.). Reporting the typo before those keeps the
+	// error feed actionable.
+	c.validateUnknownKeys()
+
 	// Database password env var name must match the env var regex.
 	if !envVarNamePattern.MatchString(cfg.Database.PasswordEnv) {
 		c.errf([]any{"database", "passwordEnv"},

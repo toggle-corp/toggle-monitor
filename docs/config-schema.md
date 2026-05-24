@@ -607,8 +607,8 @@ A monitor lands in a section when any one selector fires; within a selector the 
 - `x-*` — ignored (docker-compose-style anchor host)
 
 **Validator behavior:**
-- **Strict on unknown top-level keys** — any key not in the list above and not prefixed `x-` is a hard error (catches typos like `monitor:` instead of `monitors:`).
-- **Multiple errors reported per run** — not first-error-and-exit. Errors include file line numbers from `yaml.v3` node positions, format: `config.yaml:42: monitors[0].interval must be >= 30s, got 10s`.
+- **Strict on unknown keys at every level** — any key absent from the corresponding struct's yaml tag set is a hard error. Catches typos like `monitor:` (vs `monitors:`) at the top level, `nestedd:` inside a `kube.match` rule, `final:` placed inside `config:` instead of as a sibling, and the same for `slack`, `monitors[]`, `statusPages[]`, etc. Keys merged in via YAML `<<: *anchor` are validated against the destination struct's allowlist too. The `x-*` escape hatch is honoured **only at the top level**; user-keyed maps (`when.labels`, `slack.userMapping`) accept arbitrary keys.
+- **Multiple errors reported per run** — not first-error-and-exit. Errors include file line + column numbers from `yaml.v3` node positions, format: `line 42, col 7: monitors[0].interval: must be >= 30s, got 10s`.
 
 **Comments:** YAML `# ...` comments are stripped by the parser before validation. Recommended next to channel IDs / user IDs as human labels.
 
