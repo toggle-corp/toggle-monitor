@@ -291,6 +291,116 @@ func TestMaterializer_finalHaltsCascade(t *testing.T) {
 	}
 }
 
+func TestMaterializer_namespaceRegexMatchesAnchored(t *testing.T) {
+	// `namespaceRegex` is auto-anchored at use-time (^...$ per ADR-0002),
+	// so "acme-\d+" matches "acme-1" but NOT "acme-1-foo".
+	// The rule's config: contribution must land on the resolved monitor
+	// for the matching namespace.
+	extra := `
+- when: {namespaceRegex: "acme-\\d+"}
+  config:
+    path: /regex-matched
+    tags: [regex-hit]
+`
+
+	t.Run("matches exact pattern", func(t *testing.T) {
+		repo := newRepo(t)
+		kc := fixtureKube(t, extra, true)
+		m := merger.New(repo, withKube(kc, nil), nil)
+		ing := ingress("acme-1", "api", nil, "api.example.com")
+
+		row, err := m.Materialize(context.Background(), ing, "api.example.com")
+		if err != nil {
+			t.Fatalf("materialize: %v", err)
+		}
+		if row.Status != "added" {
+			t.Fatalf("status: got %q (reason=%v), want 'added'", row.Status, row.Reason)
+		}
+		mrow, _ := repo.GetMonitor(context.Background(), *row.MonitorSlug)
+		if want := "https://api.example.com/regex-matched"; mrow.URL != want {
+			t.Errorf("URL: got %q, want %q (regex rule should have contributed path)", mrow.URL, want)
+		}
+		foundTag := false
+		for _, tg := range mrow.Tags {
+			if tg == "regex-hit" {
+				foundTag = true
+			}
+		}
+		if !foundTag {
+			t.Errorf("tags: %v missing 'regex-hit' from regex rule", mrow.Tags)
+		}
+		if row.Reason == nil || !strings.Contains(*row.Reason, "match[1]") {
+			t.Errorf("reason should mention the regex rule, got %v", row.Reason)
+		}
+	})
+
+	t.Run("rejects superset due to anchoring", func(t *testing.T) {
+		repo := newRepo(t)
+		kc := fixtureKube(t, extra, true)
+		m := merger.New(repo, withKube(kc, nil), nil)
+		ing := ingress("acme-1-foo", "api", nil, "api.example.com")
+
+		row, err := m.Materialize(context.Background(), ing, "api.example.com")
+		if err != nil {
+			t.Fatalf("materialize: %v", err)
+		}
+		if row.Status != "added" {
+			t.Fatalf("status: got %q (reason=%v), want 'added'", row.Status, row.Reason)
+		}
+		mrow, _ := repo.GetMonitor(context.Background(), *row.MonitorSlug)
+		// Root path is /health; regex rule must NOT have fired because
+		// auto-anchoring rejects "acme-1-foo" against "acme-\d+".
+		if mrow.URL != "https://api.example.com/health" {
+			t.Errorf("URL: got %q, want root /health (regex must not match superset string)", mrow.URL)
+		}
+		for _, tg := range mrow.Tags {
+			if tg == "regex-hit" {
+				t.Errorf("tags: %v should NOT include 'regex-hit' — regex anchoring should reject acme-1-foo", mrow.Tags)
+			}
+		}
+	})
+}
+
+func TestMaterializer_finalHaltsLaterUncle(t *testing.T) {
+	// A `final: true` rule nested inside an earlier sibling must halt
+	// later top-level rules from contributing — halt propagates up to
+	// the top of the cascade once a final rule fires, regardless of
+	// the depth at which it fires.
+	repo := newRepo(t)
+	extra := `
+- when: {namespace: "a-*"}
+  nested:
+    - when: {namespace: "a-deep-*"}
+      final: true
+      config:
+        path: /deep
+- when: {namespace: "a-*"}
+  config:
+    path: /should-not-apply
+`
+	kc := fixtureKube(t, extra, true)
+	m := merger.New(repo, withKube(kc, nil), nil)
+	ing := ingress("a-deep-1", "api", nil, "api.example.com")
+
+	row, err := m.Materialize(context.Background(), ing, "api.example.com")
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if row.Status != "added" {
+		t.Fatalf("status: %q (reason=%v)", row.Status, row.Reason)
+	}
+	mrow, _ := repo.GetMonitor(context.Background(), *row.MonitorSlug)
+	if want := "https://api.example.com/deep"; mrow.URL != want {
+		t.Errorf("URL: got %q, want %q (deep final must halt the later uncle rule)", mrow.URL, want)
+	}
+	if row.Reason == nil || !strings.Contains(*row.Reason, "[final]") {
+		t.Errorf("reason should mark the final rule, got %v", row.Reason)
+	}
+	if row.Reason != nil && strings.Contains(*row.Reason, "match[2]") {
+		t.Errorf("reason should NOT include match[2] (the uncle should never have contributed), got %v", row.Reason)
+	}
+}
+
 func TestMaterializer_ignoreTrueProducesIgnoredRow(t *testing.T) {
 	repo := newRepo(t)
 	extra := `
