@@ -142,8 +142,6 @@ ui:
     monitorHistory: 50
     discoveryListing: 50
   maxPerPage: 200
-theme:
-  defaultGroupColor: "#64748b"
 httpClient:
   userAgent: "toggle-monitor/cli-test"
 slack:
@@ -152,9 +150,6 @@ slack:
     - slug: ops-alerts
       channelId: C0123ABCD
       tokenEnv: SLACK_BOT_TOKEN
-groups:
-  - slug: kube-discovered
-    friendlyName: Kube Discovered
 monitors: []
 kube:
   resyncInterval: 30m

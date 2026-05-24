@@ -83,14 +83,55 @@ templ kvHTTPCodes(label string, codes []int) {
 	</div>
 }
 
-// kvGroup is the kv row for the group field — renders the slug as
-// a clickable mono chip linking to /group/<slug>. Keeps the chip
-// visually consistent with how the slug appears in the listing
-// table and the /groups index.
-templ kvGroup(label, slug string) {
+// kvTags renders the monitor's tag set as a flex-wrap of mono chips.
+// Empty list renders nothing — callers wrap in if len(m.Tags) > 0.
+templ kvTags(label string, tags []string) {
 	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
 		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
-		<dd class="text-sm col-span-2">@GroupLink(slug)</dd>
+		<dd class="text-sm col-span-2 flex flex-wrap gap-1.5">
+			for _, t := range tags {
+				@TagChip(t)
+			}
+		</dd>
+	</div>
+}
+
+// AppearsOnEntry is one chip in the monitor detail page's "Appears
+// on" section: a label + slug + URL to the status page the monitor
+// matched. Computed by the web layer by evaluating each status page's
+// match tree against the monitor's tag set + host.
+type AppearsOnEntry struct {
+	FriendlyName string
+	Slug         string
+	Color        string // hex, empty for no accent
+}
+
+// kvAppearsOn renders the "Appears on" backlink list — a row of chips
+// linking to /status/<slug>, capped at 5 with "+N more" overflow. See
+// ADR-0003 §"Web layer / Monitor detail".
+templ kvAppearsOn(label string, entries []AppearsOnEntry) {
+	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
+		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
+		<dd class="text-sm col-span-2 flex flex-wrap items-center gap-1.5">
+			{{ shown := entries }}
+			{{ overflow := 0 }}
+			if len(entries) > 5 {
+				{{ shown = entries[:5] }}
+				{{ overflow = len(entries) - 5 }}
+			}
+			for _, e := range shown {
+				<a class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800" href={ templ.URL("/status/" + e.Slug) }>
+					if e.Color != "" {
+						<span class="inline-block w-2 h-2 rounded-full shrink-0" style={ "background-color: " + e.Color }></span>
+					}
+					<span>{ e.FriendlyName }</span>
+					<code class="font-mono text-xs px-1 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">{ e.Slug }</code>
+				</a>
+			}
+			if overflow > 0 {
+				<span class="text-xs text-slate-500 dark:text-slate-400">+{ fmt.Sprint(overflow) } more</span>
+			}
+		</dd>
 	</div>
 }
 
@@ -153,7 +194,7 @@ templ kvURL(label, href string) {
 	</div>
 }
 
-templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []string, history []store.AlertEventRow) {
+templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []string, history []store.AlertEventRow, appearsOn []AppearsOnEntry) {
 	@Layout(m.FriendlyName) {
 		<div class="flex items-center gap-3 mb-4">
 			<h1 class="text-xl font-semibold inline-flex items-center gap-2">
@@ -174,8 +215,13 @@ templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []stri
 			<dl>
 				@kv("Slug", m.Slug)
 				@kvURL("URL", m.URL)
-				@kvGroup("Group", m.GroupSlug)
 				@kv("Source", string(m.Source))
+				if len(m.Tags) > 0 {
+					@kvTags("Tags", m.Tags)
+				}
+				if len(appearsOn) > 0 {
+					@kvAppearsOn("Appears on", appearsOn)
+				}
 				if cfg != nil && cfg.Preset != "" {
 					@kv("Preset", cfg.Preset)
 				}
@@ -257,8 +303,10 @@ templ configDialog(m store.MonitorRow, cfg MonitorConfig) {
 			<dl class="[&>div]:py-2.5">
 				@kv("Slug", m.Slug)
 				@kvURL("URL", m.URL)
-				@kvGroup("Group", m.GroupSlug)
 				@kv("Source", string(m.Source))
+				if len(m.Tags) > 0 {
+					@kvTags("Tags", m.Tags)
+				}
 				if cfg.Preset != "" {
 					@kv("Preset", cfg.Preset)
 				}

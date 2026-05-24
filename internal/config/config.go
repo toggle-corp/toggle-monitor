@@ -9,6 +9,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"path"
 	"regexp"
 	"strings"
@@ -28,23 +29,25 @@ var channelIDPattern = regexp.MustCompile(`^[CG][A-Z0-9]{8,}$`)
 // userOrSubteamIDPattern matches user IDs (U...) and subteam IDs (S...).
 var userOrSubteamIDPattern = regexp.MustCompile(`^[US][A-Z0-9]{8,}$`)
 
+// colorHexPattern matches a 6-digit hex color literal (#rrggbb). 3-digit
+// shorthand and named colours are rejected — see ADR-0003.
+var colorHexPattern = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+
 // Config is the typed, validated representation of the toggle-monitor
 // YAML config.
 type Config struct {
-	DisplayTimezone string     `yaml:"displayTimezone"`
-	PublicBaseURL   string     `yaml:"publicBaseURL,omitempty"`
-	DBBodyMaxChars  int        `yaml:"dbBodyMaxChars"`
-	Database        Database   `yaml:"database"`
-	UI              UI         `yaml:"ui"`
-	Theme           Theme      `yaml:"theme"`
-	HTTPClient      HTTPClient `yaml:"httpClient"`
-	Heartbeat       *Heartbeat `yaml:"heartbeat,omitempty"` // optional; nil disables the deadman loop
-	Kube            *Kube      `yaml:"kube,omitempty"`      // optional; nil disables auto-discovery
-	Slack           Slack      `yaml:"slack"`
-	Proxies         []Proxy    `yaml:"proxies,omitempty"`
-	Groups          []Group    `yaml:"groups"`
-	Monitors        []Monitor  `yaml:"monitors"`
-	StatusPages     []StatusPage `yaml:"statusPages,omitempty"` // optional; empty → /status renders empty placeholder
+	DisplayTimezone string       `yaml:"displayTimezone"`
+	PublicBaseURL   string       `yaml:"publicBaseURL,omitempty"`
+	DBBodyMaxChars  int          `yaml:"dbBodyMaxChars"`
+	Database        Database     `yaml:"database"`
+	UI              UI           `yaml:"ui"`
+	HTTPClient      HTTPClient   `yaml:"httpClient"`
+	Heartbeat       *Heartbeat   `yaml:"heartbeat,omitempty"` // optional; nil disables the deadman loop
+	Kube            *Kube        `yaml:"kube,omitempty"`      // optional; nil disables auto-discovery
+	Slack           Slack        `yaml:"slack"`
+	Proxies         []Proxy      `yaml:"proxies,omitempty"`
+	Monitors        []Monitor    `yaml:"monitors"`
+	StatusPages     []StatusPage `yaml:"statusPages,omitempty"` // optional; empty → /status renders empty listing
 }
 
 // Proxy is one outbound proxy that monitors can route their probes
@@ -165,7 +168,6 @@ type KubeConfig struct {
 	Notify                 NotifyList     `yaml:"notify,omitempty"`
 	Tags                   TagList        `yaml:"tags,omitempty"`
 	DependsOn              DependsOnList  `yaml:"dependsOn,omitempty"`
-	Group                  string         `yaml:"group,omitempty"`
 
 	// setFields records which YAML keys were present in the input.
 	// Populated by UnmarshalYAML; consumed by the merger to tell
@@ -359,79 +361,129 @@ type PageSize struct {
 	DiscoveryListing int `yaml:"discoveryListing"`
 }
 
-type Theme struct {
-	DefaultGroupColor string `yaml:"defaultGroupColor"`
-}
-
 type HTTPClient struct {
 	UserAgent string `yaml:"userAgent"`
 }
 
-type Group struct {
-	Slug         string   `yaml:"slug"`
-	FriendlyName string   `yaml:"friendlyName"`
-	Description  string   `yaml:"description,omitempty"`
-	LogoURL      string   `yaml:"logoUrl,omitempty"`
-	Color        string   `yaml:"color,omitempty"`
-	Notify       []string `yaml:"notify,omitempty"` // userMapping slugs or raw <…> markup; merged union with monitor.notify
-}
-
-// StatusPage is one public status page. Each entry in statusPages
+// StatusPage is one collection-view entity. Each entry in statusPages
 // gets its own /status/<slug> URL; /status itself lists every
-// configured page. Slug is required and must be unique across the
-// list.
+// configured page alphabetically by FriendlyName. Slug is required and
+// must be unique across the list.
+//
+// Membership is tag-driven: each Section's Match predicate evaluates
+// against a monitor's tag set and host, and a monitor can appear on
+// many pages and many sections (N:M). See ADR-0003.
 type StatusPage struct {
-	Slug          string              `yaml:"slug"`
-	Title         string              `yaml:"title,omitempty"`
-	ShowSections  *bool               `yaml:"showSections,omitempty"`  // default true
-	ShowIncidents *bool               `yaml:"showIncidents,omitempty"` // default false (privacy)
-	Sections      []StatusPageSection `yaml:"sections,omitempty"`
+	Slug         string              `yaml:"slug"`
+	FriendlyName string              `yaml:"friendlyName"`
+	Description  string              `yaml:"description,omitempty"`
+	LogoURL      string              `yaml:"logoUrl,omitempty"`
+	Color        string              `yaml:"color,omitempty"` // ^#[0-9a-fA-F]{6}$
+	Sections     []StatusPageSection `yaml:"sections"`
 }
 
-// StatusPageSection is one named block on the status page. The match
-// list is OR: a monitor lands in the section if any one selector
-// matches. Within a selector the fields AND together.
+// StatusPageSection is one named block on the status page. Match is a
+// single predicate node (leaf or branch) — see SectionMatch.
 type StatusPageSection struct {
-	Title string            `yaml:"title"`
-	Match []StatusPageMatch `yaml:"match"`
+	Title string       `yaml:"title"`
+	Match SectionMatch `yaml:"match"`
 }
 
-// StatusPageMatch is the per-monitor selector. host is a glob
-// (path.Match, same as kube.match[].when.host); group is an exact
-// slug match while groupRegex is a Go regexp matched against the
-// monitor's group slug; tags matches if the monitor carries any of
-// the listed labels. group and groupRegex are mutually exclusive
-// per selector.
-type StatusPageMatch struct {
-	Host       string   `yaml:"host,omitempty"`
-	Group      string   `yaml:"group,omitempty"`
-	GroupRegex string   `yaml:"groupRegex,omitempty"`
-	Tags       []string `yaml:"tags,omitempty"`
+// SectionMatch is one node in the section predicate tree. A node is
+// either a *leaf* (carries Tags and/or HostRegex) or a *branch*
+// (carries exactly one of Any/All). Mixing leaf and branch fields,
+// mixing Any with All, or leaving every field empty is a validation
+// error.
+//
+// Leaf semantics:
+//   - Tags: monitor's tag set must include every listed tag (AND).
+//   - HostRegex: Go regexp, auto-anchored ^...$ at use time, matched
+//     against the monitor's URL host.
+//   - When both are present, both must match (AND).
+//
+// Branch semantics:
+//   - Any: at least one child node must match (OR).
+//   - All: every child node must match (AND).
+//
+// See ADR-0003.
+type SectionMatch struct {
+	Tags      []string       `yaml:"tags,omitempty"`
+	HostRegex string         `yaml:"hostRegex,omitempty"`
+	Any       []SectionMatch `yaml:"any,omitempty"`
+	All       []SectionMatch `yaml:"all,omitempty"`
 }
 
-// ShowSectionsEnabled returns the flag value, defaulting to true.
-func (s StatusPage) ShowSectionsEnabled() bool {
-	if s.ShowSections == nil {
-		return true
-	}
-	return *s.ShowSections
+// IsBranch reports whether m is a branch node (Any or All set).
+func (m SectionMatch) IsBranch() bool {
+	return len(m.Any) > 0 || len(m.All) > 0
 }
 
-// ShowIncidentsEnabled returns the flag value, defaulting to false —
-// the public page errs on the side of less data exposure unless the
-// operator explicitly opts in.
-func (s StatusPage) ShowIncidentsEnabled() bool {
-	if s.ShowIncidents == nil {
+// IsLeaf reports whether m is a leaf node (Tags or HostRegex set).
+func (m SectionMatch) IsLeaf() bool {
+	return len(m.Tags) > 0 || m.HostRegex != ""
+}
+
+// IsEmpty reports whether m has no fields set — a validation error.
+func (m SectionMatch) IsEmpty() bool {
+	return !m.IsBranch() && !m.IsLeaf()
+}
+
+// Matches evaluates the predicate against a monitor's tag set and
+// host. The caller is responsible for compiling tags into a set
+// (TagSet) and passing the bare host (no scheme, no port, no path).
+// HostRegex is compiled per call; v1 traffic does not justify caching.
+func (m SectionMatch) Matches(tagSet map[string]bool, host string) bool {
+	if len(m.Any) > 0 {
+		for _, child := range m.Any {
+			if child.Matches(tagSet, host) {
+				return true
+			}
+		}
 		return false
 	}
-	return *s.ShowIncidents
+	if len(m.All) > 0 {
+		for _, child := range m.All {
+			if !child.Matches(tagSet, host) {
+				return false
+			}
+		}
+		return true
+	}
+	// Leaf. Empty leaves are filtered out at validation time; if one
+	// arrives here, treat as no-match to fail closed.
+	if !m.IsLeaf() {
+		return false
+	}
+	for _, required := range m.Tags {
+		if !tagSet[required] {
+			return false
+		}
+	}
+	if m.HostRegex != "" {
+		re, err := regexp.Compile("^(?:" + m.HostRegex + ")$")
+		if err != nil {
+			return false
+		}
+		if !re.MatchString(host) {
+			return false
+		}
+	}
+	return true
+}
+
+// TagSet builds a presence map from a slice of tags.
+func TagSet(tags []string) map[string]bool {
+	set := make(map[string]bool, len(tags))
+	for _, t := range tags {
+		set[t] = true
+	}
+	return set
 }
 
 type Monitor struct {
 	Slug                string   `yaml:"slug"`
 	FriendlyName        string   `yaml:"friendlyName"`
 	URL                 string   `yaml:"url"`
-	Group               string   `yaml:"group"`
 	HTTPMethod          string   `yaml:"httpMethod"`
 	AcceptedStatusCodes []int    `yaml:"acceptedStatusCodes"`
 	Interval            Duration `yaml:"interval"`
@@ -495,10 +547,10 @@ func Load(data []byte) (Config, error) {
 // accepted, regardless of their value, for anchor-only hosts.
 var knownTopLevelKeys = map[string]struct{}{
 	"displayTimezone": {}, "publicBaseURL": {}, "dbBodyMaxChars": {},
-	"kube": {}, "ui": {}, "theme": {}, "httpClient": {}, "heartbeat": {}, "database": {},
+	"kube": {}, "ui": {}, "httpClient": {}, "heartbeat": {}, "database": {},
 	"slack":   {},
 	"proxies": {},
-	"groups":  {}, "monitors": {},
+	"monitors":    {},
 	"statusPages": {},
 }
 
@@ -604,34 +656,6 @@ func (c *checker) validate(cfg *Config) {
 		}
 	}
 
-	// Group validation: kube-discovered required; slugs unique and valid.
-	// Done before kube + monitors so both can validate the slug references
-	// they make into the groups set.
-	seenGroups := map[string]struct{}{}
-	hasKubeDiscovered := false
-	for i, g := range cfg.Groups {
-		base := []any{"groups", i}
-		if err := slug.Validate(g.Slug); err != nil {
-			c.errf(append(base, "slug"), "%v", err)
-		}
-		if _, dup := seenGroups[g.Slug]; dup {
-			c.errf(append(base, "slug"), "duplicate slug %q", g.Slug)
-		}
-		seenGroups[g.Slug] = struct{}{}
-		if g.Slug == "kube-discovered" {
-			hasKubeDiscovered = true
-		}
-		for j, n := range g.Notify {
-			if !c.isValidNotifyEntry(cfg.Slack.UserMapping, n) {
-				c.errf(append(base, "notify", j),
-					"%q must be a userMapping slug or raw Slack markup wrapped in <…>", n)
-			}
-		}
-	}
-	if !hasKubeDiscovered {
-		c.errf([]any{"groups"}, "a group with slug %q is required", "kube-discovered")
-	}
-
 	if cfg.DBBodyMaxChars < cfg.Slack.BodyMaxChars {
 		c.errf([]any{"dbBodyMaxChars"},
 			"%d must be >= slack.bodyMaxChars (%d)", cfg.DBBodyMaxChars, cfg.Slack.BodyMaxChars)
@@ -677,9 +701,9 @@ func (c *checker) validate(cfg *Config) {
 	// thresholds, root-required-field-overridden-empty) live in the
 	// merger and surface at materialization time as kube-invalid
 	// discovery rows. Slug references inside config blocks need the
-	// slack channel / group / proxy / userMapping sets, so this runs
-	// after those have been populated above.
-	c.validateKube(cfg, seenSlackChannels, seenGroups, seenProxies)
+	// slack channel / proxy / userMapping sets, so this runs after
+	// those have been populated above.
+	c.validateKube(cfg, seenSlackChannels, seenProxies)
 
 	// Monitor validation.
 	seenMonitors := map[string]struct{}{}
@@ -692,8 +716,10 @@ func (c *checker) validate(cfg *Config) {
 			c.errf(append(base, "slug"), "duplicate slug %q", m.Slug)
 		}
 		seenMonitors[m.Slug] = struct{}{}
-		if _, ok := seenGroups[m.Group]; !ok {
-			c.errf(append(base, "group"), "unknown group %q", m.Group)
+		for j, tag := range m.Tags {
+			if err := slug.Validate(tag); err != nil {
+				c.errf(append(base, "tags", j), "%v", err)
+			}
 		}
 		if m.Proxy != "" {
 			if _, ok := seenProxies[m.Proxy]; !ok {
@@ -784,9 +810,10 @@ func (c *checker) validate(cfg *Config) {
 	}
 
 	// statusPages validation. Per page: slug required + unique across
-	// the list. Per section: title + non-empty match; each selector
-	// must specify at least one of host/group/tags, and any referenced
-	// group must exist.
+	// the list, friendlyName required, color/logoUrl syntax if set, at
+	// least one section, each section has a title and a non-empty
+	// predicate tree (any/all branches or tags/hostRegex leaves). See
+	// ADR-0003.
 	seenStatusSlugs := map[string]int{}
 	for pi, page := range cfg.StatusPages {
 		pbase := []any{"statusPages", pi}
@@ -799,6 +826,17 @@ func (c *checker) validate(cfg *Config) {
 		if page.Slug != "" {
 			seenStatusSlugs[page.Slug] = pi
 		}
+		if strings.TrimSpace(page.FriendlyName) == "" {
+			c.errf(append(pbase, "friendlyName"), "required")
+		}
+		if page.Color != "" && !colorHexPattern.MatchString(page.Color) {
+			c.errf(append(pbase, "color"), "%q must match %s (6-digit hex, e.g. #f5333f)", page.Color, colorHexPattern.String())
+		}
+		if page.LogoURL != "" {
+			if u, err := url.Parse(page.LogoURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+				c.errf(append(pbase, "logoUrl"), "must be an http or https URL, got %q", page.LogoURL)
+			}
+		}
 		if len(page.Sections) == 0 {
 			c.errf(append(pbase, "sections"), "at least one section is required")
 		}
@@ -807,28 +845,62 @@ func (c *checker) validate(cfg *Config) {
 			if strings.TrimSpace(sec.Title) == "" {
 				c.errf(append(sbase, "title"), "required")
 			}
-			if len(sec.Match) == 0 {
-				c.errf(append(sbase, "match"), "at least one selector is required")
+			c.validateSectionMatch(&sec.Match, append(sbase, "match"))
+		}
+	}
+}
+
+// validateSectionMatch recurses through the predicate tree rooted at
+// m, enforcing the rules in ADR-0003 §Validation: exactly one of
+// any/all on a branch (with non-empty children), at least one of
+// tags/hostRegex on a leaf, no mixing of branch and leaf fields, no
+// empty nodes, and hostRegex must compile + tags must be non-empty
+// kebab-case strings.
+func (c *checker) validateSectionMatch(m *SectionMatch, base []any) {
+	hasBranch := m.IsBranch()
+	hasLeaf := m.IsLeaf()
+	if m.IsEmpty() {
+		c.errf(base, "predicate node is empty; use any:/all: for a branch or tags:/hostRegex: for a leaf")
+		return
+	}
+	if hasBranch && hasLeaf {
+		c.errf(base, "predicate node cannot mix branch (any/all) and leaf (tags/hostRegex) fields")
+		return
+	}
+	if len(m.Any) > 0 && len(m.All) > 0 {
+		c.errf(base, "any: and all: are mutually exclusive on the same predicate node")
+		return
+	}
+	if hasBranch {
+		var children []SectionMatch
+		var key string
+		if len(m.Any) > 0 {
+			children = m.Any
+			key = "any"
+		} else {
+			children = m.All
+			key = "all"
+		}
+		if len(children) == 0 {
+			c.errf(append(append([]any{}, base...), key), "must have at least one child predicate")
+			return
+		}
+		for i := range children {
+			c.validateSectionMatch(&children[i], append(append([]any{}, base...), key, i))
+		}
+		return
+	}
+	// Leaf.
+	if len(m.Tags) > 0 {
+		for i, tag := range m.Tags {
+			if err := slug.Validate(tag); err != nil {
+				c.errf(append(append([]any{}, base...), "tags", i), "%v", err)
 			}
-			for j, sel := range sec.Match {
-				mbase := append(sbase, "match", j)
-				if sel.Host == "" && sel.Group == "" && sel.GroupRegex == "" && len(sel.Tags) == 0 {
-					c.errf(mbase, "at least one of host, group, groupRegex, or tags is required")
-				}
-				if sel.Group != "" && sel.GroupRegex != "" {
-					c.errf(mbase, "group and groupRegex are mutually exclusive")
-				}
-				if sel.Group != "" {
-					if _, ok := seenGroups[sel.Group]; !ok {
-						c.errf(append(mbase, "group"), "unknown group %q", sel.Group)
-					}
-				}
-				if sel.GroupRegex != "" {
-					if _, err := regexp.Compile(sel.GroupRegex); err != nil {
-						c.errf(append(mbase, "groupRegex"), "invalid regex: %v", err)
-					}
-				}
-			}
+		}
+	}
+	if m.HostRegex != "" {
+		if _, err := regexp.Compile(m.HostRegex); err != nil {
+			c.errf(append(append([]any{}, base...), "hostRegex"), "invalid regex: %v", err)
 		}
 	}
 }
@@ -1018,7 +1090,7 @@ var KubeRequiredAtRoot = []string{
 // deliberately deferred to a separate task. The ADR explicitly
 // distinguishes errors from warnings — skipping warnings does not
 // regress behaviour.
-func (c *checker) validateKube(cfg *Config, slackChannels, groups, proxies map[string]struct{}) {
+func (c *checker) validateKube(cfg *Config, slackChannels, proxies map[string]struct{}) {
 	if cfg.Kube == nil {
 		return
 	}
@@ -1071,7 +1143,7 @@ func (c *checker) validateKube(cfg *Config, slackChannels, groups, proxies map[s
 	// label keys, slug references inside config, final/ignore
 	// invariants, HTTPMethod / scheme enums when set).
 	for i := range k.Match {
-		c.validateKubeRule(&k.Match[i], []any{"kube", "match", i}, slackChannels, groups, proxies, cfg.Slack.UserMapping)
+		c.validateKubeRule(&k.Match[i], []any{"kube", "match", i}, slackChannels, proxies, cfg.Slack.UserMapping)
 	}
 }
 
@@ -1170,7 +1242,7 @@ func (c *checker) checkKubeRequiredAtRoot(k *KubeConfig, slackChannels map[strin
 func (c *checker) validateKubeRule(
 	r *KubeMatchRule,
 	base []any,
-	slackChannels, groups, proxies map[string]struct{},
+	slackChannels, proxies map[string]struct{},
 	userMapping map[string]string,
 ) {
 	c.validateKubeWhen(&r.When, append(append([]any{}, base...), "when"))
@@ -1184,12 +1256,12 @@ func (c *checker) validateKubeRule(
 			"final: true requires at least one selector in when: (otherwise the tree walk halts on the first ingress)")
 	}
 
-	c.validateKubeConfig(&r.Config, append(append([]any{}, base...), "config"), slackChannels, groups, proxies, userMapping)
+	c.validateKubeConfig(&r.Config, append(append([]any{}, base...), "config"), slackChannels, proxies, userMapping)
 
 	for i := range r.Nested {
 		c.validateKubeRule(&r.Nested[i],
 			append(append([]any{}, base...), "nested", i),
-			slackChannels, groups, proxies, userMapping)
+			slackChannels, proxies, userMapping)
 	}
 }
 
@@ -1242,7 +1314,7 @@ func (c *checker) validateKubeWhen(w *KubeMatchWhen, base []any) {
 func (c *checker) validateKubeConfig(
 	k *KubeConfig,
 	base []any,
-	slackChannels, groups, proxies map[string]struct{},
+	slackChannels, proxies map[string]struct{},
 	userMapping map[string]string,
 ) {
 	if k.IsSet("httpMethod") {
@@ -1265,12 +1337,6 @@ func (c *checker) validateKubeConfig(
 		if _, ok := slackChannels[k.Slack]; !ok {
 			c.errf(append(append([]any{}, base...), "slack"),
 				"unknown channel slug %q", k.Slack)
-		}
-	}
-	if k.IsSet("group") && k.Group != "" {
-		if _, ok := groups[k.Group]; !ok {
-			c.errf(append(append([]any{}, base...), "group"),
-				"unknown group %q", k.Group)
 		}
 	}
 	if k.IsSet("proxy") && k.Proxy != "" {

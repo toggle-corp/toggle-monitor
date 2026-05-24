@@ -18,6 +18,57 @@ templ statTile(label string, count int, kind, href string) {
 	</a>
 }
 
+// StatusPageStats is the per-status-page rollup the homepage tile
+// surfaces — same metric vocabulary as the global Overview, scoped to
+// the monitors that any section of the page selects. Computed by the
+// web layer at render time.
+type StatusPageStats struct {
+	Slug            string
+	FriendlyName    string
+	Color           string // hex
+	Total           int
+	Up              int
+	Down            int
+	TemporaryPaused int
+	SSLExpiring     int
+	SSLSkipped      int
+}
+
+// statusPageTile renders one status-page tile on /. Click → page detail.
+templ statusPageTile(s StatusPageStats) {
+	<a href={ templ.URL("/status/" + s.Slug) } class="block rounded border bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 p-4 transition hover:shadow-sm">
+		<div class="flex items-center gap-2 mb-2">
+			if s.Color != "" {
+				<span class="inline-block w-2 h-4 rounded shrink-0" style={ "background-color: " + s.Color }></span>
+			}
+			<span class="font-medium truncate">{ s.FriendlyName }</span>
+			<code class="ml-auto font-mono text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 shrink-0">{ s.Slug }</code>
+		</div>
+		<div class="grid grid-cols-5 gap-1.5 text-xs">
+			<div class={ "rounded px-2 py-1 text-center", statTileAccent("", s.Total) }>
+				<div class="text-slate-500 dark:text-slate-400">Total</div>
+				<div class="font-semibold tabular-nums">{ fmt.Sprint(s.Total) }</div>
+			</div>
+			<div class={ "rounded px-2 py-1 text-center", statTileAccent("up", s.Up) }>
+				<div class="text-slate-500 dark:text-slate-400">Up</div>
+				<div class={ "font-semibold tabular-nums", statTileCount("up", s.Up) }>{ fmt.Sprint(s.Up) }</div>
+			</div>
+			<div class={ "rounded px-2 py-1 text-center", statTileAccent("down", s.Down) }>
+				<div class="text-slate-500 dark:text-slate-400">Down</div>
+				<div class={ "font-semibold tabular-nums", statTileCount("down", s.Down) }>{ fmt.Sprint(s.Down) }</div>
+			</div>
+			<div class={ "rounded px-2 py-1 text-center", statTileAccent("warn", s.TemporaryPaused) }>
+				<div class="text-slate-500 dark:text-slate-400">Paused</div>
+				<div class={ "font-semibold tabular-nums", statTileCount("warn", s.TemporaryPaused) }>{ fmt.Sprint(s.TemporaryPaused) }</div>
+			</div>
+			<div class={ "rounded px-2 py-1 text-center", statTileAccent("warn", s.SSLExpiring) }>
+				<div class="text-slate-500 dark:text-slate-400">SSL</div>
+				<div class={ "font-semibold tabular-nums", statTileCount("warn", s.SSLExpiring) }>{ fmt.Sprint(s.SSLExpiring) }</div>
+			</div>
+		</div>
+	</a>
+}
+
 // MappingEntry is the per-row payload the homepage renders in the
 // "Slack mapping health" panel. Mirrors web.MappingEntry so this
 // package doesn't import web (it's imported by web).
@@ -45,7 +96,7 @@ type MissingParent struct {
 	LastSeen time.Time
 }
 
-templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page, perPage int, mapping MappingHealth) {
+templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page, perPage int, mapping MappingHealth, statusPages []StatusPageStats) {
 	@Layout("Home") {
 		<section class="mb-8">
 			<h1 class="text-xl font-semibold mb-3">Overview</h1>
@@ -60,6 +111,17 @@ templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page
 				<a href="/monitors" class="text-sm text-blue-700 dark:text-blue-400 hover:underline">All monitors →</a>
 			</div>
 		</section>
+
+		if len(statusPages) > 0 {
+			<section class="mb-8">
+				<h2 class="text-lg font-semibold mb-3">Status pages</h2>
+				<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+					for _, sp := range statusPages {
+						@statusPageTile(sp)
+					}
+				</div>
+			</section>
+		}
 
 		if len(mapping.Invalid) > 0 {
 			<section class="mb-6">

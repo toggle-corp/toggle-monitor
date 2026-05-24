@@ -11,7 +11,7 @@ import (
 // warning post.
 type RemovedInput struct {
 	FriendlyName string
-	GroupSlug    string
+	Tags         []string
 	URL          string
 	HTTPMethod   string
 	Source       string // "static config" | "k8s ingress (ns/name)"
@@ -29,7 +29,9 @@ func BuildRemovedWarning(in RemovedInput) ParentMessage {
 		"*Method:* `" + in.HTTPMethod + "`",
 		"*Reason:* `" + in.Reason + "`",
 		"*Source:* " + in.Source,
-		"*Group:* `" + in.GroupSlug + "`",
+	}
+	if len(in.Tags) > 0 {
+		lines = append(lines, "*Tags:* `"+strings.Join(in.Tags, "`, `")+"`")
 	}
 	blocks := []Block{contextBlock(strings.Join(lines, "\n"))}
 	if footer := footerLine("", time.Time{}, in.DetailURL); footer != "" {
@@ -91,7 +93,7 @@ func (n *Notifier) NotifyRemoved(ctx context.Context, channelSlug string, in Mon
 		// Edit the parent to ✅ Resolved (monitor removed).
 		downIn := DownInput{
 			FriendlyName: in.FriendlyName,
-			Group:        in.GroupSlug,
+			Tags:         in.Tags,
 			URL:          in.URL,
 			StatusCode:   in.StatusCode,
 			StatusText:   in.StatusText,
@@ -114,7 +116,7 @@ func (n *Notifier) NotifyRemoved(ctx context.Context, channelSlug string, in Mon
 	// even for monitors that were up at the time).
 	warning := BuildRemovedWarning(RemovedInput{
 		FriendlyName: in.FriendlyName,
-		GroupSlug:    in.GroupSlug,
+		Tags:         in.Tags,
 		URL:          in.URL,
 		HTTPMethod:   "GET", // populated by the caller once we carry it on MonitorView; safe default for now
 		Source:       source,

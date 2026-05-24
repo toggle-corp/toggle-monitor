@@ -17,9 +17,6 @@ ui:
     discoveryListing: 50
   maxPerPage: 200
 
-theme:
-  defaultGroupColor: "#64748b"
-
 heartbeat:
   url: https://hc-ping.com/00000000-0000-0000-0000-000000000000
   interval: 1m
@@ -98,13 +95,12 @@ kube:
       ignore: true
 
     # ── ACME namespace family ──────────────────────────────────────
-    # Notice the layering: this rule sets project-wide group + notify;
-    # the nested regex rule narrows to the Service-A sub-family; the
-    # deepest rule pins the per-app health-check path for minio
-    # Ingresses inside that sub-family.
+    # Tags accumulate down the tree (union by default): acme →
+    # acme+service-a → acme+service-a+eoapi. Status-page sections
+    # bind on these tags via tag-AND predicates (see statusPages
+    # below).
     - when: { namespace: "acme-*" }
       config:
-        group: acme
         notify: [alice]                              # unions with root's [ops-team]
         tags: [acme]
       nested:
@@ -123,11 +119,8 @@ kube:
               final: true
 
     # ── BETACO namespace family ──────────────────────────────────────
-    # Production hosts get the public-API slack channel; everything
-    # else stays on ops-alerts (inherited from root).
     - when: { namespace: "betaco-core-backend-*" }
       config:
-        group: production-apis
         tags: [betaco, internal]
         dependsOn: [bastion-proxy]
       nested:
@@ -137,9 +130,6 @@ kube:
             notify: !override [ops-team, alice]      # replaces inherited notify, doesn't union
 
     # ── Global minio convention ────────────────────────────────────
-    # Any Ingress labeled as a minio app, anywhere in the cluster,
-    # gets the standard health path. Project-specific rules above can
-    # use `final: true` to opt out (see the ACME subtree).
     - when:
         labels:
           app.kubernetes.io/name: minio
@@ -154,7 +144,7 @@ kube:
         timeout: 15s
         retries: 3
         retryBackoff: 10s
-        group: public
+        tags: [dev, public]
 
 # ── Slack ─────────────────────────────────────────────────────────────────────
 slack:
@@ -171,32 +161,6 @@ slack:
     alice: U01ABCDEF12                              # @alice
     ops-team: S02ABCDEF34                           # @ops-team (subteam)
 
-# ── Groups ────────────────────────────────────────────────────────────────────
-groups:
-  - slug: gateways
-    friendlyName: Gateways
-    description: Bastion, ingress controller, and other upstream dependencies
-    color: "#0ea5e9"
-
-  - slug: production-apis
-    friendlyName: Production APIs
-    description: Customer-facing API services
-    color: "#ef4444"
-
-  - slug: public
-    friendlyName: Public Sites
-    description: Public-facing websites and landing pages
-    color: "#10b981"
-
-  - slug: acme
-    friendlyName: ACME
-    description: ACME project namespaces (acme-* family)
-    color: "#a855f7"
-
-  - slug: kube-discovered                            # REQUIRED — fallback for ingresses without config.group
-    friendlyName: Kube Discovered
-    description: Auto-discovered ingresses that didn't specify a group
-
 # ── Anchor host (ignored by validator) ────────────────────────────────────────
 x-monitor-defaults: &staticDefaults
   httpMethod: GET
@@ -212,6 +176,12 @@ x-monitor-defaults: &staticDefaults
   sslReminderInterval: 3d
   slack: ops-alerts
 
+# Shared branding anchor for status pages — keeps logo/color in one
+# place so multiple pages for the same project share a look.
+x-status-page-acme: &x-status-page-acme
+  logoUrl: https://example.com/logo.svg
+  color: "#f5333f"
+
 # ── Static monitors ───────────────────────────────────────────────────────────
 monitors:
   # An upstream gateway — checked more often, used as a parent for downstream monitors.
@@ -219,7 +189,6 @@ monitors:
     slug: bastion-proxy
     friendlyName: Bastion Proxy
     url: https://bastion.internal.example.com/health
-    group: gateways
     interval: 1m
     notify: [ops-team]
     tags: [gateway, critical]
@@ -229,17 +198,15 @@ monitors:
     slug: legacy-internal
     friendlyName: Legacy Internal Service
     url: http://legacy.internal.example.com/health
-    group: production-apis
     dependsOn: [bastion-proxy]
     notify: [alice]
-    tags: [legacy]
+    tags: [legacy, internal]
 
   # A heartbeat for an external SaaS we depend on. Custom timeouts for a slower endpoint.
   - <<: *staticDefaults
     slug: saas-status
     friendlyName: External SaaS Status
     url: https://api.external-saas.com/v1/status
-    group: production-apis
     timeout: 30s
     retries: 1
     retryBackoff: 10s
@@ -247,35 +214,54 @@ monitors:
     notify:
       - ops-team
       - "<!here>"                                    # raw Slack markup passes through
+    tags: [external, prod]
 
-# Public status pages. Optional — omit this block to keep /status at
-# an empty placeholder. Each entry has a required, unique `slug` and
+# ── Status pages ──────────────────────────────────────────────────────────────
+# StatusPage is the sole collection entity since ADR-0003. Each entry
 # is served at /status/<slug>; /status itself renders an index of all
-# configured pages. Each page renders sections of monitors selected
-# by its match rules. Match selectors AND within a selector and OR
-# across selectors. Selector fields:
-#   - host:       glob (path.Match) against the monitor's URL host
-#   - group:      exact slug equality (must reference a declared group)
-#   - groupRegex: Go regexp against the monitor's group slug
-#                 (mutually exclusive with `group` in the same selector)
-#   - tags:       set overlap against monitors.tags
+# configured pages (alphabetical by friendlyName). Membership is
+# tag-driven: each section has a single predicate node — a leaf
+# (`tags:` AND-internally and/or `hostRegex:`) or a branch (`any:` /
+# `all:` recursive composition). A monitor can land on many pages and
+# many sections (N:M).
 statusPages:
-  - slug: public
-    title: "Toggle status"
-    showSections: true            # toggle the section headings on/off
-    showIncidents: false          # off by default — recent alerts are sensitive
+  - slug: local-only
+    friendlyName: Local only
+    description: Local-development hostnames; not for public sharing.
     sections:
-      - title: "Public APIs"
-        match:
-          - host: "*.example.com"
-          - group: gateways
-      - title: "Toggle-prefixed services"
-        match:
-          - groupRegex: "^tc-.*$"
-  - slug: internal
-    title: "Internal tools"
-    showSections: true
+      - title: ""
+        match: { hostRegex: '.*\.local\.togglecorp\.com' }
+
+  - slug: acme
+    friendlyName: ACME
+    description: Monitors for the ACME project.
+    <<: *x-status-page-acme
     sections:
-      - title: "Internal tools"
+      - title: Production
         match:
-          - tags: [internal-tools]
+          any:
+            - { tags: [prod, acme] }
+            - { tags: [prod, acme] }     # legacy name variant
+      - title: Alpha
+        match:
+          any:
+            - { tags: [alpha, acme] }
+            - { tags: [alpha, acme] }
+
+  - slug: acme-alpha
+    friendlyName: ACME — Alpha
+    description: Just the Alpha slice of the ACME project.
+    <<: *x-status-page-acme
+    sections:
+      - title: Alpha
+        match:
+          any:
+            - { tags: [alpha, acme] }
+            - { tags: [alpha, acme] }
+
+  - slug: betaco-alpha
+    friendlyName: BETACO — Alpha
+    description: BETACO Alpha environment.
+    sections:
+      - title: Alpha
+        match: { tags: [alpha, betaco] }

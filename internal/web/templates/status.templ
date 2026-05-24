@@ -2,7 +2,6 @@ package templates
 
 import (
 	"net/url"
-	"path"
 	"regexp"
 	"strings"
 
@@ -12,56 +11,118 @@ import (
 // StatusConfig is the display-side mirror of one config.StatusPage —
 // what /status/<slug> needs to render. Lifecycle builds one of these
 // per configured page at startup; the page handler reads it on every
-// request.
+// request. The match predicates are mirrored as StatusMatch with the
+// hostRegex pre-compiled so per-request matching skips
+// regexp.Compile. See ADR-0003.
 type StatusConfig struct {
-	Slug          string
-	Title         string
-	ShowSections  bool
-	ShowIncidents bool
-	Sections      []StatusConfigSection
+	Slug         string
+	FriendlyName string
+	Description  string
+	LogoURL      string
+	Color        string // ^#[0-9a-fA-F]{6}$ or empty
+	Sections     []StatusConfigSection
 }
 
-// StatusConfigSection mirrors config.StatusSection.
+// StatusConfigSection is one named block on a status page — a title
+// and a predicate evaluated against each monitor.
 type StatusConfigSection struct {
 	Title string
-	Match []StatusMatch
+	Match StatusMatch
 }
 
-// StatusMatch mirrors config.StatusPageMatch — selector fields AND
-// within a selector; sections OR across selectors. GroupRegex is
-// pre-compiled by lifecycle so per-request matching avoids the
-// regexp.Compile cost on every page render.
+// StatusMatch is the templates-side mirror of config.SectionMatch. A
+// node is either a leaf (Tags AND HostRegex) or a branch (Any / All).
+// HostRegex is pre-compiled by lifecycle.
 type StatusMatch struct {
-	Host       string
-	Group      string
-	GroupRegex *regexp.Regexp
-	Tags       []string
+	Tags      []string
+	HostRegex *regexp.Regexp
+	Any       []StatusMatch
+	All       []StatusMatch
 }
 
-// StatusSection is one rendered block on /status — title + the
-// monitors that landed in it. Sections returns them in declared
-// order; monitors within a section keep ListActiveMonitors's order
-// (down → paused → up-then-name) so failures sit at the top.
+// Matches reports whether a monitor's tag set and host satisfy the
+// predicate. The caller is responsible for building the tag set once
+// per monitor (StatusTagSet).
+func (m StatusMatch) Matches(tagSet map[string]bool, host string) bool {
+	if len(m.Any) > 0 {
+		for _, c := range m.Any {
+			if c.Matches(tagSet, host) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(m.All) > 0 {
+		for _, c := range m.All {
+			if !c.Matches(tagSet, host) {
+				return false
+			}
+		}
+		return true
+	}
+	// Leaf. Empty leaves are filtered out at config-validation time.
+	if len(m.Tags) == 0 && m.HostRegex == nil {
+		return false
+	}
+	for _, t := range m.Tags {
+		if !tagSet[t] {
+			return false
+		}
+	}
+	if m.HostRegex != nil && !m.HostRegex.MatchString(host) {
+		return false
+	}
+	return true
+}
+
+// StatusTagSet builds a presence map from a slice of tags.
+func StatusTagSet(tags []string) map[string]bool {
+	set := make(map[string]bool, len(tags))
+	for _, t := range tags {
+		set[t] = true
+	}
+	return set
+}
+
+// StatusSection is one rendered block on a status page detail view —
+// title + the monitors that landed in it. Sections returns them in
+// declared (config) order; monitors within a section keep the input
+// order (typically ListActiveMonitors's down → paused → up-then-name)
+// so failures sit at the top.
 type StatusSection struct {
 	Title    string
 	Monitors []store.MonitorRow
 }
 
 // BuildStatusSections groups the active-monitors set into sections by
-// applying each section's match rules. A monitor lands in a section
-// when ANY of its selectors fire; within a selector, the set fields
-// AND together. A monitor can appear in multiple sections — the
-// status page is a curated public view, not a strict partition.
+// applying each section's predicate. A monitor lands in a section
+// when its tag set and host satisfy the section's match. A monitor
+// can appear in multiple sections (N:M) — the status page is a
+// curated view, not a strict partition.
 func BuildStatusSections(cfg *StatusConfig, monitors []store.MonitorRow) []StatusSection {
 	if cfg == nil {
 		return nil
 	}
 	out := make([]StatusSection, 0, len(cfg.Sections))
+	// Precompute each monitor's (tagSet, host) once.
+	type prepared struct {
+		row store.MonitorRow
+		set map[string]bool
+		host string
+	}
+	prep := make([]prepared, len(monitors))
+	for i, m := range monitors {
+		prep[i] = prepared{
+			row:  m,
+			set:  StatusTagSet(m.Tags),
+			host: hostFromURL(m.URL),
+		}
+	}
 	for _, sec := range cfg.Sections {
 		bucket := StatusSection{Title: sec.Title}
-		for _, m := range monitors {
-			if monitorMatchesAny(m, sec.Match) {
-				bucket.Monitors = append(bucket.Monitors, m)
+		for _, p := range prep {
+			if sec.Match.Matches(p.set, p.host) {
+				bucket.Monitors = append(bucket.Monitors, p.row)
 			}
 		}
 		out = append(out, bucket)
@@ -69,44 +130,15 @@ func BuildStatusSections(cfg *StatusConfig, monitors []store.MonitorRow) []Statu
 	return out
 }
 
-func monitorMatchesAny(m store.MonitorRow, selectors []StatusMatch) bool {
-	for _, sel := range selectors {
-		if monitorMatches(m, sel) {
-			return true
-		}
-	}
-	return false
-}
-
-func monitorMatches(m store.MonitorRow, sel StatusMatch) bool {
-	if sel.Host != "" {
-		host := hostFromURL(m.URL)
-		if !matchGlob(sel.Host, host) {
-			return false
-		}
-	}
-	if sel.Group != "" && sel.Group != m.GroupSlug {
+// PageMatches reports whether at least one section on cfg selects a
+// given monitor. Used by the homepage tile builder and by the
+// monitor-detail "Appears on" backlinks.
+func (c *StatusConfig) PageMatches(tagSet map[string]bool, host string) bool {
+	if c == nil {
 		return false
 	}
-	if sel.GroupRegex != nil && !sel.GroupRegex.MatchString(m.GroupSlug) {
-		return false
-	}
-	if len(sel.Tags) > 0 && !tagsOverlap(sel.Tags, m.Tags) {
-		return false
-	}
-	return true
-}
-
-func tagsOverlap(a, b []string) bool {
-	if len(b) == 0 {
-		return false
-	}
-	set := make(map[string]struct{}, len(b))
-	for _, t := range b {
-		set[t] = struct{}{}
-	}
-	for _, t := range a {
-		if _, ok := set[t]; ok {
+	for _, sec := range c.Sections {
+		if sec.Match.Matches(tagSet, host) {
 			return true
 		}
 	}
@@ -121,149 +153,146 @@ func hostFromURL(s string) string {
 	return u.Host
 }
 
-func matchGlob(pattern, value string) bool {
-	if pattern == "" {
-		return false
-	}
-	if pattern == value {
-		return true
-	}
-	ok, err := path.Match(pattern, value)
-	if err != nil {
-		return false
-	}
-	return ok
-}
-
-// statusBannerKind picks the overall-status banner colour: rose if
-// any monitor is down, amber if any is paused or SSL-expiring, else
-// emerald. Same accent palette as the homepage Overview tiles so the
-// public page reads with the same vocabulary as the operator view.
-func statusBannerKind(sections []StatusSection) string {
-	var anyDown, anyDegraded bool
+// statusBadgeKind picks the page-level 3-state badge:
+//   - "none"  → no monitors selected on this page
+//   - "down"  → any monitor down
+//   - "warn"  → any monitor paused / ssl-expiring / ssl-skipped
+//   - "up"    → everything operational
+func statusBadgeKind(sections []StatusSection) string {
+	var total, anyDown, anyWarn int
 	for _, sec := range sections {
+		total += len(sec.Monitors)
 		for _, m := range sec.Monitors {
 			switch string(m.Status) {
 			case "down":
-				anyDown = true
-			case "temporary-paused", "ssl-expiring":
-				anyDegraded = true
+				anyDown++
+			case "temporary-paused":
+				anyWarn++
+			}
+			if m.SSLStatus != nil {
+				switch string(*m.SSLStatus) {
+				case "ssl-expiring", "ssl-skipped":
+					anyWarn++
+				}
 			}
 		}
 	}
 	switch {
-	case anyDown:
+	case total == 0:
+		return "none"
+	case anyDown > 0:
 		return "down"
-	case anyDegraded:
+	case anyWarn > 0:
 		return "warn"
 	default:
 		return "up"
 	}
 }
 
-func statusBannerLabel(kind string) string {
+func statusBadgeLabel(kind string) string {
 	switch kind {
 	case "down":
-		return "Some systems are down"
+		return "Down"
 	case "warn":
-		return "Some systems are degraded"
+		return "Degraded"
+	case "none":
+		return "No monitors"
 	default:
-		return "All systems operational"
+		return "Operational"
 	}
 }
 
-func statusBannerClasses(kind string) string {
+func statusBadgeClasses(kind string) string {
 	switch kind {
 	case "down":
 		return "border-rose-300 dark:border-rose-700 bg-rose-50/60 dark:bg-rose-950/40 text-rose-800 dark:text-rose-300"
 	case "warn":
 		return "border-amber-300 dark:border-amber-700 bg-amber-50/60 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300"
+	case "none":
+		return "border-slate-300 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-900/40 text-slate-600 dark:text-slate-400"
 	default:
 		return "border-emerald-300 dark:border-emerald-700 bg-emerald-50/60 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300"
 	}
 }
 
-// statusTitle returns the configured title or a sensible default so
-// the page still has a heading when an operator forgets to set one.
-func statusTitle(cfg *StatusConfig) string {
-	if cfg == nil || strings.TrimSpace(cfg.Title) == "" {
+// pageTitle returns the configured FriendlyName or a sensible default.
+func pageTitle(cfg *StatusConfig) string {
+	if cfg == nil || strings.TrimSpace(cfg.FriendlyName) == "" {
 		return "Status"
 	}
-	return cfg.Title
+	return cfg.FriendlyName
 }
 
-// StatusPage renders the public-facing /status view. cfg == nil
-// means no status block was configured — the page renders an empty
-// placeholder rather than 404ing so a bookmark from end users still
-// resolves.
-templ StatusPage(cfg *StatusConfig, sections []StatusSection, incidents []store.AlertEventRow) {
-	@statusLayout(statusTitle(cfg)) {
-		<div class="flex flex-wrap items-center gap-2 mb-4">
-			<h1 class="text-2xl font-semibold">{ statusTitle(cfg) }</h1>
-			if cfg != nil && cfg.Slug != "" {
-				<span class="inline-block px-2 py-0.5 rounded text-xs font-mono bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">{ cfg.Slug }</span>
-			}
-		</div>
+// StatusPage renders the per-page detail view at /status/<slug>.
+// Rendered inside the standard operator layout (nav + theme toggle).
+// cfg == nil means no statusPages were configured — the page renders
+// an empty placeholder rather than 404ing so a bookmark still
+// resolves to something explanatory.
+templ StatusPage(cfg *StatusConfig, sections []StatusSection) {
+	@Layout(pageTitle(cfg)) {
 		if cfg == nil {
 			<div class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-6 text-sm text-slate-500 dark:text-slate-400 text-center">
-				<p>No public status configured.</p>
+				<p>No status pages configured.</p>
 				<p class="text-xs mt-1">Add a <code class="font-mono">statusPages:</code> block to config.yaml to populate this page.</p>
 			</div>
 		} else {
-			{{ kind := statusBannerKind(sections) }}
-			<div class={ "rounded border p-4 mb-6 text-center font-medium", statusBannerClasses(kind) }>
-				{ statusBannerLabel(kind) }
-			</div>
-			for _, sec := range sections {
-				if cfg.ShowSections {
-					<h2 class="text-lg font-semibold mb-2">{ sec.Title }</h2>
+			{{ kind := statusBadgeKind(sections) }}
+			<div class={ "flex items-stretch gap-4 rounded border bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 p-4 mb-6" }>
+				if cfg.Color != "" {
+					<div class="w-1 rounded shrink-0" style={ "background-color: " + cfg.Color }></div>
 				}
-				if len(sec.Monitors) == 0 {
-					<div class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 text-sm text-slate-500 dark:text-slate-400 mb-6">
-						No monitors in this section.
+				if cfg.LogoURL != "" {
+					<img src={ cfg.LogoURL } alt="" class="h-12 w-12 object-contain shrink-0"/>
+				}
+				<div class="flex-1 min-w-0">
+					<div class="flex flex-wrap items-center gap-2">
+						<h1 class="text-2xl font-semibold">{ pageTitle(cfg) }</h1>
+						<span class="inline-block px-2 py-0.5 rounded text-xs font-mono bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">{ cfg.Slug }</span>
+						<span class={ "ml-auto inline-block px-2 py-0.5 rounded text-sm font-medium border", statusBadgeClasses(kind) }>
+							{ statusBadgeLabel(kind) }
+						</span>
 					</div>
-				} else {
-					<table class="w-full bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 overflow-hidden mb-6">
-						<thead>
-							<tr class="bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
-								<th class="py-2 px-3">Name</th>
-								<th class="py-2 px-3 text-right">SSL</th>
-								<th class="py-2 px-3 text-right">Status</th>
-							</tr>
-						</thead>
-						<tbody>
-							for _, m := range sec.Monitors {
-								<tr class="border-b border-slate-100 dark:border-slate-800 last:border-0 align-middle">
-									<td class="py-2 px-3 font-medium">{ m.FriendlyName }</td>
-									<td class="py-2 px-3 text-sm text-right">
-										if m.SSLStatus != nil && string(*m.SSLStatus) == "ssl-expiring" {
-											@SSLBadge("ssl-expiring")
-										} else {
-											<span class="text-slate-400 dark:text-slate-600">—</span>
-										}
-									</td>
-									<td class="py-2 px-3 text-right">@StatusBadge(string(m.Status))</td>
-								</tr>
-							}
-						</tbody>
-					</table>
-				}
-			}
-			if cfg.ShowIncidents {
-				<section class="mt-8">
-					<h2 class="text-lg font-semibold mb-2">Recent incidents</h2>
-					if len(incidents) == 0 {
-						<p class="text-sm text-slate-500 dark:text-slate-400">No recent incidents.</p>
+					if cfg.Description != "" {
+						<p class="text-sm text-slate-600 dark:text-slate-400 mt-1">{ cfg.Description }</p>
+					}
+				</div>
+			</div>
+			for idx, sec := range sections {
+				<section class="mb-6">
+					<h2 class="text-lg font-semibold mb-2">
+						<a href={ templ.SafeURL(sectionListingURL(cfg.Slug, idx)) } class="hover:underline">{ sec.Title }</a>
+					</h2>
+					if len(sec.Monitors) == 0 {
+						<div class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 text-sm text-slate-500 dark:text-slate-400">
+							No monitors in this section.
+						</div>
 					} else {
-						<ul class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 divide-y divide-slate-100 dark:divide-slate-800">
-							for _, ev := range incidents {
-								<li class="py-2 px-3 text-sm flex flex-wrap items-center gap-3">
-									<span class="w-24 shrink-0">@EventTypeBadge(string(ev.Type))</span>
-									<span class="font-medium">{ ev.FriendlyName }</span>
-									<span class="ml-auto text-slate-500 dark:text-slate-400">@Timestamp(ev.At)</span>
-								</li>
-							}
-						</ul>
+						<table class="w-full bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 overflow-hidden">
+							<thead>
+								<tr class="bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
+									<th class="py-2 px-3">Name</th>
+									<th class="py-2 px-3 text-right">SSL</th>
+									<th class="py-2 px-3 text-right">Status</th>
+								</tr>
+							</thead>
+							<tbody>
+								for _, m := range sec.Monitors {
+									<tr class="border-b border-slate-100 dark:border-slate-800 last:border-0 align-middle">
+										<td class="py-2 px-3 font-medium">
+											<a href={ templ.SafeURL("/monitor/" + m.Slug) } class="hover:underline">{ m.FriendlyName }</a>
+										</td>
+										<td class="py-2 px-3 text-sm text-right">
+											if m.SSLStatus != nil && string(*m.SSLStatus) == "ssl-expiring" {
+												@SSLBadge("ssl-expiring")
+											} else {
+												<span class="text-slate-400 dark:text-slate-600">—</span>
+											}
+										</td>
+										<td class="py-2 px-3 text-right">@StatusBadge(string(m.Status))</td>
+									</tr>
+								}
+							</tbody>
+						</table>
 					}
 				</section>
 			}
@@ -271,16 +300,43 @@ templ StatusPage(cfg *StatusConfig, sections []StatusSection, incidents []store.
 	}
 }
 
-// StatusIndexPage renders the public /status root — a list of the
-// configured status pages with links to each /status/<slug>. Empty
-// configs renders the same placeholder card the per-page view shows
-// when no statusPages block is configured.
+// sectionListingURL is the operator drill-down URL for a specific
+// section on /monitors. ?page=<slug>&section=<idx>.
+func sectionListingURL(slug string, idx int) string {
+	return "/monitors?status_page=" + slug + "&section=" + sectionIndexString(idx)
+}
+
+func sectionIndexString(idx int) string {
+	// Avoid bringing in strconv for a single use; inline.
+	if idx == 0 {
+		return "0"
+	}
+	var b strings.Builder
+	n := idx
+	if n < 0 {
+		b.WriteByte('-')
+		n = -n
+	}
+	var digits [20]byte
+	i := len(digits)
+	for n > 0 {
+		i--
+		digits[i] = byte('0' + n%10)
+		n /= 10
+	}
+	b.Write(digits[i:])
+	return b.String()
+}
+
+// StatusIndexPage renders /status — alphabetical by FriendlyName.
+// Sorting is done by the caller (web layer) so this template can stay
+// pure.
 templ StatusIndexPage(configs []*StatusConfig) {
-	@statusLayout("Status pages") {
+	@Layout("Status pages") {
 		<h1 class="text-2xl font-semibold mb-4">Status pages</h1>
 		if len(configs) == 0 {
 			<div class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-6 text-sm text-slate-500 dark:text-slate-400 text-center">
-				<p>No public status configured.</p>
+				<p>No status pages configured.</p>
 				<p class="text-xs mt-1">Add a <code class="font-mono">statusPages:</code> block to config.yaml to populate this page.</p>
 			</div>
 		} else {
@@ -288,32 +344,18 @@ templ StatusIndexPage(configs []*StatusConfig) {
 				for _, c := range configs {
 					<li>
 						<a href={ templ.SafeURL("/status/" + c.Slug) } class="flex flex-wrap items-center gap-3 py-3 px-4 hover:bg-slate-50 dark:hover:bg-slate-800/40">
-							<span class="font-medium">{ statusTitle(c) }</span>
+							if c.Color != "" {
+								<span class="inline-block w-2 h-6 rounded shrink-0" style={ "background-color: " + c.Color }></span>
+							}
+							<span class="font-medium">{ pageTitle(c) }</span>
 							<span class="inline-block px-2 py-0.5 rounded text-xs font-mono bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">{ c.Slug }</span>
+							if c.Description != "" {
+								<span class="text-sm text-slate-500 dark:text-slate-400 truncate">{ c.Description }</span>
+							}
 						</a>
 					</li>
 				}
 			</ul>
 		}
 	}
-}
-
-// statusLayout is the bare layout used by the public /status page —
-// no operator nav, no theme toggle, no link back into the rest of
-// the UI. Same Tailwind asset so visual treatment matches.
-templ statusLayout(title string) {
-	<!DOCTYPE html>
-	<html lang="en">
-		<head>
-			<meta charset="utf-8"/>
-			<meta name="viewport" content="width=device-width, initial-scale=1"/>
-			<title>{ title }</title>
-			<link rel="stylesheet" href="/static/css/app.css"/>
-		</head>
-		<body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 min-h-screen">
-			<main class="max-w-3xl mx-auto px-6 py-10">
-				{ children... }
-			</main>
-		</body>
-	</html>
 }

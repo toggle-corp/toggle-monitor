@@ -47,7 +47,7 @@ func TestTick_endToEndUptimeLifecycle(t *testing.T) {
 
 	if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
 		Slug: "api", FriendlyName: "API", URL: "http://api/health",
-		GroupSlug: "prod", Source: store.SourceStatic,
+		Tags: []string{"prod"}, Source: store.SourceStatic,
 	}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestTick_dependsOn_pausesChildWhenParentDown(t *testing.T) {
 
 	for _, slug := range []string{"parent", "child"} {
 		if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
-			Slug: slug, FriendlyName: slug, URL: "http://x", GroupSlug: "g", Source: store.SourceStatic,
+			Slug: slug, FriendlyName: slug, URL: "http://x", Tags: []string{"g"}, Source: store.SourceStatic,
 		}); err != nil {
 			t.Fatalf("reconcile %s: %v", slug, err)
 		}
@@ -216,7 +216,7 @@ func TestTick_dependsOn_resumeFromPaused_preservesOpenIncident(t *testing.T) {
 
 	for _, slug := range []string{"parent", "child"} {
 		if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
-			Slug: slug, FriendlyName: slug, URL: "http://x", GroupSlug: "g", Source: store.SourceStatic,
+			Slug: slug, FriendlyName: slug, URL: "http://x", Tags: []string{"g"}, Source: store.SourceStatic,
 		}); err != nil {
 			t.Fatalf("reconcile %s: %v", slug, err)
 		}
@@ -332,7 +332,7 @@ func TestRunDynamic_addsAndRemovesMonitorsOnRefresh(t *testing.T) {
 
 	for _, slug := range []string{"alpha", "beta"} {
 		if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
-			Slug: slug, FriendlyName: slug, URL: "http://x", GroupSlug: "g", Source: store.SourceStatic,
+			Slug: slug, FriendlyName: slug, URL: "http://x", Tags: []string{"g"}, Source: store.SourceStatic,
 		}); err != nil {
 			t.Fatalf("reconcile %s: %v", slug, err)
 		}
@@ -419,7 +419,7 @@ func TestTick_inCycleRetriesSuppressTransientFailure(t *testing.T) {
 	ctx := context.Background()
 	if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
 		Slug: "api", FriendlyName: "API", URL: "http://api/health",
-		GroupSlug: "prod", Source: store.SourceStatic,
+		Tags: []string{"prod"}, Source: store.SourceStatic,
 	}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}

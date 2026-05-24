@@ -31,7 +31,7 @@ func dump(t *testing.T, v any) string {
 func TestBuildDownParent_includesHeaderContextFieldsAndMentions(t *testing.T) {
 	out := slack.BuildDownParent(slack.DownInput{
 		FriendlyName: "API",
-		Group:        "prod",
+		Tags:         []string{"prod"},
 		URL:          "http://api/health",
 		Mentions:     []string{"<!here>", "<@U123ABC>"},
 		StatusCode:   503,
@@ -44,7 +44,7 @@ func TestBuildDownParent_includesHeaderContextFieldsAndMentions(t *testing.T) {
 	for _, want := range []string{
 		":red_circle: API is DOWN",
 		"*Monitor URL:* http://api/health",
-		"*Group:* `prod`",
+		"*Tags:* `prod`",
 		"*CC:* <!here> <@U123ABC>",
 		"*Reason:* `503 Service Unavailable`",
 		"*Error:* `boom`",
@@ -62,7 +62,7 @@ func TestBuildDownParent_includesHeaderContextFieldsAndMentions(t *testing.T) {
 
 func TestBuildDownParent_omitsButtonWhenDetailURLEmpty(t *testing.T) {
 	out := slack.BuildDownParent(slack.DownInput{
-		FriendlyName: "API", Group: "prod", URL: "http://api",
+		FriendlyName: "API", Tags: []string{"prod"}, URL: "http://api",
 		StatusCode: 500, StatusText: "x", FailureAt: t0,
 	})
 	if strings.Contains(dump(t, out), "View details") {
@@ -72,7 +72,7 @@ func TestBuildDownParent_omitsButtonWhenDetailURLEmpty(t *testing.T) {
 
 func TestBuildDownParent_omitsMentionsWhenEmpty(t *testing.T) {
 	out := slack.BuildDownParent(slack.DownInput{
-		FriendlyName: "API", Group: "prod", URL: "http://api",
+		FriendlyName: "API", Tags: []string{"prod"}, URL: "http://api",
 		StatusCode: 500, StatusText: "x", FailureAt: t0,
 	})
 	// No mentions array → no section block with just mention markup.
@@ -87,7 +87,7 @@ func TestBuildDownParent_inlineBodyOnlyWhenWithinThreshold(t *testing.T) {
 	large := strings.Repeat("x", 500)
 
 	withSmall := dump(t, slack.BuildDownParent(slack.DownInput{
-		FriendlyName: "API", Group: "g", URL: "u",
+		FriendlyName: "API", Tags: []string{"g"}, URL: "u",
 		StatusCode: 500, StatusText: "x", FailureAt: t0,
 		ResponseBody: small,
 		BodyMaxChars: 200,
@@ -97,7 +97,7 @@ func TestBuildDownParent_inlineBodyOnlyWhenWithinThreshold(t *testing.T) {
 	}
 
 	withLarge := dump(t, slack.BuildDownParent(slack.DownInput{
-		FriendlyName: "API", Group: "g", URL: "u",
+		FriendlyName: "API", Tags: []string{"g"}, URL: "u",
 		StatusCode: 500, StatusText: "x", FailureAt: t0,
 		ResponseBody: large,
 		BodyMaxChars: 200,
@@ -111,7 +111,7 @@ func TestBuildResolveEdit_preservesContextAndChangesHeader(t *testing.T) {
 	resolveAt := t0.Add(45 * time.Minute)
 	in := slack.ResolveInput{
 		DownInput: slack.DownInput{
-			FriendlyName: "API", Group: "prod", URL: "http://api/health",
+			FriendlyName: "API", Tags: []string{"prod"}, URL: "http://api/health",
 			Mentions:   []string{"<!here>"},
 			StatusCode: 503, StatusText: "Service Unavailable", FailureAt: t0,
 			LastError: "boom",
@@ -129,7 +129,7 @@ func TestBuildResolveEdit_preservesContextAndChangesHeader(t *testing.T) {
 	if !strings.Contains(s, "*Monitor URL:* http://api/health") {
 		t.Errorf("monitor URL line missing in resolve edit:\n%s", s)
 	}
-	if !strings.Contains(s, "*Group:* `prod`") {
+	if !strings.Contains(s, "*Tags:* `prod`") {
 		t.Errorf("group line missing in resolve edit:\n%s", s)
 	}
 	// Duration line + Resolved-at footer.

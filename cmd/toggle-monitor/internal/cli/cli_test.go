@@ -42,8 +42,6 @@ ui:
     monitorHistory: 50
     discoveryListing: 50
   maxPerPage: 200
-theme:
-  defaultGroupColor: "#64748b"
 httpClient:
   userAgent: "toggle-monitor/cli-test"
 slack:
@@ -52,16 +50,11 @@ slack:
     - slug: ops-alerts
       channelId: C0123ABCD
       tokenEnv: SLACK_BOT_TOKEN
-groups:
-  - slug: kube-discovered
-    friendlyName: Kube Discovered
-  - slug: gw
-    friendlyName: GW
 monitors:
   - slug: bastion
     friendlyName: Bastion
     url: http://bastion.local/health
-    group: gw
+    tags: [gw]
     httpMethod: GET
     acceptedStatusCodes: [200]
     interval: 5m
@@ -97,14 +90,14 @@ func TestValidate_silentOnValidConfig(t *testing.T) {
 
 func TestValidate_emitsErrorWithLineNumberOnInvalidConfig(t *testing.T) {
 	t.Parallel()
-	bad := strings.Replace(validYAML, "group: gw", "group: nope", 1)
+	bad := strings.Replace(validYAML, "slack: ops-alerts", "slack: nope-channel", 1)
 	path := writeTempYAML(t, bad)
 	_, err := run("validate", path)
 	if err == nil {
 		t.Fatal("expected validation error")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "unknown group") {
+	if !strings.Contains(msg, "unknown channel slug") {
 		t.Errorf("error should describe the violation, got: %v", err)
 	}
 	if !strings.Contains(msg, "line ") {

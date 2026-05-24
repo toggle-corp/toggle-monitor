@@ -233,8 +233,11 @@ func paramsFromFilter(f MonitorsFilter) url.Values {
 	if f.SSL != "" {
 		v.Set("ssl", f.SSL)
 	}
-	if f.Group != "" {
-		v.Set("group", f.Group)
+	if f.Page != "" {
+		v.Set("status_page", f.Page)
+	}
+	if f.Page != "" && f.Section >= 0 {
+		v.Set("section", strconv.Itoa(f.Section))
 	}
 	if f.Sort != "" {
 		v.Set("sort", f.Sort)

@@ -203,10 +203,6 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 	if scheme == "" {
 		scheme = "https"
 	}
-	groupSlug := resolved.Group
-	if groupSlug == "" {
-		groupSlug = "kube-discovered"
-	}
 	friendly := m.friendlyName(ing, host)
 	url := buildURL(scheme, host, resolved.Path)
 
@@ -214,7 +210,6 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 		Slug:             monSlug,
 		FriendlyName:     friendly,
 		URL:              url,
-		GroupSlug:        groupSlug,
 		Source:           store.SourceKube,
 		DependsOn:        append([]string(nil), resolved.DependsOn.Values...),
 		Tags:             append([]string(nil), resolved.Tags.Values...),
@@ -395,9 +390,6 @@ func resolveStack(stack []stackEntry) config.KubeConfig {
 		}
 		if c.IsSet("slack") {
 			out.Slack = c.Slack
-		}
-		if c.IsSet("group") {
-			out.Group = c.Group
 		}
 
 		// acceptedStatusCodes: replace-by-default.

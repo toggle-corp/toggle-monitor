@@ -28,8 +28,6 @@ ui:
     monitorHistory: 50
     discoveryListing: 50
   maxPerPage: 200
-theme:
-  defaultGroupColor: "#64748b"
 httpClient:
   userAgent: "toggle-monitor/test"
 slack:
@@ -38,18 +36,11 @@ slack:
     - slug: ops-alerts
       channelId: C0123ABCD
       tokenEnv: SLACK_BOT_TOKEN
-groups:
-  - slug: kube-discovered
-    friendlyName: Kube Discovered
-  - slug: gateways
-    friendlyName: Gateways
-  - slug: acme
-    friendlyName: ACME Go
 monitors:
   - slug: bastion
     friendlyName: Bastion
     url: http://bastion.local/health
-    group: gateways
+    tags: [gateways]
     httpMethod: GET
     acceptedStatusCodes: [200]
     interval: 5m
@@ -90,31 +81,6 @@ func withReplaced(t *testing.T, old, new string) []byte {
 	return []byte(strings.Replace(validMinimal, old, new, 1))
 }
 
-func TestLoad_rejectsWhenKubeDiscoveredGroupMissing(t *testing.T) {
-	data := withReplaced(t,
-		"  - slug: kube-discovered\n    friendlyName: Kube Discovered\n  - slug: gateways",
-		"  - slug: gateways",
-	)
-	_, err := config.Load(data)
-	if err == nil {
-		t.Fatal("expected validation error, got nil")
-	}
-	if !strings.Contains(err.Error(), "kube-discovered") {
-		t.Errorf("error should mention the missing kube-discovered group, got: %v", err)
-	}
-}
-
-func TestLoad_rejectsMonitorReferencingUnknownGroup(t *testing.T) {
-	data := withReplaced(t, "group: gateways", "group: nope")
-	_, err := config.Load(data)
-	if err == nil {
-		t.Fatal("expected validation error, got nil")
-	}
-	if !strings.Contains(err.Error(), "unknown group") {
-		t.Errorf("error should mention the unknown group, got: %v", err)
-	}
-}
-
 func TestLoad_rejectsInvalidSlugRegex(t *testing.T) {
 	data := withReplaced(t, "slug: bastion", "slug: Bastion")
 	_, err := config.Load(data)
@@ -131,7 +97,7 @@ func TestLoad_rejectsDuplicateMonitorSlugs(t *testing.T) {
   - slug: bastion
     friendlyName: Bastion Twin
     url: http://other/health
-    group: gateways
+    tags: [gateways]
     httpMethod: GET
     acceptedStatusCodes: [200]
     interval: 5m
@@ -220,28 +186,18 @@ func TestLoad_rejectsMalformedUserMappingID(t *testing.T) {
 	}
 }
 
-func TestLoad_acceptsGroupNotify(t *testing.T) {
-	data := strings.Replace(validMinimal,
-		"  - slug: gateways\n    friendlyName: Gateways\n",
-		"  - slug: gateways\n    friendlyName: Gateways\n    notify: [\"<!here>\"]\n",
-		1)
-	if _, err := config.Load([]byte(data)); err != nil {
-		t.Fatalf("group.notify should accept raw markup: %v", err)
-	}
-}
-
 // TestLoad_proxies_acceptsValidBlockAndMonitorReference confirms the
 // happy path: a proxies[] block + a monitor referencing one of those
 // slugs validates cleanly and ends up on the loaded config.
 func TestLoad_proxies_acceptsValidBlockAndMonitorReference(t *testing.T) {
 	data := withReplaced(t,
-		"groups:\n",
+		"monitors:\n",
 		"proxies:\n"+
 			"  - slug: corp\n"+
 			"    protocol: socks5\n"+
 			"    server: proxy.internal.example\n"+
 			"    port: 1080\n"+
-			"groups:\n")
+			"monitors:\n")
 	data = withReplacedBytes(t, data, "    slack: ops-alerts", "    proxy: corp\n    slack: ops-alerts")
 
 	cfg, err := config.Load(data)
@@ -275,13 +231,13 @@ func TestLoad_proxies_rejectsMonitorReferencingUnknownProxy(t *testing.T) {
 // enum (v1: socks5 only).
 func TestLoad_proxies_rejectsUnsupportedProtocol(t *testing.T) {
 	data := withReplaced(t,
-		"groups:\n",
+		"monitors:\n",
 		"proxies:\n"+
 			"  - slug: corp\n"+
 			"    protocol: http\n"+
 			"    server: proxy.internal.example\n"+
 			"    port: 8080\n"+
-			"groups:\n")
+			"monitors:\n")
 	_, err := config.Load(data)
 	if err == nil {
 		t.Fatal("expected http protocol to be rejected, got success")
@@ -384,7 +340,7 @@ kube:
           ignore: false
     - when: { namespace: "acme-*" }
       config:
-        group: acme
+        tags: [acme]
         notify: ["<@U0123ABC>"]
       nested:
         - when: { namespaceRegex: "acme-service-a-eoapi-\\d+" }
@@ -432,8 +388,8 @@ func TestLoad_kube_parsesCascadingTree(t *testing.T) {
 	if !root.Config.IsSet("acceptedStatusCodes") {
 		t.Error("root.Config.IsSet(\"acceptedStatusCodes\") should be true")
 	}
-	if root.Config.IsSet("group") {
-		t.Error("root.Config.IsSet(\"group\") should be false (not in YAML)")
+	if root.Config.IsSet("proxy") {
+		t.Error("root.Config.IsSet(\"proxy\") should be false (not in YAML)")
 	}
 	if got := []int(root.Config.AcceptedStatusCodes); len(got) != 1 || got[0] != 200 {
 		t.Errorf("acceptedStatusCodes: got %v, want [200]", got)
@@ -694,26 +650,22 @@ database:
 ui:
   pageSize: { homepageAlerts: 20, monitorListing: 50, monitorHistory: 50, discoveryListing: 50 }
   maxPerPage: 200
-theme: { defaultGroupColor: "#64748b" }
 httpClient: { userAgent: "x" }
 slack:
   bodyMaxChars: 200
   channels:
     - { slug: ops-alerts, channelId: C0123ABCD, tokenEnv: SLACK_BOT_TOKEN }
-groups:
-  - { slug: kube-discovered, friendlyName: Kube Discovered }
-  - { slug: gw, friendlyName: GW }
 monitors:
   - <<: *staticDefaults
     slug: a
     friendlyName: A
     url: http://a/health
-    group: gw
+    tags: [gw]
   - <<: *staticDefaults
     slug: b
     friendlyName: B
     url: http://b/health
-    group: gw
+    tags: [gw]
     interval: 1m
 `
 	cfg, err := config.Load([]byte(yaml))
@@ -741,8 +693,9 @@ func TestLoad_ignoresXPrefixedTopLevelKeys(t *testing.T) {
 }
 
 func TestLoad_reportsMultipleErrorsWithLineNumbers(t *testing.T) {
-	// Three distinct violations: invalid channelId (DM), unknown group
-	// on monitors[0], non-markup notify entry.
+	// Two distinct violations: invalid channelId (DM) and a non-markup
+	// notify entry on monitors[0]. Validates multi-error accumulation
+	// + line numbers.
 	data := []byte(`
 displayTimezone: UTC
 dbBodyMaxChars: 4000
@@ -756,19 +709,16 @@ database:
 ui:
   pageSize: { homepageAlerts: 20, monitorListing: 50, monitorHistory: 50, discoveryListing: 50 }
   maxPerPage: 200
-theme: { defaultGroupColor: "#64748b" }
 httpClient: { userAgent: x }
 slack:
   bodyMaxChars: 200
   channels:
     - { slug: ops-alerts, channelId: D0DM_BAD0, tokenEnv: SLACK_BOT_TOKEN }
-groups:
-  - { slug: kube-discovered, friendlyName: Kube Discovered }
 monitors:
   - slug: api
     friendlyName: API
     url: http://api/health
-    group: nope-this-group
+    tags: [public]
     httpMethod: GET
     acceptedStatusCodes: [200]
     interval: 5m
@@ -787,22 +737,21 @@ monitors:
 	msg := err.Error()
 	for _, want := range []string{
 		"DMs (D...)",       // channelId
-		"unknown group",    // monitors[0].group
 		"raw Slack markup", // monitors[0].notify[0]
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("expected error to mention %q, full message:\n%s", want, msg)
 		}
 	}
-	// Three errors → at least three "line " markers.
-	if got := strings.Count(msg, "line "); got < 3 {
-		t.Errorf("expected at least 3 line-number markers, got %d in:\n%s", got, msg)
+	// Two errors → at least two "line " markers.
+	if got := strings.Count(msg, "line "); got < 2 {
+		t.Errorf("expected at least 2 line-number markers, got %d in:\n%s", got, msg)
 	}
 }
 
 func TestLoad_dependsOn_acceptsValidForwardReference(t *testing.T) {
 	yaml := strings.Replace(validMinimal, "monitors:\n",
-		"monitors:\n  - slug: api\n    friendlyName: API\n    url: http://api\n    group: gateways\n    httpMethod: GET\n    acceptedStatusCodes: [200]\n    interval: 5m\n    timeout: 10s\n    retries: 2\n    retryBackoff: 5s\n    followRedirects: false\n    reminderInterval: 3d\n    slack: ops-alerts\n    dependsOn: [bastion]\n",
+		"monitors:\n  - slug: api\n    friendlyName: API\n    url: http://api\n    tags: [gateways]\n    httpMethod: GET\n    acceptedStatusCodes: [200]\n    interval: 5m\n    timeout: 10s\n    retries: 2\n    retryBackoff: 5s\n    followRedirects: false\n    reminderInterval: 3d\n    slack: ops-alerts\n    dependsOn: [bastion]\n",
 		1)
 	if _, err := config.Load([]byte(yaml)); err != nil {
 		t.Fatalf("forward reference should be valid: %v", err)
@@ -841,7 +790,7 @@ func TestLoad_dependsOn_rejectsCycle(t *testing.T) {
 		`  - slug: bastion
     friendlyName: Bastion
     url: http://bastion.local/health
-    group: gateways
+    tags: [gateways]
     httpMethod: GET
     acceptedStatusCodes: [200]
     interval: 5m
@@ -855,7 +804,7 @@ func TestLoad_dependsOn_rejectsCycle(t *testing.T) {
 		`  - slug: bastion
     friendlyName: Bastion
     url: http://bastion.local/health
-    group: gateways
+    tags: [gateways]
     httpMethod: GET
     acceptedStatusCodes: [200]
     interval: 5m
@@ -869,7 +818,7 @@ func TestLoad_dependsOn_rejectsCycle(t *testing.T) {
   - slug: alpha
     friendlyName: Alpha
     url: http://alpha.local/health
-    group: gateways
+    tags: [gateways]
     httpMethod: GET
     acceptedStatusCodes: [200]
     interval: 5m
@@ -983,18 +932,20 @@ func TestLoad_rejectsUnknownTopLevelKey(t *testing.T) {
 	}
 }
 
-func TestLoad_statusPages_acceptsExactGroupAndRegex(t *testing.T) {
+func TestLoad_statusPages_acceptsLeafAndBranch(t *testing.T) {
 	data := []byte(validMinimal + `
 statusPages:
   - slug: public
-    title: Test
+    friendlyName: Public
     sections:
-      - title: Exact
+      - title: Leaf
         match:
-          - group: gateways
-      - title: Regex
+          tags: [gateways]
+      - title: Branch
         match:
-          - groupRegex: "^tc-.*$"
+          any:
+            - tags: [gateways]
+            - hostRegex: '.*\.example\.com'
 `)
 	if _, err := config.Load(data); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1005,17 +956,15 @@ func TestLoad_statusPages_acceptsMultiplePagesWithUniqueSlugs(t *testing.T) {
 	data := []byte(validMinimal + `
 statusPages:
   - slug: public
-    title: Public
+    friendlyName: Public
     sections:
       - title: Gateways
-        match:
-          - group: gateways
+        match: { tags: [gateways] }
   - slug: internal
-    title: Internal
+    friendlyName: Internal
     sections:
       - title: All
-        match:
-          - groupRegex: ".+"
+        match: { hostRegex: ".+" }
 `)
 	cfg, err := config.Load(data)
 	if err != nil {
@@ -1033,17 +982,15 @@ func TestLoad_statusPages_rejectsDuplicateSlug(t *testing.T) {
 	data := []byte(validMinimal + `
 statusPages:
   - slug: public
-    title: A
+    friendlyName: A
     sections:
       - title: One
-        match:
-          - group: gateways
+        match: { tags: [gateways] }
   - slug: public
-    title: B
+    friendlyName: B
     sections:
       - title: Two
-        match:
-          - group: gateways
+        match: { tags: [gateways] }
 `)
 	_, err := config.Load(data)
 	if err == nil {
@@ -1057,11 +1004,10 @@ statusPages:
 func TestLoad_statusPages_rejectsMissingSlug(t *testing.T) {
 	data := []byte(validMinimal + `
 statusPages:
-  - title: No slug here
+  - friendlyName: No slug here
     sections:
       - title: One
-        match:
-          - group: gateways
+        match: { tags: [gateways] }
 `)
 	_, err := config.Load(data)
 	if err == nil {
@@ -1069,20 +1015,22 @@ statusPages:
 	}
 }
 
-func TestLoad_statusPages_rejectsGroupAndRegexTogether(t *testing.T) {
+func TestLoad_statusPages_rejectsAnyAndAllTogether(t *testing.T) {
 	data := []byte(validMinimal + `
 statusPages:
   - slug: public
-    title: Test
+    friendlyName: Test
     sections:
       - title: Bad
         match:
-          - group: gateways
-            groupRegex: ".*"
+          any:
+            - { tags: [a] }
+          all:
+            - { tags: [b] }
 `)
 	_, err := config.Load(data)
 	if err == nil {
-		t.Fatal("expected mutual-exclusion error for group + groupRegex")
+		t.Fatal("expected mutual-exclusion error for any + all")
 	}
 	if !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Errorf("error should call out mutual exclusion, got: %v", err)
@@ -1093,11 +1041,11 @@ func TestLoad_statusPages_rejectsInvalidRegex(t *testing.T) {
 	data := []byte(validMinimal + `
 statusPages:
   - slug: public
-    title: Test
+    friendlyName: Test
     sections:
       - title: Bad
         match:
-          - groupRegex: "[oops"
+          hostRegex: "[oops"
 `)
 	_, err := config.Load(data)
 	if err == nil {
@@ -1342,21 +1290,6 @@ func TestLoad_kube_rejectsUnknownSlackInConfig(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "kube.match[1].config.slack") {
 		t.Errorf("error path should include the field, got: %v", err)
-	}
-}
-
-// (8b) Unknown group in a config block must fail.
-func TestLoad_kube_rejectsUnknownGroupInConfig(t *testing.T) {
-	tree := kubeRootBaseline + `    - when: { namespace: "acme-*" }
-      config:
-        group: nope-not-a-group
-`
-	_, err := config.Load(withKubeBlock(tree))
-	if err == nil {
-		t.Fatal("expected unknown group to be rejected")
-	}
-	if !strings.Contains(err.Error(), "unknown group") {
-		t.Errorf("error should mention unknown group, got: %v", err)
 	}
 }
 

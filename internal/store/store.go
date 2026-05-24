@@ -46,7 +46,6 @@ type MonitorSpec struct {
 	Slug             string
 	FriendlyName     string
 	URL              string
-	GroupSlug        string
 	Source           MonitorSource
 	DependsOn        []string
 	SlackChannelSlug string // remembered so removal can still address Slack
@@ -128,12 +127,11 @@ func (r *Repo) ReconcileMonitor(ctx context.Context, spec MonitorSpec) error {
 		slackSlugArg = spec.SlackChannelSlug
 	}
 	_, err := r.pool.Exec(ctx, `
-		INSERT INTO monitors (slug, friendly_name, url, group_slug, source, depends_on, slack_channel_slug, tags)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO monitors (slug, friendly_name, url, source, depends_on, slack_channel_slug, tags)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (slug) DO UPDATE SET
 			friendly_name      = EXCLUDED.friendly_name,
 			url                = EXCLUDED.url,
-			group_slug         = EXCLUDED.group_slug,
 			source             = EXCLUDED.source,
 			depends_on         = EXCLUDED.depends_on,
 			slack_channel_slug = EXCLUDED.slack_channel_slug,
@@ -142,7 +140,7 @@ func (r *Repo) ReconcileMonitor(ctx context.Context, spec MonitorSpec) error {
 			archived_at        = NULL,
 			archive_reason     = NULL,
 			updated_at         = now()
-	`, spec.Slug, spec.FriendlyName, spec.URL, spec.GroupSlug, string(src), deps, slackSlugArg, tags)
+	`, spec.Slug, spec.FriendlyName, spec.URL, string(src), deps, slackSlugArg, tags)
 	if err != nil {
 		return fmt.Errorf("reconcile monitor %q: %w", spec.Slug, err)
 	}
@@ -156,8 +154,7 @@ func (r *Repo) GetMonitor(ctx context.Context, slug string) (MonitorRow, error) 
 }
 
 // ListActiveMonitors returns all non-archived monitors, ordered for the
-// listing page (down → paused → ssl-expiring → up, then group, then
-// friendly name).
+// listing page (down → paused → ssl-expiring → up, then friendly name).
 func (r *Repo) ListActiveMonitors(ctx context.Context) ([]MonitorRow, error) {
 	listing, err := r.ListMonitors(ctx, ListMonitorsOpts{Limit: 0})
 	if err != nil {
@@ -173,11 +170,11 @@ type ListMonitorsOpts struct {
 	Search          string // substring match on friendly_name OR slug
 	Status          string // "" → no status filter
 	SSL             string // "" → no ssl_status filter ('ok' | 'ssl-expiring' | 'ssl-skipped')
-	GroupSlug       string // "" → no group filter
+	Slugs           []string // empty → no slug filter; non-empty restricts to these slugs (used to back ?page=/?section= predicate filters)
 	IncludeArchived bool
 	// Sort is a logical column key (one of ListSortKeys); "" → default
-	// "status priority then group then name" order. Unknown keys fall
-	// back to the default to keep the API forgiving.
+	// "status priority then name" order. Unknown keys fall back to the
+	// default to keep the API forgiving.
 	Sort     string
 	SortDesc bool
 	Offset   int
@@ -188,7 +185,7 @@ type ListMonitorsOpts struct {
 // ListMonitorsOpts.Sort. Exported so the web layer can validate the
 // query param against the same set. Order here is the order shown in
 // the UI's column-picker dropdown if one is ever added.
-var ListSortKeys = []string{"name", "group", "status", "url", "code", "checked", "ssl_expires"}
+var ListSortKeys = []string{"name", "status", "url", "code", "checked", "ssl_expires"}
 
 // sortClause maps a Sort key to a SQL ORDER BY fragment. NULL handling
 // stays consistent: missing values sort last regardless of direction
@@ -199,12 +196,10 @@ func sortClause(key string, desc bool) string {
 		dir = "DESC"
 	}
 	// Default tiebreaker so equal sort-key rows have a stable order.
-	tiebreak := ", group_slug, friendly_name"
+	tiebreak := ", friendly_name"
 	switch key {
 	case "name":
-		return "friendly_name " + dir + ", group_slug"
-	case "group":
-		return "group_slug " + dir + ", friendly_name"
+		return "friendly_name " + dir
 	case "url":
 		return "url " + dir + tiebreak
 	case "code":
@@ -226,8 +221,7 @@ func sortClause(key string, desc bool) string {
 			END ` + dir
 		return statusCase + tiebreak
 	default:
-		// Default order: down > paused > kube-paused > up, then
-		// group, then name. Matches the original behavior.
+		// Default order: down > paused > kube-paused > up, then name.
 		return `
 			CASE status
 				WHEN 'down' THEN 0
@@ -236,7 +230,6 @@ func sortClause(key string, desc bool) string {
 				WHEN 'up' THEN 4
 				ELSE 5
 			END,
-			group_slug,
 			friendly_name`
 	}
 }
@@ -266,8 +259,9 @@ func (r *Repo) ListMonitors(ctx context.Context, opts ListMonitorsOpts) (Monitor
 	if opts.SSL != "" {
 		add("ssl_status = %s", opts.SSL)
 	}
-	if opts.GroupSlug != "" {
-		add("group_slug = %s", opts.GroupSlug)
+	if len(opts.Slugs) > 0 {
+		args = append(args, opts.Slugs)
+		conds = append(conds, fmt.Sprintf("slug = ANY($%d)", len(args)))
 	}
 	if opts.Search != "" {
 		args = append(args, "%"+opts.Search+"%")
@@ -318,19 +312,6 @@ func itoa(n int) string {
 // HomepageStats returns the count of monitors in each status. Used by
 // the homepage stats tiles.
 type HomepageStats struct {
-	Up              int
-	Down            int
-	TemporaryPaused int
-	SSLExpiring     int
-	SSLSkipped      int
-}
-
-// GroupStats is the same shape as HomepageStats but scoped to one
-// group slug. Powers both the /groups index (one row per group) and
-// the per-group page header tiles.
-type GroupStats struct {
-	GroupSlug       string
-	Total           int
 	Up              int
 	Down            int
 	TemporaryPaused int
@@ -471,63 +452,6 @@ func (r *Repo) HomepageStats(ctx context.Context) (HomepageStats, error) {
 		return HomepageStats{}, fmt.Errorf("homepage stats: %w", err)
 	}
 	return s, nil
-}
-
-// ListGroupStats returns per-group status counts for the /groups
-// index, sorted by group slug. Archived monitors are excluded so the
-// index reflects what's currently being checked.
-func (r *Repo) ListGroupStats(ctx context.Context) ([]GroupStats, error) {
-	rows, err := r.pool.Query(ctx, `
-		SELECT
-			group_slug,
-			COUNT(*) AS total,
-			COUNT(*) FILTER (WHERE status = 'up'),
-			COUNT(*) FILTER (WHERE status = 'down'),
-			COUNT(*) FILTER (WHERE status = 'temporary-paused'),
-			COUNT(*) FILTER (WHERE ssl_status = 'ssl-expiring'),
-			COUNT(*) FILTER (WHERE ssl_status = 'ssl-skipped')
-		FROM monitors
-		WHERE archived = FALSE
-		GROUP BY group_slug
-		ORDER BY group_slug`)
-	if err != nil {
-		return nil, fmt.Errorf("list group stats: %w", err)
-	}
-	defer rows.Close()
-	var out []GroupStats
-	for rows.Next() {
-		var g GroupStats
-		if err := rows.Scan(&g.GroupSlug, &g.Total, &g.Up, &g.Down, &g.TemporaryPaused, &g.SSLExpiring, &g.SSLSkipped); err != nil {
-			return nil, err
-		}
-		out = append(out, g)
-	}
-	return out, rows.Err()
-}
-
-// GroupStatsForSlug returns the same stats shape scoped to one group.
-// Used by the per-group page header. Returns (_, false) when no
-// monitors live in that group — the caller can render an empty-state.
-func (r *Repo) GroupStatsForSlug(ctx context.Context, slug string) (GroupStats, bool, error) {
-	row := r.pool.QueryRow(ctx, `
-		SELECT
-			COUNT(*) AS total,
-			COUNT(*) FILTER (WHERE status = 'up'),
-			COUNT(*) FILTER (WHERE status = 'down'),
-			COUNT(*) FILTER (WHERE status = 'temporary-paused'),
-			COUNT(*) FILTER (WHERE ssl_status = 'ssl-expiring'),
-			COUNT(*) FILTER (WHERE ssl_status = 'ssl-skipped')
-		FROM monitors
-		WHERE archived = FALSE AND group_slug = $1`, slug)
-	var g GroupStats
-	if err := row.Scan(&g.Total, &g.Up, &g.Down, &g.TemporaryPaused, &g.SSLExpiring, &g.SSLSkipped); err != nil {
-		return GroupStats{}, false, fmt.Errorf("group stats %q: %w", slug, err)
-	}
-	if g.Total == 0 {
-		return GroupStats{}, false, nil
-	}
-	g.GroupSlug = slug
-	return g, true, nil
 }
 
 // ApplyCheck records the result of one check tick. If event is non-nil
@@ -916,7 +840,7 @@ func (r *Repo) ListLatestAlerts(ctx context.Context, limit, offset int) (LatestA
 }
 
 const selectMonitor = `
-	SELECT slug, friendly_name, url, group_slug, source, depends_on, slack_channel_slug, tags,
+	SELECT slug, friendly_name, url, source, depends_on, slack_channel_slug, tags,
 	       status, opened_at, last_reminder_at, last_checked_at, last_status_code, last_error,
 	       archived, archived_at, archive_reason,
 	       uptime_thread_channel, uptime_thread_ts,
@@ -935,7 +859,7 @@ func scanMonitor(row rowScanner) (MonitorRow, error) {
 	var src, status string
 	var sslStatus, slackSlug *string
 	err := row.Scan(
-		&m.Slug, &m.FriendlyName, &m.URL, &m.GroupSlug, &src, &m.DependsOn, &slackSlug, &m.Tags,
+		&m.Slug, &m.FriendlyName, &m.URL, &src, &m.DependsOn, &slackSlug, &m.Tags,
 		&status, &m.OpenedAt, &m.LastReminderAt, &m.LastCheckedAt, &m.LastStatusCode, &m.LastError,
 		&m.Archived, &m.ArchivedAt, &m.ArchiveReason,
 		&m.UptimeThreadChannel, &m.UptimeThreadTS,

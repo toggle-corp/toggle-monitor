@@ -39,7 +39,7 @@ func TestReconcileMonitor_insertsAndIsIdempotent(t *testing.T) {
 		Slug:         "bastion",
 		FriendlyName: "Bastion",
 		URL:          "http://bastion/health",
-		GroupSlug:    "gateways",
+		Tags: []string{"gateways"},
 		Source:       store.SourceStatic,
 	}
 
@@ -74,7 +74,7 @@ func TestReconcileMonitor_preservesRuntimeStateOnConfigChange(t *testing.T) {
 		Slug:         "api",
 		FriendlyName: "API v1",
 		URL:          "http://api/health",
-		GroupSlug:    "production-apis",
+		Tags: []string{"production-apis"},
 		Source:       store.SourceStatic,
 	}
 	if err := repo.ReconcileMonitor(ctx, spec); err != nil {
@@ -118,7 +118,7 @@ func TestApplyCheck_fullUptimeLifecycle(t *testing.T) {
 		Slug:         "api",
 		FriendlyName: "API",
 		URL:          "http://api/health",
-		GroupSlug:    "production-apis",
+		Tags: []string{"production-apis"},
 		Source:       store.SourceStatic,
 	}
 	if err := repo.ReconcileMonitor(ctx, spec); err != nil {
@@ -178,7 +178,7 @@ func TestApplyCheck_nilEvent_onlyUpdatesLastFields(t *testing.T) {
 	repo := newRepo(t)
 	ctx := context.Background()
 
-	spec := store.MonitorSpec{Slug: "api", FriendlyName: "API", URL: "http://x", GroupSlug: "g", Source: store.SourceStatic}
+	spec := store.MonitorSpec{Slug: "api", FriendlyName: "API", URL: "http://x", Tags: []string{"g"}, Source: store.SourceStatic}
 	if err := repo.ReconcileMonitor(ctx, spec); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -215,9 +215,9 @@ func TestListActiveMonitors_ordersByStatusGroupName(t *testing.T) {
 
 	// Insert three monitors in deliberately unsorted order.
 	specs := []store.MonitorSpec{
-		{Slug: "ups-up", FriendlyName: "Beta", URL: "http://x", GroupSlug: "g2", Source: store.SourceStatic},
-		{Slug: "down-1", FriendlyName: "Alpha", URL: "http://x", GroupSlug: "g1", Source: store.SourceStatic},
-		{Slug: "down-2", FriendlyName: "Gamma", URL: "http://x", GroupSlug: "g1", Source: store.SourceStatic},
+		{Slug: "ups-up", FriendlyName: "Beta", URL: "http://x", Tags: []string{"g2"}, Source: store.SourceStatic},
+		{Slug: "down-1", FriendlyName: "Alpha", URL: "http://x", Tags: []string{"g1"}, Source: store.SourceStatic},
+		{Slug: "down-2", FriendlyName: "Gamma", URL: "http://x", Tags: []string{"g1"}, Source: store.SourceStatic},
 	}
 	for _, s := range specs {
 		if err := repo.ReconcileMonitor(ctx, s); err != nil {
@@ -256,7 +256,7 @@ func TestSoftDeleteMonitor_archivesAndPreservesHistory(t *testing.T) {
 	repo := newRepo(t)
 	ctx := context.Background()
 	if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
-		Slug: "api", FriendlyName: "API", URL: "http://api", GroupSlug: "g", Source: store.SourceStatic,
+		Slug: "api", FriendlyName: "API", URL: "http://api", Tags: []string{"g"}, Source: store.SourceStatic,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -309,9 +309,9 @@ func TestListActiveBySource_filtersAndExcludesArchived(t *testing.T) {
 	repo := newRepo(t)
 	ctx := context.Background()
 	specs := []store.MonitorSpec{
-		{Slug: "s1", FriendlyName: "S1", URL: "http://x", GroupSlug: "g", Source: store.SourceStatic},
-		{Slug: "s2", FriendlyName: "S2", URL: "http://x", GroupSlug: "g", Source: store.SourceStatic},
-		{Slug: "k1", FriendlyName: "K1", URL: "http://x", GroupSlug: "g", Source: store.SourceKube},
+		{Slug: "s1", FriendlyName: "S1", URL: "http://x", Tags: []string{"g"}, Source: store.SourceStatic},
+		{Slug: "s2", FriendlyName: "S2", URL: "http://x", Tags: []string{"g"}, Source: store.SourceStatic},
+		{Slug: "k1", FriendlyName: "K1", URL: "http://x", Tags: []string{"g"}, Source: store.SourceKube},
 	}
 	for _, s := range specs {
 		if err := repo.ReconcileMonitor(ctx, s); err != nil {
@@ -335,7 +335,7 @@ func TestHomepageStats_countsByStatus(t *testing.T) {
 
 	for _, s := range []string{"a", "b", "c"} {
 		if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
-			Slug: s, FriendlyName: s, URL: "http://x", GroupSlug: "g", Source: store.SourceStatic,
+			Slug: s, FriendlyName: s, URL: "http://x", Tags: []string{"g"}, Source: store.SourceStatic,
 		}); err != nil {
 			t.Fatalf("reconcile %s: %v", s, err)
 		}

@@ -82,7 +82,7 @@ func NewNotifier(opts NotifierOptions) *Notifier {
 type MonitorView struct {
 	Slug         string
 	FriendlyName string
-	GroupSlug    string
+	Tags         []string
 	URL          string
 	OpenedAt     time.Time
 	StatusCode   int
@@ -137,7 +137,7 @@ func (n *Notifier) Notify(ctx context.Context, channelSlug string, mentions []st
 func (n *Notifier) notifyOpen(ctx context.Context, ch ChannelInfo, mentions []string, m MonitorView, ev *alert.Event) error {
 	in := DownInput{
 		FriendlyName: m.FriendlyName,
-		Group:        m.GroupSlug,
+		Tags:         m.Tags,
 		URL:          m.URL,
 		Mentions:     mentions,
 		StatusCode:   ev.StatusCode,
@@ -207,7 +207,7 @@ func (n *Notifier) notifyResolve(ctx context.Context, ch ChannelInfo, mentions [
 	resolveIn := ResolveInput{
 		DownInput: DownInput{
 			FriendlyName: m.FriendlyName,
-			Group:        m.GroupSlug,
+			Tags:         m.Tags,
 			URL:          m.URL,
 			Mentions:     mentions,
 			StatusCode:   m.StatusCode,
@@ -311,7 +311,7 @@ func (n *Notifier) NotifySSL(ctx context.Context, channelSlug string, mentions [
 	daysRem := int(ssl.ExpiresAt.Sub(ev.At).Hours() / 24)
 	in := SSLDownInput{
 		FriendlyName:  m.FriendlyName,
-		Group:         m.GroupSlug,
+		Tags:          m.Tags,
 		URL:           m.URL,
 		Mentions:      mentions,
 		ExpiresAt:     ssl.ExpiresAt,

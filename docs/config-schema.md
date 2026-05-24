@@ -4,6 +4,11 @@ Locked field-by-field schema for the YAML ConfigMap. Companion to [`design-decis
 
 The binary refuses to start if any required field is missing or fails validation. The CLI subcommand `toggle-monitor validate <path>` runs the same validation locally for CI use.
 
+> **Partially superseded by ADRs.** Treat the linked ADRs as authoritative where they conflict with the prose below:
+>
+> - **[ADR-0002](./adr/0002-kube-match-tree-cascade.md)** rewrites `kube.*`: presets/pause/annotationDomain are gone; `kube.match[]` is now a cascading tree with `when:`/`config:`/`nested:`/`final:`/`ignore:`. The kube section below is the implementation reference for that ADR.
+> - **[ADR-0003](./adr/0003-statuspage-replaces-group.md)** deletes the `Group` entity entirely. `groups:`, `monitor.group`, `kube.config.group`, `theme` (and `theme.defaultGroupColor`), and `Group.Notify` are removed. `StatusPage` is the sole collection entity; sections use an `any:`/`all:` boolean predicate tree with `tags:` (AND-internally) and `hostRegex:` leaves. The `groups:`, `monitor.group`, `kube.config.group`, `theme.defaultGroupColor`, and the flat `statusPages[].sections[].match[]` shape described later in this doc are all gone — see ADR-0003 and `docs/config-example.yaml` for the canonical shape.
+
 ---
 
 ## 1. Top-level

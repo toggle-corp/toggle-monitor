@@ -14,7 +14,8 @@ type MonitorsFilter struct {
 	Search   string
 	Status   string
 	SSL      string
-	Group    string
+	Page     string // statusPages[].slug; "" → no page filter
+	Section  int    // 0-indexed section within Page; -1 → no section filter
 	Sort     string // one of store.ListSortKeys; "" → default
 	SortDesc bool
 }
@@ -57,7 +58,7 @@ templ Paginator(basePath string, page, perPage, total int, extraParams url.Value
 	}
 }
 
-templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, groups []store.MonitorRow, knownGroups []string, page, perPage int) {
+templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPages []*StatusConfig, page, perPage int) {
 	@Layout("Monitors") {
 		<h1 class="text-xl font-semibold mb-3">Monitors</h1>
 		<form
@@ -91,16 +92,16 @@ templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, groups [
 				</select>
 			</div>
 			<div>
-				<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="group">Group</label>
-				<select id="group" name="group" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
-					<option value="" selected?={ filter.Group == "" }>(any)</option>
-					for _, g := range knownGroups {
-						<option value={ g } selected?={ filter.Group == g }>{ g }</option>
+				<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="status_page">Status page</label>
+				<select id="status_page" name="status_page" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
+					<option value="" selected?={ filter.Page == "" }>(any)</option>
+					for _, p := range statusPages {
+						<option value={ p.Slug } selected?={ filter.Page == p.Slug }>{ p.FriendlyName }</option>
 					}
 				</select>
 			</div>
 			<button class="bg-slate-900 dark:bg-slate-200 dark:text-slate-900 text-white text-sm px-3 py-1.5 rounded">Apply</button>
-			if filter.Search != "" || filter.Status != "" || filter.SSL != "" || filter.Group != "" {
+			if filter.Search != "" || filter.Status != "" || filter.SSL != "" || filter.Page != "" {
 				<a class="text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100" href="/monitors">Clear filters</a>
 			}
 		</form>
@@ -116,7 +117,7 @@ templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, groups [
 					<thead>
 						<tr class="bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
 							@sortableHeader("Name", "name", filter)
-							@sortableHeader("Group", "group", filter)
+							<th class="py-2 px-3">Tags</th>
 							@sortableHeader("Status", "status", filter)
 							@sortableHeader("URL", "url", filter)
 							@sortableHeader("Code", "code", filter)
@@ -135,121 +136,4 @@ templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, groups [
 			@Paginator("/monitors", page, perPage, listing.Total, paramsFromFilter(filter))
 		}
 	}
-}
-
-templ GroupPage(slug string, stats store.GroupStats, listing store.MonitorListing, page, perPage int) {
-	@Layout("Group: "+slug) {
-		<div class="flex items-center gap-3 mb-4">
-			<h1 class="text-xl font-semibold">Group: <code class="font-mono text-base px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">{ slug }</code></h1>
-			<a class="text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100 ml-auto" href="/groups">All groups →</a>
-			<a class="text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100" href="/monitors">All monitors →</a>
-		</div>
-		if stats.Total > 0 {
-			<div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
-				@statTile("Up", stats.Up, "up", "/monitors?group="+slug+"&status=up")
-				@statTile("Down", stats.Down, "down", "/monitors?group="+slug+"&status=down")
-				@statTile("Paused", stats.TemporaryPaused, "warn", "/monitors?group="+slug+"&status=temporary-paused")
-				@statTile("SSL expiring", stats.SSLExpiring, "warn", "/monitors?group="+slug+"&ssl=ssl-expiring")
-				@statTile("SSL skipped", stats.SSLSkipped, "", "/monitors?group="+slug+"&ssl=ssl-skipped")
-			</div>
-		}
-		if len(listing.Items) == 0 {
-			<div class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-6 text-center text-sm text-slate-500 dark:text-slate-400">
-				<p>No monitors in this group.</p>
-			</div>
-		} else {
-			<table class="w-full bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 overflow-hidden">
-				<thead>
-					<tr class="bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
-						<th class="py-2 px-3">Name</th>
-						<th class="py-2 px-3">Status</th>
-						<th class="py-2 px-3">URL</th>
-					</tr>
-				</thead>
-				<tbody>
-					for _, m := range listing.Items {
-						<tr class="border-b border-slate-100 dark:border-slate-800 align-top">
-							<td class="py-2 px-3">
-								<a class="text-blue-700 dark:text-blue-400 hover:underline inline-flex items-center gap-1.5" href={ templ.URL("/monitor/" + m.Slug) }>
-									@MonitorName(m.FriendlyName)
-								</a>
-							</td>
-							<td class="py-2 px-3">@StatusBadge(string(m.Status))</td>
-							<td class="py-2 px-3 text-sm">
-								<a class="text-slate-500 dark:text-slate-400 hover:text-blue-700 dark:hover:text-blue-400 hover:underline break-all" href={ templ.URL(m.URL) } target="_blank" rel="noopener noreferrer">{ m.URL }</a>
-								if m.LastError != nil && *m.LastError != "" {
-									<div class="text-xs text-rose-700 dark:text-rose-400 mt-0.5 break-words"><code>{ *m.LastError }</code></div>
-								}
-							</td>
-						</tr>
-					}
-				</tbody>
-			</table>
-			@Paginator("/group/"+slug, page, perPage, listing.Total, nil)
-		}
-	}
-}
-
-// GroupsIndex lists every group with one row per group showing the
-// status breakdown — same five columns as the homepage Overview
-// (up / down / paused / SSL-expiring / SSL-skipped) plus a total.
-// Each row's group cell links to /group/<slug>, and the per-status
-// counts link straight to a pre-filtered /monitors view so the
-// operator can drill in without retyping the filter.
-templ GroupsIndex(groups []store.GroupStats) {
-	@Layout("Groups") {
-		<div class="flex items-center gap-3 mb-4">
-			<h1 class="text-xl font-semibold">Groups</h1>
-			<a class="text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100 ml-auto" href="/monitors">All monitors →</a>
-		</div>
-		if len(groups) == 0 {
-			<div class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-6 text-center text-sm text-slate-500 dark:text-slate-400">
-				<p>No monitors configured yet — groups appear once monitors land in the DB.</p>
-			</div>
-		} else {
-			<div class="overflow-x-auto">
-				<table class="w-full bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 overflow-hidden">
-					<thead>
-						<tr class="bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
-							<th class="py-2 px-3">Group</th>
-							<th class="py-2 px-3 text-right">Total</th>
-							<th class="py-2 px-3 text-right">Up</th>
-							<th class="py-2 px-3 text-right">Down</th>
-							<th class="py-2 px-3 text-right">Paused</th>
-							<th class="py-2 px-3 text-right">SSL expiring</th>
-							<th class="py-2 px-3 text-right">SSL skipped</th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, g := range groups {
-							<tr class="border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/60">
-								<td class="py-2 px-3">
-									<a class="text-blue-700 dark:text-blue-400 hover:underline" href={ templ.URL("/group/" + g.GroupSlug) }><code class="font-mono text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">{ g.GroupSlug }</code></a>
-								</td>
-								<td class="py-2 px-3 text-sm text-right tabular-nums">{ fmt.Sprint(g.Total) }</td>
-								@groupStatCell(g.Up, "up", "/monitors?group="+g.GroupSlug+"&status=up")
-								@groupStatCell(g.Down, "down", "/monitors?group="+g.GroupSlug+"&status=down")
-								@groupStatCell(g.TemporaryPaused, "warn", "/monitors?group="+g.GroupSlug+"&status=temporary-paused")
-								@groupStatCell(g.SSLExpiring, "warn", "/monitors?group="+g.GroupSlug+"&ssl=ssl-expiring")
-								@groupStatCell(g.SSLSkipped, "", "/monitors?group="+g.GroupSlug+"&ssl=ssl-skipped")
-							</tr>
-						}
-					</tbody>
-				</table>
-			</div>
-		}
-	}
-}
-
-// groupStatCell renders one cell in the GroupsIndex table — a count
-// linked to the matching /monitors filter when non-zero, plain "—"
-// otherwise so empty buckets don't invite a misleading click.
-templ groupStatCell(count int, kind, href string) {
-	<td class={ "py-2 px-3 text-sm text-right tabular-nums", statTileCount(kind, count) }>
-		if count == 0 {
-			<span class="text-slate-400 dark:text-slate-600">—</span>
-		} else {
-			<a class="hover:underline" href={ templ.URL(href) }>{ fmt.Sprint(count) }</a>
-		}
-	</td>
 }

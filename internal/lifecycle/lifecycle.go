@@ -164,7 +164,6 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 			Slug:             m.Slug,
 			FriendlyName:     m.FriendlyName,
 			URL:              m.URL,
-			GroupSlug:        m.Group,
 			Source:           store.SourceStatic,
 			DependsOn:        m.DependsOn,
 			SlackChannelSlug: m.Slack,
@@ -209,11 +208,6 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		DiscoveryListing: opts.Config.UI.PageSize.DiscoveryListing,
 		MaxPerPage:       opts.Config.UI.MaxPerPage,
 	})
-	groupSlugs := make([]string, 0, len(opts.Config.Groups))
-	for _, g := range opts.Config.Groups {
-		groupSlugs = append(groupSlugs, g.Slug)
-	}
-	srv.SetKnownGroups(groupSlugs)
 	{
 		ds := templates.DiscoveryStatus{KubeEnabled: opts.Config.Kube != nil}
 		if ds.KubeEnabled {
@@ -225,28 +219,17 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		configs := make([]*templates.StatusConfig, 0, len(opts.Config.StatusPages))
 		for _, sc := range opts.Config.StatusPages {
 			tc := &templates.StatusConfig{
-				Slug:          sc.Slug,
-				Title:         sc.Title,
-				ShowSections:  sc.ShowSectionsEnabled(),
-				ShowIncidents: sc.ShowIncidentsEnabled(),
+				Slug:         sc.Slug,
+				FriendlyName: sc.FriendlyName,
+				Description:  sc.Description,
+				LogoURL:      sc.LogoURL,
+				Color:        sc.Color,
 			}
 			for _, sec := range sc.Sections {
-				tsec := templates.StatusConfigSection{Title: sec.Title}
-				for _, sel := range sec.Match {
-					m := templates.StatusMatch{
-						Host:  sel.Host,
-						Group: sel.Group,
-						Tags:  append([]string(nil), sel.Tags...),
-					}
-					if sel.GroupRegex != "" {
-						// Config validation already confirmed this
-						// compiles; MustCompile is safe and avoids
-						// re-validating per request.
-						m.GroupRegex = regexp.MustCompile(sel.GroupRegex)
-					}
-					tsec.Match = append(tsec.Match, m)
-				}
-				tc.Sections = append(tc.Sections, tsec)
+				tc.Sections = append(tc.Sections, templates.StatusConfigSection{
+					Title: sec.Title,
+					Match: compileSectionMatch(sec.Match),
+				})
 			}
 			configs = append(configs, tc)
 		}
@@ -414,21 +397,33 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	return nil
 }
 
-func buildPlans(cfg config.Config, proxies *proxypool.Pool) []scheduler.Plan {
-	groupNotify := map[string][]string{}
-	for _, g := range cfg.Groups {
-		if len(g.Notify) > 0 {
-			groupNotify[g.Slug] = g.Notify
+// compileSectionMatch converts a config.SectionMatch (which carries
+// hostRegex as a string) into a templates.StatusMatch with the
+// regex pre-compiled. Config validation guarantees every hostRegex
+// is a valid Go regexp, so MustCompile-via-Compile-checked is safe
+// here; on the unexpected error path we fall back to an empty
+// matcher so a single bad regex doesn't crash the server.
+func compileSectionMatch(m config.SectionMatch) templates.StatusMatch {
+	out := templates.StatusMatch{
+		Tags: append([]string(nil), m.Tags...),
+	}
+	if m.HostRegex != "" {
+		if re, err := regexp.Compile("^(?:" + m.HostRegex + ")$"); err == nil {
+			out.HostRegex = re
 		}
 	}
+	for _, c := range m.Any {
+		out.Any = append(out.Any, compileSectionMatch(c))
+	}
+	for _, c := range m.All {
+		out.All = append(out.All, compileSectionMatch(c))
+	}
+	return out
+}
+
+func buildPlans(cfg config.Config, proxies *proxypool.Pool) []scheduler.Plan {
 	out := make([]scheduler.Plan, 0, len(cfg.Monitors))
 	for _, m := range cfg.Monitors {
-		// Union: group-level entries are applied first so monitor-level
-		// values get dedup priority. Order within the resulting markup
-		// list follows the source lists; ResolveMentions handles dedup.
-		merged := make([]string, 0, len(m.Notify)+len(groupNotify[m.Group]))
-		merged = append(merged, groupNotify[m.Group]...)
-		merged = append(merged, m.Notify...)
 		isHTTPS := strings.HasPrefix(m.URL, "https://")
 		out = append(out, scheduler.Plan{
 			Slug:                   m.Slug,
@@ -447,7 +442,7 @@ func buildPlans(cfg config.Config, proxies *proxypool.Pool) []scheduler.Plan {
 			UserAgent:              cfg.HTTPClient.UserAgent,
 			ReminderInterval:       m.ReminderInterval.AsDuration(),
 			ChannelSlug:            m.Slack,
-			Mentions:               slack.ResolveMentions(merged, cfg.Slack.UserMapping),
+			Mentions:               slack.ResolveMentions(m.Notify, cfg.Slack.UserMapping),
 			DependsOn:              m.DependsOn,
 			IsHTTPS:                isHTTPS,
 			SSLAlertThreshold:      m.SSLAlertThreshold.AsDuration(),
@@ -661,7 +656,7 @@ func monitorViewFromRow(row store.MonitorRow) slack.MonitorView {
 	mv := slack.MonitorView{
 		Slug:         row.Slug,
 		FriendlyName: row.FriendlyName,
-		GroupSlug:    row.GroupSlug,
+		Tags:         row.Tags,
 		URL:          row.URL,
 	}
 	if row.OpenedAt != nil {

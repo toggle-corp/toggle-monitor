@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -54,7 +55,6 @@ type Server struct {
 	log             *slog.Logger
 	metrics         http.Handler // /metrics handler; nil → endpoint is omitted
 	pageSizes       PageSizes
-	knownGroups     []string
 	mapping         MappingHealthReader
 	missingParents  MissingParentReader
 	configLookup    ConfigLookup
@@ -132,10 +132,6 @@ func (s *Server) SetStatusConfigs(cs []*templates.StatusConfig) {
 // by lifecycle after the config is loaded).
 func (s *Server) SetPageSizes(ps PageSizes) { s.pageSizes = ps }
 
-// SetKnownGroups wires the slugs that appear in the filter dropdown
-// on /monitors. Called by lifecycle after config load.
-func (s *Server) SetKnownGroups(g []string) { s.knownGroups = g }
-
 // SetDiscoveryStatus tells the /discovery page whether kube
 // auto-discovery is enabled (and at what cadence) so the empty state
 // can explain why no rows are showing.
@@ -192,11 +188,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /{$}", s.navWrap(s.handleHomepage))
 	mux.HandleFunc("GET /monitors", s.navWrap(s.handleMonitorsListing))
 	mux.HandleFunc("GET /monitor/{slug}", s.navWrap(s.handleMonitorDetail))
-	mux.HandleFunc("GET /groups", s.navWrap(s.handleGroupsIndex))
-	mux.HandleFunc("GET /group/{slug}", s.navWrap(s.handleGroupPage))
 	mux.HandleFunc("GET /issues", s.navWrap(s.handleIssues))
-	mux.HandleFunc("GET /status", s.handleStatusIndex)        // public index of pages
-	mux.HandleFunc("GET /status/{slug}", s.handleStatusBySlug) // public, no operator nav
+	mux.HandleFunc("GET /status", s.navWrap(s.handleStatusIndex))
+	mux.HandleFunc("GET /status/{slug}", s.navWrap(s.handleStatusBySlug))
 	mux.HandleFunc("GET /discovery", s.navWrap(s.handleDiscoveryListing))
 	mux.HandleFunc("GET /discovery/{ns}/{name}/{host}", s.navWrap(s.handleDiscoveryDetail))
 
@@ -228,27 +222,73 @@ func (s *Server) handleHomepage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// Per-status-page tiles. Skip the DB roundtrip if no status pages
+	// are configured.
+	var pageStats []templates.StatusPageStats
+	if len(s.statusConfigs) > 0 {
+		monitors, err := s.repo.ListActiveMonitors(ctx)
+		if err != nil {
+			s.renderDBUnavailable(ctx, w, err)
+			return
+		}
+		pageStats = computeStatusPageStats(s.statusConfigs, monitors)
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.Homepage(stats, alerts, page, perPage, mapping).Render(ctx, w)
+	_ = templates.Homepage(stats, alerts, page, perPage, mapping, pageStats).Render(ctx, w)
 }
 
 func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	page, perPage := s.pagination(r, s.pageSizes.MonitorListing)
 	includeArchived := r.URL.Query().Get("archived") == "true"
+	pageSlug := r.URL.Query().Get("status_page")
+	sectionIdx := -1
+	if pageSlug != "" {
+		if v := r.URL.Query().Get("section"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				sectionIdx = n
+			}
+		}
+	}
 	filter := templates.MonitorsFilter{
 		Search:   r.URL.Query().Get("q"),
 		Status:   r.URL.Query().Get("status"),
 		SSL:      r.URL.Query().Get("ssl"),
-		Group:    r.URL.Query().Get("group"),
+		Page:     pageSlug,
+		Section:  sectionIdx,
 		Sort:     normalizeSortKey(r.URL.Query().Get("sort")),
 		SortDesc: r.URL.Query().Get("dir") == "desc",
+	}
+	// Page/section filter: resolve to a slug whitelist by evaluating
+	// predicates against active monitors, then pass to the DB as a
+	// slug-IN filter so the rest of the listing (status / search / SSL
+	// / pagination / sort) keeps working.
+	var slugFilter []string
+	if pageSlug != "" {
+		cfg, ok := s.statusBySlug[pageSlug]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		active, err := s.repo.ListActiveMonitors(ctx)
+		if err != nil {
+			s.renderDBUnavailable(ctx, w, err)
+			return
+		}
+		slugFilter = collectMonitorSlugsForPage(cfg, active, sectionIdx)
+		if len(slugFilter) == 0 {
+			// No monitor matches the page/section — short-circuit to an
+			// empty listing without touching the DB again.
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_ = templates.MonitorsPage(store.MonitorListing{}, filter, s.statusConfigs, page, perPage).Render(ctx, w)
+			return
+		}
 	}
 	listing, err := s.repo.ListMonitors(ctx, store.ListMonitorsOpts{
 		Search:          filter.Search,
 		Status:          filter.Status,
 		SSL:             filter.SSL,
-		GroupSlug:       filter.Group,
+		Slugs:           slugFilter,
 		IncludeArchived: includeArchived,
 		Sort:            filter.Sort,
 		SortDesc:        filter.SortDesc,
@@ -260,7 +300,98 @@ func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.MonitorsPage(listing, filter, nil, s.knownGroups, page, perPage).Render(ctx, w)
+	_ = templates.MonitorsPage(listing, filter, s.statusConfigs, page, perPage).Render(ctx, w)
+}
+
+// collectMonitorSlugsForPage evaluates pageCfg's section predicates
+// against the active-monitors set and returns the deduped slug list.
+// When sectionIdx is in range, only that section is considered;
+// otherwise every section on the page contributes.
+func collectMonitorSlugsForPage(pageCfg *templates.StatusConfig, active []store.MonitorRow, sectionIdx int) []string {
+	if pageCfg == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(active))
+	for _, m := range active {
+		tagSet := templates.StatusTagSet(m.Tags)
+		host := monitorHost(m.URL)
+		if sectionIdx >= 0 && sectionIdx < len(pageCfg.Sections) {
+			if pageCfg.Sections[sectionIdx].Match.Matches(tagSet, host) {
+				seen[m.Slug] = struct{}{}
+			}
+			continue
+		}
+		for _, sec := range pageCfg.Sections {
+			if sec.Match.Matches(tagSet, host) {
+				seen[m.Slug] = struct{}{}
+				break
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for s := range seen {
+		out = append(out, s)
+	}
+	return out
+}
+
+// computeStatusPageStats produces one StatusPageStats per configured
+// status page — Total/Up/Down/Paused/SSL-expiring (deduped across the
+// page's sections).
+func computeStatusPageStats(cfgs []*templates.StatusConfig, active []store.MonitorRow) []templates.StatusPageStats {
+	out := make([]templates.StatusPageStats, 0, len(cfgs))
+	for _, cfg := range cfgs {
+		stat := templates.StatusPageStats{Slug: cfg.Slug, FriendlyName: cfg.FriendlyName, Color: cfg.Color}
+		seen := make(map[string]struct{})
+		for _, m := range active {
+			tagSet := templates.StatusTagSet(m.Tags)
+			host := monitorHost(m.URL)
+			if !cfg.PageMatches(tagSet, host) {
+				continue
+			}
+			if _, dup := seen[m.Slug]; dup {
+				continue
+			}
+			seen[m.Slug] = struct{}{}
+			stat.Total++
+			switch string(m.Status) {
+			case "up":
+				stat.Up++
+			case "down":
+				stat.Down++
+			case "temporary-paused":
+				stat.TemporaryPaused++
+			}
+			if m.SSLStatus != nil {
+				switch string(*m.SSLStatus) {
+				case "ssl-expiring":
+					stat.SSLExpiring++
+				case "ssl-skipped":
+					stat.SSLSkipped++
+				}
+			}
+		}
+		out = append(out, stat)
+	}
+	return out
+}
+
+// monitorHost extracts the bare host from a monitor URL — no scheme,
+// no port, no path. Mirrors the hostFromURL helper inside templates so
+// the web layer can build a tag-set + host pair without touching the
+// templates package's helpers (which aren't exported here).
+func monitorHost(s string) string {
+	// Strip scheme if present.
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	if i := strings.LastIndex(s, ":"); i >= 0 {
+		s = s[:i]
+	}
+	return s
 }
 
 // navWrap injects per-request NavMeta (currently just the issue
@@ -297,18 +428,20 @@ func (s *Server) issueCount(ctx context.Context) int {
 	return count
 }
 
-// handleStatusIndex renders the public list of configured status
-// pages. Zero pages → the same empty-placeholder card the singular
-// page used to show, so existing /status bookmarks still resolve.
+// handleStatusIndex renders /status — a directory of every
+// configured status page, alphabetical by FriendlyName.
 func (s *Server) handleStatusIndex(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	sorted := append([]*templates.StatusConfig(nil), s.statusConfigs...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return strings.ToLower(sorted[i].FriendlyName) < strings.ToLower(sorted[j].FriendlyName)
+	})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.StatusIndexPage(s.statusConfigs).Render(ctx, w)
+	_ = templates.StatusIndexPage(sorted).Render(ctx, w)
 }
 
-// handleStatusBySlug renders one configured status page. Unknown
-// slugs 404 (no DB hit). Same per-page rendering as the previous
-// singular handler.
+// handleStatusBySlug renders one configured status page at
+// /status/<slug>. Unknown slugs 404 (no DB hit).
 func (s *Server) handleStatusBySlug(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	slug := r.PathValue("slug")
@@ -327,31 +460,8 @@ func (s *Server) handleStatusBySlug(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sections := templates.BuildStatusSections(cfg, monitors)
-	var incidents []store.AlertEventRow
-	if cfg.ShowIncidents {
-		// Latest alerts across the whole system, then filter to monitors
-		// that landed in any section. Bound to a small N — the status
-		// page is a snapshot, not a paginated history.
-		listing, err := s.repo.ListLatestAlerts(ctx, 50, 0)
-		if err == nil {
-			included := map[string]struct{}{}
-			for _, sec := range sections {
-				for _, m := range sec.Monitors {
-					included[m.Slug] = struct{}{}
-				}
-			}
-			for _, ev := range listing.Items {
-				if _, ok := included[ev.MonitorSlug]; ok {
-					incidents = append(incidents, ev)
-					if len(incidents) >= 10 {
-						break
-					}
-				}
-			}
-		}
-	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.StatusPage(cfg, sections, incidents).Render(ctx, w)
+	_ = templates.StatusPage(cfg, sections).Render(ctx, w)
 }
 
 func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
@@ -389,43 +499,6 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = templates.IssuesPage(mapping, invalidDiscovery, missing).Render(ctx, w)
-}
-
-func (s *Server) handleGroupsIndex(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	groups, err := s.repo.ListGroupStats(ctx)
-	if err != nil {
-		s.renderDBUnavailable(ctx, w, err)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.GroupsIndex(groups).Render(ctx, w)
-}
-
-func (s *Server) handleGroupPage(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	slug := r.PathValue("slug")
-	if !validSlugForURL(slug) {
-		http.NotFound(w, r)
-		return
-	}
-	stats, _, err := s.repo.GroupStatsForSlug(ctx, slug)
-	if err != nil {
-		s.renderDBUnavailable(ctx, w, err)
-		return
-	}
-	page, perPage := s.pagination(r, s.pageSizes.MonitorListing)
-	listing, err := s.repo.ListMonitors(ctx, store.ListMonitorsOpts{
-		GroupSlug: slug,
-		Limit:     perPage,
-		Offset:    (page - 1) * perPage,
-	})
-	if err != nil {
-		s.renderDBUnavailable(ctx, w, err)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.GroupPage(slug, stats, listing, page, perPage).Render(ctx, w)
 }
 
 func (s *Server) handleDiscoveryListing(w http.ResponseWriter, r *http.Request) {
@@ -560,8 +633,25 @@ func (s *Server) handleMonitorDetail(w http.ResponseWriter, r *http.Request) {
 			cfg = &c
 		}
 	}
+	// "Appears on" backlinks — evaluate every status page's match tree
+	// against this monitor's tag set + host. Config order is preserved
+	// so the page header order on / matches the order shown here.
+	var appearsOn []templates.AppearsOnEntry
+	if len(s.statusConfigs) > 0 {
+		tagSet := templates.StatusTagSet(m.Tags)
+		host := monitorHost(m.URL)
+		for _, cfgPage := range s.statusConfigs {
+			if cfgPage.PageMatches(tagSet, host) {
+				appearsOn = append(appearsOn, templates.AppearsOnEntry{
+					FriendlyName: cfgPage.FriendlyName,
+					Slug:         cfgPage.Slug,
+					Color:        cfgPage.Color,
+				})
+			}
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.MonitorDetail(m, cfg, gatingParents, history).Render(ctx, w)
+	_ = templates.MonitorDetail(m, cfg, gatingParents, history, appearsOn).Render(ctx, w)
 }
 
 // renderDBUnavailable serves a 503 with the friendly fallback page.

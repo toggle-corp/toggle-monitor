@@ -23,7 +23,7 @@ const (
 // DownInput carries everything the parent uptime message needs.
 type DownInput struct {
 	FriendlyName string
-	Group        string
+	Tags         []string
 	URL          string
 	Mentions     []string // raw Slack markup, e.g. "<!here>", "<@U123>"
 	StatusCode   int
@@ -153,8 +153,8 @@ func buildParentBlocks(in DownInput, extra []detailLine, footerPrefix string, fo
 	if in.LastError != "" {
 		lines = append(lines, "*Error:* `"+in.LastError+"`")
 	}
-	if in.Group != "" {
-		lines = append(lines, "*Group:* `"+in.Group+"`")
+	if len(in.Tags) > 0 {
+		lines = append(lines, "*Tags:* `"+strings.Join(in.Tags, "`, `")+"`")
 	}
 	for _, e := range extra {
 		lines = append(lines, "*"+e.Label+":* "+e.Value)

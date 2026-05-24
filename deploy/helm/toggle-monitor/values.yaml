@@ -69,8 +69,6 @@ config:
       monitorHistory: 50
       discoveryListing: 50
     maxPerPage: 200
-  theme:
-    defaultGroupColor: "#64748b"
   httpClient:
     userAgent: "toggle-monitor/0.1"
   heartbeat: null                             # uncomment to enable; matches schema
@@ -114,10 +112,19 @@ config:
         channelId: REPLACE_ME                 # e.g. C0123ABCD
         tokenEnv: SLACK_BOT_TOKEN
     userMapping: {}
-  groups:
-    - slug: kube-discovered
-      friendlyName: Kube Discovered
   monitors: []
+  # Status pages — see ADR-0003. Each section's `match` is a single
+  # predicate node (leaf or branch). Example:
+  #   statusPages:
+  #     - slug: acme
+  #       friendlyName: ACME
+  #       sections:
+  #         - title: Production
+  #           match:
+  #             any:
+  #               - { tags: [prod, acme] }
+  #               - { tags: [prod, acme] }
+  statusPages: []
 
 # Container service + ingress for the UI. Restrict the ingress to your
 # internal network — there is no auth in v1.

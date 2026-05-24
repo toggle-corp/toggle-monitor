@@ -82,7 +82,6 @@ database:
 ui:
   pageSize: { homepageAlerts: 20, monitorListing: 50, monitorHistory: 50, discoveryListing: 50 }
   maxPerPage: 200
-theme: { defaultGroupColor: "#64748b" }
 httpClient: { userAgent: shutdown-test }
 heartbeat:
   url: %s
@@ -92,14 +91,11 @@ slack:
   bodyMaxChars: 200
   channels:
     - { slug: ops-alerts, channelId: C0123ABCD, tokenEnv: TOGGLE_SLACK_TOKEN }
-groups:
-  - { slug: kube-discovered, friendlyName: Kube Discovered }
-  - { slug: prod, friendlyName: Prod }
 monitors:
   - slug: slow
     friendlyName: Slow
     url: %s
-    group: prod
+    tags: [prod]
     httpMethod: GET
     acceptedStatusCodes: [200]
     interval: 5m

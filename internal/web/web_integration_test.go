@@ -80,8 +80,8 @@ func TestHomepage_rendersStatsAndLatestAlerts(t *testing.T) {
 	ctx := context.Background()
 
 	for _, s := range []store.MonitorSpec{
-		{Slug: "api", FriendlyName: "API", URL: "http://api", GroupSlug: "prod", Source: store.SourceStatic},
-		{Slug: "web", FriendlyName: "Web", URL: "http://web", GroupSlug: "prod", Source: store.SourceStatic},
+		{Slug: "api", FriendlyName: "API", URL: "http://api", Tags: []string{"prod"}, Source: store.SourceStatic},
+		{Slug: "web", FriendlyName: "Web", URL: "http://web", Tags: []string{"prod"}, Source: store.SourceStatic},
 	} {
 		if err := repo.ReconcileMonitor(ctx, s); err != nil {
 			t.Fatalf("reconcile: %v", err)
@@ -110,8 +110,8 @@ func TestMonitorsListing_rendersAndFilters(t *testing.T) {
 	ctx := context.Background()
 
 	for _, s := range []store.MonitorSpec{
-		{Slug: "api", FriendlyName: "API", URL: "http://api", GroupSlug: "prod", Source: store.SourceStatic},
-		{Slug: "web", FriendlyName: "Web", URL: "http://web", GroupSlug: "prod", Source: store.SourceStatic},
+		{Slug: "api", FriendlyName: "API", URL: "http://api", Tags: []string{"prod"}, Source: store.SourceStatic},
+		{Slug: "web", FriendlyName: "Web", URL: "http://web", Tags: []string{"prod"}, Source: store.SourceStatic},
 	} {
 		if err := repo.ReconcileMonitor(ctx, s); err != nil {
 			t.Fatalf("reconcile: %v", err)
@@ -150,7 +150,7 @@ func TestMonitorDetail_renders(t *testing.T) {
 	ctx := context.Background()
 	if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
 		Slug: "api", FriendlyName: "API", URL: "http://api/health",
-		GroupSlug: "prod", Source: store.SourceStatic,
+		Tags: []string{"prod"}, Source: store.SourceStatic,
 	}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestMonitorDetail_rendersConfigDialogAndPreset(t *testing.T) {
 	ctx := context.Background()
 	if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
 		Slug: "api", FriendlyName: "API", URL: "https://api/health",
-		GroupSlug: "prod", Source: store.SourceKube,
+		Tags: []string{"prod"}, Source: store.SourceKube,
 	}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -294,75 +294,6 @@ func TestDiscoveryListing_namespaceAndStatusFilter(t *testing.T) {
 	}
 }
 
-func TestGroupsIndex_listsGroupsWithCounts(t *testing.T) {
-	srv, repo := newServer(t)
-	ctx := context.Background()
-	for _, s := range []store.MonitorSpec{
-		{Slug: "api", FriendlyName: "API", URL: "http://api", GroupSlug: "prod", Source: store.SourceStatic},
-		{Slug: "web", FriendlyName: "Web", URL: "http://web", GroupSlug: "prod", Source: store.SourceStatic},
-		{Slug: "staging-api", FriendlyName: "Staging API", URL: "http://stg", GroupSlug: "staging", Source: store.SourceStatic},
-	} {
-		if err := repo.ReconcileMonitor(ctx, s); err != nil {
-			t.Fatalf("reconcile %q: %v", s.Slug, err)
-		}
-	}
-
-	resp, body := get(t, srv.Routes(), "/groups")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("/groups status: got %d, want 200", resp.StatusCode)
-	}
-	// Both group slugs render as clickable rows.
-	for _, want := range []string{">prod<", ">staging<", "/group/prod", "/group/staging"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("body missing %q; first 400:\n%s", want, firstN(body, 400))
-		}
-	}
-}
-
-func TestGroupPage_rendersStatsHeader(t *testing.T) {
-	srv, repo := newServer(t)
-	ctx := context.Background()
-	for _, s := range []store.MonitorSpec{
-		{Slug: "api", FriendlyName: "API", URL: "http://api", GroupSlug: "prod", Source: store.SourceStatic},
-		{Slug: "web", FriendlyName: "Web", URL: "http://web", GroupSlug: "prod", Source: store.SourceStatic},
-	} {
-		if err := repo.ReconcileMonitor(ctx, s); err != nil {
-			t.Fatalf("reconcile %q: %v", s.Slug, err)
-		}
-	}
-
-	resp, body := get(t, srv.Routes(), "/group/prod")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("/group/prod status: got %d, want 200", resp.StatusCode)
-	}
-	// Stats tiles render with pre-filtered /monitors hrefs scoped to this group.
-	for _, want := range []string{
-		"/monitors?group=prod&amp;status=up",
-		"/monitors?group=prod&amp;status=down",
-		"/monitors?group=prod&amp;ssl=ssl-expiring",
-		"/monitor/api",
-		"/monitor/web",
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("body missing %q; first 600:\n%s", want, firstN(body, 600))
-		}
-	}
-}
-
-func TestGroupLink_clickableInMonitorsListing(t *testing.T) {
-	srv, repo := newServer(t)
-	ctx := context.Background()
-	if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
-		Slug: "api", FriendlyName: "API", URL: "http://api", GroupSlug: "prod", Source: store.SourceStatic,
-	}); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-	_, body := get(t, srv.Routes(), "/monitors")
-	if !strings.Contains(body, `href="/group/prod"`) {
-		t.Errorf("monitors listing should link the group slug to /group/prod; first 600:\n%s", firstN(body, 600))
-	}
-}
-
 func TestNav_issueBadgeAndStatusLink(t *testing.T) {
 	srv, repo := newServer(t)
 	ctx := context.Background()
@@ -412,11 +343,11 @@ func TestStatusIndex_emptyWhenNoConfig(t *testing.T) {
 func TestStatusIndex_listsConfiguredPages(t *testing.T) {
 	srv, _ := newServer(t)
 	srv.SetStatusConfigs([]*templates.StatusConfig{
-		{Slug: "public", Title: "Public", ShowSections: true, Sections: []templates.StatusConfigSection{
-			{Title: "Public", Match: []templates.StatusMatch{{Host: "*.example.com"}}},
+		{Slug: "public", FriendlyName: "Public", Sections: []templates.StatusConfigSection{
+			{Title: "Public", Match: templates.StatusMatch{HostRegex: regexp.MustCompile(`.*\.example\.com`)}},
 		}},
-		{Slug: "internal", Title: "Internal", ShowSections: true, Sections: []templates.StatusConfigSection{
-			{Title: "Internal", Match: []templates.StatusMatch{{Tags: []string{"internal"}}}},
+		{Slug: "internal", FriendlyName: "Internal", Sections: []templates.StatusConfigSection{
+			{Title: "Internal", Match: templates.StatusMatch{Tags: []string{"internal"}}},
 		}},
 	})
 	resp, body := get(t, srv.Routes(), "/status")
@@ -440,8 +371,8 @@ func TestStatusIndex_listsConfiguredPages(t *testing.T) {
 func TestStatusPage_unknownSlugIs404(t *testing.T) {
 	srv, _ := newServer(t)
 	srv.SetStatusConfigs([]*templates.StatusConfig{
-		{Slug: "public", Title: "Public", ShowSections: true, Sections: []templates.StatusConfigSection{
-			{Title: "Public", Match: []templates.StatusMatch{{Host: "*.example.com"}}},
+		{Slug: "public", FriendlyName: "Public", Sections: []templates.StatusConfigSection{
+			{Title: "Public", Match: templates.StatusMatch{HostRegex: regexp.MustCompile(`.*\.example\.com`)}},
 		}},
 	})
 	resp, _ := get(t, srv.Routes(), "/status/does-not-exist")
@@ -454,9 +385,9 @@ func TestStatusPage_sectionsAndMatching(t *testing.T) {
 	srv, repo := newServer(t)
 	ctx := context.Background()
 	for _, s := range []store.MonitorSpec{
-		{Slug: "api", FriendlyName: "API", URL: "https://api.example.com/health", GroupSlug: "prod", Source: store.SourceStatic, Tags: []string{"public"}},
-		{Slug: "ui", FriendlyName: "UI", URL: "https://ui.example.com/health", GroupSlug: "prod", Source: store.SourceStatic, Tags: []string{"public"}},
-		{Slug: "internal", FriendlyName: "Internal", URL: "http://internal/health", GroupSlug: "ops", Source: store.SourceStatic, Tags: []string{"internal"}},
+		{Slug: "api", FriendlyName: "API", URL: "https://api.example.com/health", Source: store.SourceStatic, Tags: []string{"prod", "public"}},
+		{Slug: "ui", FriendlyName: "UI", URL: "https://ui.example.com/health", Source: store.SourceStatic, Tags: []string{"prod", "public"}},
+		{Slug: "internal", FriendlyName: "Internal", URL: "http://internal/health", Source: store.SourceStatic, Tags: []string{"ops", "internal"}},
 	} {
 		if err := repo.ReconcileMonitor(ctx, s); err != nil {
 			t.Fatalf("reconcile %q: %v", s.Slug, err)
@@ -464,16 +395,15 @@ func TestStatusPage_sectionsAndMatching(t *testing.T) {
 	}
 	srv.SetStatusConfigs([]*templates.StatusConfig{{
 		Slug:         "public",
-		Title:        "Toggle status",
-		ShowSections: true,
+		FriendlyName: "Toggle status",
 		Sections: []templates.StatusConfigSection{
 			{
 				Title: "Public",
-				Match: []templates.StatusMatch{{Host: "*.example.com"}},
+				Match: templates.StatusMatch{HostRegex: regexp.MustCompile(`.*\.example\.com`)},
 			},
 			{
 				Title: "Internal tools",
-				Match: []templates.StatusMatch{{Tags: []string{"internal"}}},
+				Match: templates.StatusMatch{Tags: []string{"internal"}},
 			},
 		},
 	}})
@@ -535,20 +465,23 @@ func TestStatusPage_groupRegexMatch(t *testing.T) {
 	srv, repo := newServer(t)
 	ctx := context.Background()
 	for _, s := range []store.MonitorSpec{
-		{Slug: "tc-api", FriendlyName: "TC API", URL: "https://tc-api/health", GroupSlug: "tc-prod", Source: store.SourceStatic},
-		{Slug: "tc-web", FriendlyName: "TC Web", URL: "https://tc-web/health", GroupSlug: "tc-stage", Source: store.SourceStatic},
-		{Slug: "other", FriendlyName: "Other", URL: "https://other/health", GroupSlug: "infra", Source: store.SourceStatic},
+		{Slug: "tc-api", FriendlyName: "TC API", URL: "https://tc-api/health", Tags: []string{"tc-prod"}, Source: store.SourceStatic},
+		{Slug: "tc-web", FriendlyName: "TC Web", URL: "https://tc-web/health", Tags: []string{"tc-stage"}, Source: store.SourceStatic},
+		{Slug: "other", FriendlyName: "Other", URL: "https://other/health", Tags: []string{"infra"}, Source: store.SourceStatic},
 	} {
 		if err := repo.ReconcileMonitor(ctx, s); err != nil {
 			t.Fatalf("reconcile %q: %v", s.Slug, err)
 		}
 	}
 	srv.SetStatusConfigs([]*templates.StatusConfig{{
-		Slug: "tc", Title: "TC", ShowSections: true,
+		Slug: "tc", FriendlyName: "TC",
 		Sections: []templates.StatusConfigSection{
 			{
 				Title: "Toggle services",
-				Match: []templates.StatusMatch{{GroupRegex: regexp.MustCompile(`^tc-.*$`)}},
+				Match: templates.StatusMatch{Any: []templates.StatusMatch{
+					{Tags: []string{"tc-prod"}},
+					{Tags: []string{"tc-stage"}},
+				}},
 			},
 		},
 	}})
@@ -558,9 +491,9 @@ func TestStatusPage_groupRegexMatch(t *testing.T) {
 			t.Errorf("body missing %q; first 600:\n%s", want, firstN(body, 600))
 		}
 	}
-	// `other` (group=infra) must NOT land in the regex-matched section.
+	// `other` (tags=infra) must NOT land in the tc-* section.
 	if strings.Contains(body, "Other") {
-		t.Errorf("group infra should not match ^tc-.*$; body:\n%s", firstN(body, 600))
+		t.Errorf("tag infra should not match tc-prod/tc-stage; body:\n%s", firstN(body, 600))
 	}
 }
 

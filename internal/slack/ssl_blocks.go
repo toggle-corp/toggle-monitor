@@ -10,7 +10,7 @@ import (
 // resolve-edit counterpart.
 type SSLDownInput struct {
 	FriendlyName  string
-	Group         string
+	Tags          []string
 	URL           string
 	Mentions      []string
 	ExpiresAt     time.Time
@@ -102,8 +102,8 @@ func buildSSLParentBlocks(in SSLDownInput, extra []detailLine, footerPrefix stri
 	if in.Subject != "" {
 		lines = append(lines, "*Subject:* `"+in.Subject+"`")
 	}
-	if in.Group != "" {
-		lines = append(lines, "*Group:* `"+in.Group+"`")
+	if len(in.Tags) > 0 {
+		lines = append(lines, "*Tags:* `"+strings.Join(in.Tags, "`, `")+"`")
 	}
 	for _, e := range extra {
 		lines = append(lines, "*"+e.Label+":* "+e.Value)

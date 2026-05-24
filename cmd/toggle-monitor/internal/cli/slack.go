@@ -213,7 +213,7 @@ func runSlackTestUptime(ctx context.Context, out io.Writer, in io.Reader, f slac
 	openedAt := time.Now().UTC()
 	downIn := slack.DownInput{
 		FriendlyName: f.Name,
-		Group:        "slack-test",
+		Tags:         []string{"slack-test"},
 		URL:          "https://example.invalid/health",
 		Mentions:     mentions,
 		StatusCode:   503,
@@ -310,7 +310,7 @@ func runSlackTestSSL(ctx context.Context, out io.Writer, in io.Reader, f slackTe
 	expiresAt := time.Now().UTC().Add(7 * 24 * time.Hour)
 	sslIn := slack.SSLDownInput{
 		FriendlyName:  f.Name,
-		Group:         "slack-test",
+		Tags:          []string{"slack-test"},
 		URL:           "https://example.invalid/",
 		Mentions:      mentions,
 		ExpiresAt:     expiresAt,

@@ -26,9 +26,6 @@ ui:
     discoveryListing: 50
   maxPerPage: 200
 
-theme:
-  defaultGroupColor: "#64748b"
-
 httpClient:
   userAgent: "toggle-monitor/local-dev"
 
@@ -51,19 +48,11 @@ slack:
   userMapping:
     alice: U0123ABCDEF
 
-groups:
-  - slug: kube-discovered
-    friendlyName: Kube Discovered
-    description: Fallback group for auto-discovered ingresses
-  - slug: local
-    friendlyName: Local services
-    color: "#10b981"
-
 monitors:
   - slug: upstream-ok
     friendlyName: Upstream OK
     url: http://upstream/status/200
-    group: local
+    tags: [local]
     httpMethod: GET
     acceptedStatusCodes: [200]
     interval: 30s
@@ -77,7 +66,7 @@ monitors:
   - slug: upstream-flaky
     friendlyName: Upstream Flaky
     url: http://upstream/status/500
-    group: local
+    tags: [local, flaky, demo]
     httpMethod: GET
     acceptedStatusCodes: [200]
     interval: 30s
@@ -89,31 +78,15 @@ monitors:
     slack: ops-alerts
     notify:
       - "<!here>"
-    tags: [demo, flaky]
 
-# Public status pages. Optional — omit the entire block to keep
-# /status at the empty placeholder. Each entry gets its own
-# /status/<slug> URL; /status itself renders an index of all
-# configured pages. Match selectors AND within a selector and OR
-# across selectors; same host-glob syntax as kube.match[].when.host,
-# extended with `group` (exact slug) and `tags` (set overlap against
-# monitors.tags).
+# Status pages — see ADR-0003. Each section's `match` is a single
+# predicate node (leaf or branch); tag-AND semantics in leaves.
 statusPages:
-  - slug: public
-    title: "Toggle Monitor — local dev"
-    showSections: true       # render the section headings
-    showIncidents: true      # opt in; surfaces the last few alert events
+  - slug: local
+    friendlyName: Toggle Monitor — local dev
+    description: Local docker-compose services.
     sections:
-      - title: "Local services"
-        match:
-          - group: local
-      - title: "Flaky things"
-        match:
-          - tags: [flaky]
-  - slug: internal
-    title: "Internal"
-    showSections: true
-    sections:
-      - title: "Everything"
-        match:
-          - groupRegex: ".+"
+      - title: Local services
+        match: { tags: [local] }
+      - title: Flaky things
+        match: { tags: [flaky] }
