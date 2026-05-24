@@ -9,11 +9,13 @@ package config
 import (
 	"errors"
 	"fmt"
+	"path"
 	"regexp"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/toggle-corp/toggle-monitor/internal/slug"
 )
@@ -608,14 +610,6 @@ func (c *checker) validate(cfg *Config) {
 		c.errf([]any{"groups"}, "a group with slug %q is required", "kube-discovered")
 	}
 
-	// kube.match validation: see Task 3 / ADR-0002 §Validation.
-	// The previous flat-rule validator is intentionally deleted; the
-	// new cascading-tree validator (root-required, glob/regex
-	// exclusion, final/ignore semantics, label-key syntax, etc.) is
-	// implemented in a follow-up task. Until then the kube block is
-	// only structurally typed — parse errors still surface, but no
-	// cross-field rule is enforced.
-
 	if cfg.DBBodyMaxChars < cfg.Slack.BodyMaxChars {
 		c.errf([]any{"dbBodyMaxChars"},
 			"%d must be >= slack.bodyMaxChars (%d)", cfg.DBBodyMaxChars, cfg.Slack.BodyMaxChars)
@@ -656,9 +650,14 @@ func (c *checker) validate(cfg *Config) {
 		}
 	}
 
-	// Second-pass kube validation lived here; deleted along with
-	// KubePreset (Task 2). The new validator for KubeMatchRule blocks
-	// is Task 3's responsibility — see ADR-0002 §Validation.
+	// kube.match validation: see ADR-0002 §Validation. Structural
+	// errors only — resolved-value errors (interval/timeout, SSL
+	// thresholds, root-required-field-overridden-empty) live in the
+	// merger and surface at materialization time as kube-invalid
+	// discovery rows. Slug references inside config blocks need the
+	// slack channel / group / proxy / userMapping sets, so this runs
+	// after those have been populated above.
+	c.validateKube(cfg, seenSlackChannels, seenGroups, seenProxies)
 
 	// Monitor validation.
 	seenMonitors := map[string]struct{}{}
@@ -754,10 +753,13 @@ func (c *checker) validate(cfg *Config) {
 		c.errf([]any{"monitors"}, "dependsOn graph contains a cycle: %s", cycle)
 	}
 
-	// Kube dependsOn resolution lived here; deleted along with
-	// KubePreset (Task 2). The new resolution for KubeMatchRule
-	// config blocks is Task 3's responsibility — see ADR-0002
-	// §Validation.
+	// Kube dependsOn resolution: every entry in a config.dependsOn
+	// list (anywhere in the tree) must resolve to a declared static
+	// monitor — the schema explicitly disallows kube-discovered
+	// parents because their slugs aren't known until reconcile time.
+	if cfg.Kube != nil {
+		c.validateKubeDependsOnRefs(cfg.Kube.Match, monitorByIdx, []any{"kube", "match"})
+	}
 
 	// statusPages validation. Per page: slug required + unique across
 	// the list. Per section: title + non-empty match; each selector
@@ -940,4 +942,363 @@ func (c *checker) isValidNotifyEntry(mapping map[string]string, s string) bool {
 		return true
 	}
 	return isRawSlackMarkup(s)
+}
+
+// validKubeHTTPMethods is the allowed httpMethod enum for kube
+// monitor configs (see docs/config-schema.md §"kube.match[].config").
+var validKubeHTTPMethods = map[string]struct{}{
+	"GET": {}, "HEAD": {}, "POST": {}, "PUT": {}, "DELETE": {},
+}
+
+// validKubeSchemes is the allowed scheme enum.
+var validKubeSchemes = map[string]struct{}{
+	"http": {}, "https": {},
+}
+
+// kubeRequiredAtRoot is the set of KubeConfig YAML keys the root rule
+// (top-level rule with empty when:) must explicitly set. See
+// docs/config-schema.md §"kube.match[].config fields" — the column
+// "Req at root". Ordered for stable error-message ordering.
+var kubeRequiredAtRoot = []string{
+	"path",
+	"httpMethod",
+	"acceptedStatusCodes",
+	"interval",
+	"timeout",
+	"retries",
+	"retryBackoff",
+	"followRedirects",
+	"reminderInterval",
+	"sslAlertThreshold",
+	"sslEscalationThreshold",
+	"sslReminderInterval",
+	"slack",
+}
+
+// validateKube enforces the structural rules in ADR-0002 §Validation
+// against the kube block. It is a no-op when cfg.Kube is nil.
+//
+// Structural errors enforced here block startup. Resolved-value
+// errors (interval >= timeout, SSL alert > escalation > 0, a
+// required-at-root field overridden to invalid deeper in the tree)
+// are deferred to the merger — they depend on which ingresses
+// actually exist and surface as kube-invalid discovery rows.
+//
+// TODO(warnings): the ADR also defines two structural *warnings*
+// (empty when: deeper than root; ignore:true at a leaf with a
+// non-empty config block). The config layer has no warning channel
+// today; wiring one touches every validator, so warnings are
+// deliberately deferred to a separate task. The ADR explicitly
+// distinguishes errors from warnings — skipping warnings does not
+// regress behaviour.
+func (c *checker) validateKube(cfg *Config, slackChannels, groups, proxies map[string]struct{}) {
+	if cfg.Kube == nil {
+		return
+	}
+	k := cfg.Kube
+
+	// friendlyName: empty falls back to "compact" at use time, so an
+	// unset value is fine; if set it must be one of the documented
+	// styles.
+	if k.FriendlyName != "" {
+		ok := false
+		for _, s := range KubeFriendlyNameStyles {
+			if s == k.FriendlyName {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			c.errf([]any{"kube", "friendlyName"},
+				"%q is not one of %v", k.FriendlyName, KubeFriendlyNameStyles)
+		}
+	}
+
+	// resyncInterval lower bound — schema §1 / §"kube.* field reference".
+	if k.ResyncInterval.AsDuration() < time.Minute {
+		c.errf([]any{"kube", "resyncInterval"},
+			"must be >= 1m, got %s", k.ResyncInterval)
+	}
+
+	// Match list must be non-empty and the first entry must be the
+	// root baseline (empty when:).
+	if len(k.Match) == 0 {
+		c.errf([]any{"kube", "match"}, "at least one rule is required; the first rule must have an empty when: and carry every required-at-root field")
+		return
+	}
+	root := k.Match[0]
+	if !kubeWhenIsEmpty(root.When) {
+		c.errf([]any{"kube", "match", 0, "when"},
+			"the first rule must have an empty when: (the mandatory root baseline carrying every required-at-root field)")
+	} else {
+		// Only check required-at-root fields when the rule really is
+		// the root. If it isn't, the missing-fields error would be
+		// noise on top of the (more actionable) "root must be empty"
+		// error.
+		c.checkKubeRequiredAtRoot(&root.Config, slackChannels, []any{"kube", "match", 0, "config"})
+	}
+
+	// Walk every rule (including the root) for selector / config
+	// validity. The root already had its required-field check above;
+	// validateKubeRule does the remaining per-rule checks (selectors,
+	// label keys, slug references inside config, final/ignore
+	// invariants, HTTPMethod / scheme enums when set).
+	for i := range k.Match {
+		c.validateKubeRule(&k.Match[i], []any{"kube", "match", i}, slackChannels, groups, proxies, cfg.Slack.UserMapping)
+	}
+}
+
+// kubeWhenIsEmpty reports whether every selector field on w is unset
+// (zero / nil). Used to detect the mandatory root baseline.
+func kubeWhenIsEmpty(w KubeMatchWhen) bool {
+	return w.Namespace == "" && w.NamespaceRegex == "" &&
+		w.Host == "" && w.HostRegex == "" && len(w.Labels) == 0
+}
+
+// checkKubeRequiredAtRoot verifies the root rule's Config sets every
+// field marked "Req at root" in docs/config-schema.md. IsSet
+// distinguishes "explicitly set" from "unset / zero-value" — needed
+// for fields like followRedirects where the zero value (false) is a
+// legitimate explicit choice.
+func (c *checker) checkKubeRequiredAtRoot(k *KubeConfig, slackChannels map[string]struct{}, base []any) {
+	for _, key := range kubeRequiredAtRoot {
+		if !k.IsSet(key) {
+			c.errf(append(append([]any{}, base...), key),
+				"required at the root rule (every materialized monitor inherits this)")
+			continue
+		}
+		// Beyond mere presence, every required-at-root field has a
+		// sanity floor: empty strings, empty lists, and non-positive
+		// numerics at the *root* are useless — descendants would have
+		// nothing to inherit. Resolved-value error surface (Task 4)
+		// covers the same checks again post-merge, but catching them
+		// at the root early gives a much better error.
+		switch key {
+		case "path":
+			if k.Path == "" || !strings.HasPrefix(k.Path, "/") {
+				c.errf(append(append([]any{}, base...), key),
+					"must start with %q, got %q", "/", k.Path)
+			}
+		case "httpMethod":
+			if _, ok := validKubeHTTPMethods[k.HTTPMethod]; !ok {
+				c.errf(append(append([]any{}, base...), key),
+					"must be one of GET, HEAD, POST, PUT, DELETE, got %q", k.HTTPMethod)
+			}
+		case "acceptedStatusCodes":
+			if len(k.AcceptedStatusCodes) == 0 {
+				c.errf(append(append([]any{}, base...), key), "must be a non-empty list of HTTP status codes")
+			}
+			for i, code := range k.AcceptedStatusCodes {
+				if code < 100 || code > 599 {
+					c.errf(append(append([]any{}, base...), key, i),
+						"%d is not a valid HTTP status code (100..599)", code)
+				}
+			}
+		case "interval":
+			if k.Interval.AsDuration() < 30*time.Second {
+				c.errf(append(append([]any{}, base...), key), "must be >= 30s, got %s", k.Interval)
+			}
+		case "timeout":
+			if k.Timeout.AsDuration() <= 0 {
+				c.errf(append(append([]any{}, base...), key), "must be > 0, got %s", k.Timeout)
+			}
+		case "retries":
+			if k.Retries < 0 {
+				c.errf(append(append([]any{}, base...), key), "must be >= 0, got %d", k.Retries)
+			}
+		case "retryBackoff":
+			if k.RetryBackoff.AsDuration() < time.Second {
+				c.errf(append(append([]any{}, base...), key), "must be >= 1s, got %s", k.RetryBackoff)
+			}
+		case "followRedirects":
+			// Presence-only check (already covered by IsSet above);
+			// false is a perfectly valid value.
+		case "reminderInterval":
+			if k.ReminderInterval.AsDuration() < time.Hour {
+				c.errf(append(append([]any{}, base...), key), "must be >= 1h, got %s", k.ReminderInterval)
+			}
+		case "sslAlertThreshold":
+			if k.SSLAlertThreshold.AsDuration() <= 0 {
+				c.errf(append(append([]any{}, base...), key), "must be > 0, got %s", k.SSLAlertThreshold)
+			}
+		case "sslEscalationThreshold":
+			if k.SSLEscalationThreshold.AsDuration() <= 0 {
+				c.errf(append(append([]any{}, base...), key), "must be > 0, got %s", k.SSLEscalationThreshold)
+			}
+		case "sslReminderInterval":
+			if k.SSLReminderInterval.AsDuration() < time.Hour {
+				c.errf(append(append([]any{}, base...), key), "must be >= 1h, got %s", k.SSLReminderInterval)
+			}
+		case "slack":
+			// Slug-reference resolution is shared with descendants and
+			// runs inside validateKubeRule; the IsSet check above is
+			// what makes "required at root" meaningful.
+		}
+	}
+}
+
+// validateKubeRule applies every per-rule structural check at base
+// (the path slice to this rule), then recurses into Nested with
+// updated paths.
+func (c *checker) validateKubeRule(
+	r *KubeMatchRule,
+	base []any,
+	slackChannels, groups, proxies map[string]struct{},
+	userMapping map[string]string,
+) {
+	c.validateKubeWhen(&r.When, append(append([]any{}, base...), "when"))
+
+	// final: true with an empty when: would halt the tree walk on the
+	// first ingress encountered — almost certainly a typo. The root
+	// rule's missing-selector error already fires above; this one
+	// catches the same shape anywhere else in the tree.
+	if r.Final && kubeWhenIsEmpty(r.When) {
+		c.errf(append(append([]any{}, base...), "final"),
+			"final: true requires at least one selector in when: (otherwise the tree walk halts on the first ingress)")
+	}
+
+	c.validateKubeConfig(&r.Config, append(append([]any{}, base...), "config"), slackChannels, groups, proxies, userMapping)
+
+	for i := range r.Nested {
+		c.validateKubeRule(&r.Nested[i],
+			append(append([]any{}, base...), "nested", i),
+			slackChannels, groups, proxies, userMapping)
+	}
+}
+
+// validateKubeWhen enforces selector-level rules: glob/regex mutual
+// exclusion per dimension, glob parse, regex parse, label-key syntax.
+func (c *checker) validateKubeWhen(w *KubeMatchWhen, base []any) {
+	if w.Namespace != "" && w.NamespaceRegex != "" {
+		c.errf(base, "namespace and namespaceRegex are mutually exclusive in the same when:")
+	}
+	if w.Host != "" && w.HostRegex != "" {
+		c.errf(base, "host and hostRegex are mutually exclusive in the same when:")
+	}
+	if w.Namespace != "" {
+		if _, err := path.Match(w.Namespace, ""); err != nil {
+			c.errf(append(append([]any{}, base...), "namespace"),
+				"invalid glob %q: %v", w.Namespace, err)
+		}
+	}
+	if w.Host != "" {
+		if _, err := path.Match(w.Host, ""); err != nil {
+			c.errf(append(append([]any{}, base...), "host"),
+				"invalid glob %q: %v", w.Host, err)
+		}
+	}
+	if w.NamespaceRegex != "" {
+		if _, err := regexp.Compile(w.NamespaceRegex); err != nil {
+			c.errf(append(append([]any{}, base...), "namespaceRegex"),
+				"invalid regex: %v", err)
+		}
+	}
+	if w.HostRegex != "" {
+		if _, err := regexp.Compile(w.HostRegex); err != nil {
+			c.errf(append(append([]any{}, base...), "hostRegex"),
+				"invalid regex: %v", err)
+		}
+	}
+	for key := range w.Labels {
+		if errs := validation.IsQualifiedName(key); len(errs) > 0 {
+			c.errf(append(append([]any{}, base...), "labels", key),
+				"invalid k8s label key %q: %s", key, strings.Join(errs, "; "))
+		}
+	}
+}
+
+// validateKubeConfig runs cross-reference + enum checks on a single
+// config block (anywhere in the tree). Required-at-root presence is
+// handled separately in checkKubeRequiredAtRoot; this routine only
+// validates fields that are actually set, so descendants stay free to
+// omit anything they don't override.
+func (c *checker) validateKubeConfig(
+	k *KubeConfig,
+	base []any,
+	slackChannels, groups, proxies map[string]struct{},
+	userMapping map[string]string,
+) {
+	if k.IsSet("httpMethod") {
+		if _, ok := validKubeHTTPMethods[k.HTTPMethod]; !ok {
+			c.errf(append(append([]any{}, base...), "httpMethod"),
+				"must be one of GET, HEAD, POST, PUT, DELETE, got %q", k.HTTPMethod)
+		}
+	}
+	if k.IsSet("scheme") {
+		if _, ok := validKubeSchemes[k.Scheme]; !ok {
+			c.errf(append(append([]any{}, base...), "scheme"),
+				"must be %q or %q, got %q", "http", "https", k.Scheme)
+		}
+	}
+	if k.IsSet("path") && !strings.HasPrefix(k.Path, "/") {
+		c.errf(append(append([]any{}, base...), "path"),
+			"must start with %q, got %q", "/", k.Path)
+	}
+	if k.IsSet("slack") && k.Slack != "" {
+		if _, ok := slackChannels[k.Slack]; !ok {
+			c.errf(append(append([]any{}, base...), "slack"),
+				"unknown channel slug %q", k.Slack)
+		}
+	}
+	if k.IsSet("group") && k.Group != "" {
+		if _, ok := groups[k.Group]; !ok {
+			c.errf(append(append([]any{}, base...), "group"),
+				"unknown group %q", k.Group)
+		}
+	}
+	if k.IsSet("proxy") && k.Proxy != "" {
+		if _, ok := proxies[k.Proxy]; !ok {
+			c.errf(append(append([]any{}, base...), "proxy"),
+				"unknown proxy slug %q", k.Proxy)
+		}
+	}
+	if k.IsSet("notify") {
+		for i, n := range k.Notify.Values {
+			if !c.isValidNotifyEntry(userMapping, n) {
+				c.errf(append(append([]any{}, base...), "notify", i),
+					"%q must be a userMapping slug or raw Slack markup wrapped in <…>", n)
+			}
+		}
+	}
+	if k.IsSet("tags") {
+		for i, tag := range k.Tags.Values {
+			if err := slug.Validate(tag); err != nil {
+				c.errf(append(append([]any{}, base...), "tags", i),
+					"%v", err)
+			}
+		}
+	}
+	if k.IsSet("acceptedStatusCodes") {
+		for i, code := range k.AcceptedStatusCodes {
+			if code < 100 || code > 599 {
+				c.errf(append(append([]any{}, base...), "acceptedStatusCodes", i),
+					"%d is not a valid HTTP status code (100..599)", code)
+			}
+		}
+	}
+	// dependsOn cross-references with static monitors are resolved in
+	// a second pass once the monitor slug set is fully built — see
+	// validateKubeDependsOnRefs called from validate().
+}
+
+// validateKubeDependsOnRefs walks the tree and verifies every entry in
+// any config.dependsOn list resolves to a declared static monitor.
+// Kube-discovered monitors cannot be dependsOn parents because their
+// slugs are not known at config-load time.
+func (c *checker) validateKubeDependsOnRefs(rules []KubeMatchRule, monitorByIdx map[string]int, base []any) {
+	for i := range rules {
+		r := &rules[i]
+		rbase := append(append([]any{}, base...), i)
+		if r.Config.IsSet("dependsOn") {
+			for j, dep := range r.Config.DependsOn.Values {
+				if _, ok := monitorByIdx[dep]; !ok {
+					c.errf(append(append([]any{}, rbase...), "config", "dependsOn", j),
+						"unknown monitor slug %q (kube dependsOn parents must be declared static monitors)", dep)
+				}
+			}
+		}
+		if len(r.Nested) > 0 {
+			c.validateKubeDependsOnRefs(r.Nested, monitorByIdx, append(append([]any{}, rbase...), "nested"))
+		}
+	}
 }

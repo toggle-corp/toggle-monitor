@@ -43,6 +43,8 @@ groups:
     friendlyName: Kube Discovered
   - slug: gateways
     friendlyName: Gateways
+  - slug: acme
+    friendlyName: ACME Go
 monitors:
   - slug: bastion
     friendlyName: Bastion
@@ -324,15 +326,27 @@ func TestLoad_tlsInsecureSkipVerify_relaxesSSLThresholdsForHTTPS(t *testing.T) {
 	}
 }
 
-// TODO(Task 3 validator): the test cases previously here covered
-// kube.presets and the flat kube.match validator that were deleted in
-// Task 2 along with the KubePreset/KubeMatch types (see ADR-0002).
-// The new validator for the KubeMatchRule tree (root rule required,
-// glob/regex mutual exclusion, final/ignore semantics, label-key
-// syntax, slug references, timing/SSL constraints in resolved values)
-// is Task 3's responsibility. The parsing-only tests below cover the
-// shape of the new types; full validation tests land with the new
-// validator.
+// kubeRootBaseline is the YAML fragment for a valid root rule
+// (the mandatory empty-when: rule that every materialized monitor
+// inherits). Tests that want to exercise a particular kube.match
+// shape inject this as the first entry so they don't drown in
+// required-at-root-field errors.
+const kubeRootBaseline = `    - when: {}
+      config:
+        path: /
+        httpMethod: GET
+        acceptedStatusCodes: [200]
+        interval: 5m
+        timeout: 10s
+        retries: 2
+        retryBackoff: 5s
+        followRedirects: false
+        reminderInterval: 3d
+        sslAlertThreshold: 30d
+        sslEscalationThreshold: 7d
+        sslReminderInterval: 3d
+        slack: ops-alerts
+`
 
 // canonicalKubeTree is a representative kube.match tree exercising
 // the rule shape: a root rule with empty when:, a kill-switch with
@@ -485,20 +499,21 @@ func TestLoad_kube_parsesCascadingTree(t *testing.T) {
 }
 
 func TestLoad_kube_notifyOverrideTagSetsOverrideFlag(t *testing.T) {
+	// Override tag lives on a *descendant* rule; the root carries the
+	// required-at-root baseline so validation has nothing to flag.
 	yaml := validMinimal + `
 kube:
   resyncInterval: 30m
   match:
-    - when: {}
+` + kubeRootBaseline + `    - when: { namespace: "acme-*" }
       config:
-        path: /
         notify: !override ["<!here>", "<@U0123ABC>"]
 `
 	cfg, err := config.Load([]byte(yaml))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	notify := cfg.Kube.Match[0].Config.Notify
+	notify := cfg.Kube.Match[1].Config.Notify
 	if !notify.Override {
 		t.Error("expected Override=true after !override tag")
 	}
@@ -512,16 +527,15 @@ func TestLoad_kube_notifyWithoutOverrideTagLeavesOverrideFalse(t *testing.T) {
 kube:
   resyncInterval: 30m
   match:
-    - when: {}
+` + kubeRootBaseline + `    - when: { namespace: "acme-*" }
       config:
-        path: /
         notify: ["<!here>"]
 `
 	cfg, err := config.Load([]byte(yaml))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Kube.Match[0].Config.Notify.Override {
+	if cfg.Kube.Match[1].Config.Notify.Override {
 		t.Error("expected Override=false without !override tag")
 	}
 }
@@ -531,9 +545,8 @@ func TestLoad_kube_tagsAndDependsOnSupportOverride(t *testing.T) {
 kube:
   resyncInterval: 30m
   match:
-    - when: {}
+` + kubeRootBaseline + `    - when: { namespace: "acme-*" }
       config:
-        path: /
         tags: !override [a, b]
         dependsOn: !override [bastion]
 `
@@ -541,7 +554,7 @@ kube:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	cfgBlock := cfg.Kube.Match[0].Config
+	cfgBlock := cfg.Kube.Match[1].Config
 	if !cfgBlock.Tags.Override {
 		t.Error("tags.Override should be true")
 	}
@@ -561,9 +574,7 @@ func TestLoad_kube_emptyWhenParsesAsZeroValue(t *testing.T) {
 kube:
   resyncInterval: 30m
   match:
-    - when: {}
-      config: { path: / }
-`
+` + kubeRootBaseline
 	cfg, err := config.Load([]byte(yaml))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -575,6 +586,8 @@ kube:
 }
 
 func TestLoad_kube_acceptedStatusCodesParsesWithoutOverrideTag(t *testing.T) {
+	// acceptedStatusCodes is replace-by-default; the test confirms that
+	// the root list parses without the !override tag.
 	yaml := validMinimal + `
 kube:
   resyncInterval: 30m
@@ -582,7 +595,18 @@ kube:
     - when: {}
       config:
         path: /
+        httpMethod: GET
         acceptedStatusCodes: [200, 301, 302]
+        interval: 5m
+        timeout: 10s
+        retries: 2
+        retryBackoff: 5s
+        followRedirects: false
+        reminderInterval: 3d
+        sslAlertThreshold: 30d
+        sslEscalationThreshold: 7d
+        sslReminderInterval: 3d
+        slack: ops-alerts
 `
 	cfg, err := config.Load([]byte(yaml))
 	if err != nil {
@@ -596,17 +620,13 @@ kube:
 }
 
 func TestLoad_kube_friendlyNameAcceptsDefinedStyles(t *testing.T) {
-	// friendlyName has no validator yet (Task 3) but must parse for
-	// each documented style without erroring.
 	for _, style := range config.KubeFriendlyNameStyles {
 		yaml := validMinimal + `
 kube:
   resyncInterval: 30m
   friendlyName: ` + style + `
   match:
-    - when: {}
-      config: { path: / }
-`
+` + kubeRootBaseline
 		cfg, err := config.Load([]byte(yaml))
 		if err != nil {
 			t.Errorf("style %q rejected: %v", style, err)
@@ -1099,3 +1119,429 @@ func TestLoad_rejectsWhenRetryWindowExceedsInterval(t *testing.T) {
 		t.Errorf("error message should explain the timing rule, got: %v", err)
 	}
 }
+
+// ----------------------------------------------------------------------
+// Kube cascading-tree validator tests (Task 3 / ADR-0002 §Validation).
+// ----------------------------------------------------------------------
+
+// withKubeBlock prepends `kube:` + tree to validMinimal so a per-test
+// kube payload can be exercised against an otherwise valid config.
+func withKubeBlock(tree string) []byte {
+	return []byte(validMinimal + "\nkube:\n  resyncInterval: 30m\n  match:\n" + tree)
+}
+
+// TestLoad_kube_canonicalTreeValidates exercises the happy path —
+// the canonicalKubeTree fixture covers root + kill-switch + nested
+// chain and must pass cleanly.
+func TestLoad_kube_canonicalTreeValidates(t *testing.T) {
+	data := []byte(validMinimal + canonicalKubeTree)
+	if _, err := config.Load(data); err != nil {
+		t.Fatalf("canonical tree should validate cleanly, got: %v", err)
+	}
+}
+
+// (1) Match list missing entirely → must error.
+func TestLoad_kube_rejectsEmptyMatch(t *testing.T) {
+	data := []byte(validMinimal + "\nkube:\n  resyncInterval: 30m\n  match: []\n")
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected empty match list to be rejected")
+	}
+	if !strings.Contains(err.Error(), "at least one rule is required") {
+		t.Errorf("error should explain the missing root rule, got: %v", err)
+	}
+}
+
+// (1) First rule is not the root baseline (when: is non-empty) → must error.
+func TestLoad_kube_rejectsFirstRuleNotEmptyWhen(t *testing.T) {
+	tree := `    - when: { namespace: "acme-*" }
+      config:
+        path: /
+        httpMethod: GET
+        acceptedStatusCodes: [200]
+        interval: 5m
+        timeout: 10s
+        retries: 2
+        retryBackoff: 5s
+        followRedirects: false
+        reminderInterval: 3d
+        sslAlertThreshold: 30d
+        sslEscalationThreshold: 7d
+        sslReminderInterval: 3d
+        slack: ops-alerts
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected first-rule-not-root to be rejected")
+	}
+	if !strings.Contains(err.Error(), "kube.match[0].when") {
+		t.Errorf("error should point at kube.match[0].when, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "empty when:") {
+		t.Errorf("error should explain root baseline, got: %v", err)
+	}
+}
+
+// (2) Missing required-at-root field → must error with the field name.
+func TestLoad_kube_rejectsMissingRequiredAtRoot(t *testing.T) {
+	// Same as kubeRootBaseline but with `slack: ops-alerts` removed.
+	tree := `    - when: {}
+      config:
+        path: /
+        httpMethod: GET
+        acceptedStatusCodes: [200]
+        interval: 5m
+        timeout: 10s
+        retries: 2
+        retryBackoff: 5s
+        followRedirects: false
+        reminderInterval: 3d
+        sslAlertThreshold: 30d
+        sslEscalationThreshold: 7d
+        sslReminderInterval: 3d
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected missing-slack-at-root to be rejected")
+	}
+	if !strings.Contains(err.Error(), "kube.match[0].config.slack") {
+		t.Errorf("error should point at the missing field, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "required at the root rule") {
+		t.Errorf("error should explain why the field is required, got: %v", err)
+	}
+}
+
+// (2) followRedirects: false counts as "set" because of IsSet —
+// removing the key entirely is what should fail.
+func TestLoad_kube_rejectsFollowRedirectsUnset(t *testing.T) {
+	tree := `    - when: {}
+      config:
+        path: /
+        httpMethod: GET
+        acceptedStatusCodes: [200]
+        interval: 5m
+        timeout: 10s
+        retries: 2
+        retryBackoff: 5s
+        reminderInterval: 3d
+        sslAlertThreshold: 30d
+        sslEscalationThreshold: 7d
+        sslReminderInterval: 3d
+        slack: ops-alerts
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected missing followRedirects to be rejected")
+	}
+	if !strings.Contains(err.Error(), "followRedirects") {
+		t.Errorf("error should mention followRedirects, got: %v", err)
+	}
+}
+
+// (3) Mixing glob + regex on the same dimension is illegal.
+func TestLoad_kube_rejectsNamespaceAndNamespaceRegexInSameWhen(t *testing.T) {
+	tree := kubeRootBaseline + `    - when: { namespace: "acme-*", namespaceRegex: "acme-.*" }
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected namespace + namespaceRegex to be rejected")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error should flag mutual exclusion, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "kube.match[1].when") {
+		t.Errorf("error should point at the offending when:, got: %v", err)
+	}
+}
+
+func TestLoad_kube_rejectsHostAndHostRegexInSameWhen(t *testing.T) {
+	tree := kubeRootBaseline + `    - when: { host: "*.example.com", hostRegex: ".*\\.example\\.com" }
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected host + hostRegex to be rejected")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error should flag mutual exclusion, got: %v", err)
+	}
+}
+
+// (4) Bad regex must fail with a regex-parse error.
+func TestLoad_kube_rejectsInvalidNamespaceRegex(t *testing.T) {
+	tree := kubeRootBaseline + `    - when: { namespaceRegex: "[oops" }
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected invalid regex to be rejected")
+	}
+	if !strings.Contains(err.Error(), "invalid regex") {
+		t.Errorf("error should flag invalid regex, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "kube.match[1].when.namespaceRegex") {
+		t.Errorf("error path should include the field, got: %v", err)
+	}
+}
+
+// (5) Bad glob must fail with a glob-parse error.
+func TestLoad_kube_rejectsInvalidHostGlob(t *testing.T) {
+	// path.Match accepts most patterns; an unclosed character class
+	// triggers ErrBadPattern.
+	tree := kubeRootBaseline + `    - when: { host: "api-[abc" }
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected invalid glob to be rejected")
+	}
+	if !strings.Contains(err.Error(), "invalid glob") {
+		t.Errorf("error should flag invalid glob, got: %v", err)
+	}
+}
+
+// (6) Invalid label key syntax must fail.
+func TestLoad_kube_rejectsInvalidLabelKey(t *testing.T) {
+	tree := kubeRootBaseline + `    - when:
+        labels:
+          "BAD!KEY": "value"
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected invalid label key to be rejected")
+	}
+	if !strings.Contains(err.Error(), "invalid k8s label key") {
+		t.Errorf("error should call out k8s label-key syntax, got: %v", err)
+	}
+}
+
+// (7) final: true with empty when: is illegal.
+func TestLoad_kube_rejectsFinalWithEmptyWhen(t *testing.T) {
+	tree := kubeRootBaseline + `    - when: {}
+      final: true
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected final+empty-when to be rejected")
+	}
+	if !strings.Contains(err.Error(), "final: true requires at least one selector") {
+		t.Errorf("error should explain the final/when invariant, got: %v", err)
+	}
+}
+
+// (8a) Unknown slack channel in a config block must fail.
+func TestLoad_kube_rejectsUnknownSlackInConfig(t *testing.T) {
+	tree := kubeRootBaseline + `    - when: { namespace: "acme-*" }
+      config:
+        slack: nope-not-a-channel
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected unknown slack channel to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unknown channel slug") {
+		t.Errorf("error should mention unknown channel slug, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "kube.match[1].config.slack") {
+		t.Errorf("error path should include the field, got: %v", err)
+	}
+}
+
+// (8b) Unknown group in a config block must fail.
+func TestLoad_kube_rejectsUnknownGroupInConfig(t *testing.T) {
+	tree := kubeRootBaseline + `    - when: { namespace: "acme-*" }
+      config:
+        group: nope-not-a-group
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected unknown group to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unknown group") {
+		t.Errorf("error should mention unknown group, got: %v", err)
+	}
+}
+
+// (8c) Unknown proxy in a config block must fail.
+func TestLoad_kube_rejectsUnknownProxyInConfig(t *testing.T) {
+	tree := kubeRootBaseline + `    - when: { namespace: "acme-*" }
+      config:
+        proxy: ghost
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected unknown proxy to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unknown proxy slug") {
+		t.Errorf("error should mention unknown proxy slug, got: %v", err)
+	}
+}
+
+// (8d) Notify entries must resolve to a userMapping slug or be raw
+// <…> Slack markup.
+func TestLoad_kube_rejectsUnknownNotifyEntry(t *testing.T) {
+	tree := kubeRootBaseline + `    - when: { namespace: "acme-*" }
+      config:
+        notify: [not-a-real-slug]
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected unknown notify entry to be rejected")
+	}
+	if !strings.Contains(err.Error(), "raw Slack markup") {
+		t.Errorf("error should explain notify syntax, got: %v", err)
+	}
+}
+
+// (8d) Valid notify entries — userMapping slug + raw markup — must pass.
+func TestLoad_kube_acceptsUserMappingNotifyEntry(t *testing.T) {
+	data := strings.Replace(validMinimal,
+		"      tokenEnv: SLACK_BOT_TOKEN\n",
+		"      tokenEnv: SLACK_BOT_TOKEN\n  userMapping:\n    alice: U01ABCDEF12\n",
+		1)
+	data += "\nkube:\n  resyncInterval: 30m\n  match:\n" + kubeRootBaseline +
+		`    - when: { namespace: "acme-*" }
+      config:
+        notify: [alice, "<!here>"]
+`
+	if _, err := config.Load([]byte(data)); err != nil {
+		t.Fatalf("userMapping slug + raw markup should pass, got: %v", err)
+	}
+}
+
+// (8e) dependsOn must resolve to a static monitor; unknown slugs fail.
+func TestLoad_kube_rejectsUnknownDependsOnRef(t *testing.T) {
+	tree := kubeRootBaseline + `    - when: { namespace: "acme-*" }
+      config:
+        dependsOn: [does-not-exist]
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected unknown dependsOn to be rejected")
+	}
+	if !strings.Contains(err.Error(), "does-not-exist") {
+		t.Errorf("error should name the missing parent, got: %v", err)
+	}
+}
+
+// (8e) dependsOn pointing at a declared static monitor passes.
+func TestLoad_kube_acceptsValidDependsOnRef(t *testing.T) {
+	tree := kubeRootBaseline + `    - when: { namespace: "acme-*" }
+      config:
+        dependsOn: [bastion]
+`
+	if _, err := config.Load(withKubeBlock(tree)); err != nil {
+		t.Fatalf("dependsOn on a real static monitor should pass, got: %v", err)
+	}
+}
+
+// (9) httpMethod enum on the root must be one of the supported verbs.
+func TestLoad_kube_rejectsInvalidHTTPMethod(t *testing.T) {
+	tree := `    - when: {}
+      config:
+        path: /
+        httpMethod: PATCH
+        acceptedStatusCodes: [200]
+        interval: 5m
+        timeout: 10s
+        retries: 2
+        retryBackoff: 5s
+        followRedirects: false
+        reminderInterval: 3d
+        sslAlertThreshold: 30d
+        sslEscalationThreshold: 7d
+        sslReminderInterval: 3d
+        slack: ops-alerts
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected PATCH to be rejected (v1 enum: GET/HEAD/POST/PUT/DELETE)")
+	}
+	if !strings.Contains(err.Error(), "GET, HEAD, POST, PUT, DELETE") {
+		t.Errorf("error should list the enum, got: %v", err)
+	}
+}
+
+// (10) scheme enum.
+func TestLoad_kube_rejectsInvalidScheme(t *testing.T) {
+	tree := kubeRootBaseline + `    - when: { namespace: "acme-*" }
+      config:
+        scheme: ftp
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected invalid scheme to be rejected")
+	}
+	if !strings.Contains(err.Error(), `must be "http" or "https"`) {
+		t.Errorf("error should explain the scheme enum, got: %v", err)
+	}
+}
+
+// (11) friendlyName enum.
+func TestLoad_kube_rejectsUnknownFriendlyName(t *testing.T) {
+	data := []byte(validMinimal + "\nkube:\n  resyncInterval: 30m\n  friendlyName: shouty\n  match:\n" + kubeRootBaseline)
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected unknown friendlyName to be rejected")
+	}
+	if !strings.Contains(err.Error(), "friendlyName") {
+		t.Errorf("error should mention friendlyName, got: %v", err)
+	}
+}
+
+// (12) resyncInterval lower bound (>= 1m).
+func TestLoad_kube_rejectsResyncIntervalTooSmall(t *testing.T) {
+	data := []byte(validMinimal + "\nkube:\n  resyncInterval: 30s\n  match:\n" + kubeRootBaseline)
+	_, err := config.Load(data)
+	if err == nil {
+		t.Fatal("expected sub-1m resyncInterval to be rejected")
+	}
+	if !strings.Contains(err.Error(), "resyncInterval") || !strings.Contains(err.Error(), ">= 1m") {
+		t.Errorf("error should explain the minimum, got: %v", err)
+	}
+}
+
+// (2 sanity) acceptedStatusCodes at root must contain valid HTTP codes.
+func TestLoad_kube_rejectsRootBadStatusCode(t *testing.T) {
+	tree := `    - when: {}
+      config:
+        path: /
+        httpMethod: GET
+        acceptedStatusCodes: [99]
+        interval: 5m
+        timeout: 10s
+        retries: 2
+        retryBackoff: 5s
+        followRedirects: false
+        reminderInterval: 3d
+        sslAlertThreshold: 30d
+        sslEscalationThreshold: 7d
+        sslReminderInterval: 3d
+        slack: ops-alerts
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected invalid status code to be rejected")
+	}
+	if !strings.Contains(err.Error(), "not a valid HTTP status code") {
+		t.Errorf("error should mention status code validity, got: %v", err)
+	}
+}
+
+// Recursive walk: nested rule's error path must include the full chain.
+func TestLoad_kube_recursiveWalkPathIncludesNested(t *testing.T) {
+	tree := kubeRootBaseline + `    - when: { namespace: "acme-*" }
+      nested:
+        - when: { namespaceRegex: "[oops" }
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected nested invalid regex to be rejected")
+	}
+	if !strings.Contains(err.Error(), "kube.match[1].nested[0].when.namespaceRegex") {
+		t.Errorf("error path should descend into nested, got: %v", err)
+	}
+}
+
+// TODO(warnings): the ADR defines two structural warnings (empty
+// when: deeper than root; ignore:true at a leaf with non-empty
+// config). Skipped here pending a warning channel — see
+// validateKube's TODO comment.
