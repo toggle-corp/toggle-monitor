@@ -2,6 +2,12 @@
 
 In-progress design conversation built on top of [`initial-spec.md`](./initial-spec.md). Captures resolved decisions and open branches so the design grilling can be resumed across sessions.
 
+## Architecture Decision Records
+
+Subsystem-scale design changes that supersede sections of this document live as ADRs under [`adr/`](./adr/):
+
+- [ADR-0002 — `kube.match` as a cascading rule tree](./adr/0002-kube-match-tree-cascade.md). Replaces the `kube.presets:` registry, the `kube.pause:` block, the `kube.annotationDomain` field, and the entire per-ingress `/kube.*` / `/config.*` annotation layer with a single tree of `when:` / `config:` / `nested:` rules. The kube subsections of "Auto-discovery from k8s ingress", "Presets & DRY", "`kube.pause:` hard-pause list", "K8s ingress annotation convention", and "Kube monitor statuses & lifecycle" below describe the *prior* design and are superseded in-place by ADR-0002.
+
 ## Resolved decisions
 
 ### Language & runtime

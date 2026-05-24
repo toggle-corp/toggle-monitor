@@ -36,13 +36,19 @@ database:
   passwordEnv: DB_PASSWORD                          # secrets always via *Env, never inline
 
 # ── Kube auto-discovery ───────────────────────────────────────────────────────
+# `kube.match` is a *cascading rule tree*. For each (Ingress, host)
+# pair, every rule whose `when:` matches contributes its `config:` to
+# a merge stack; deeper / later wins for scalars, arrays union by
+# default, `acceptedStatusCodes` replaces by default. Tag any array
+# with `!override` to swap union for replace. `final: true` on a
+# matching rule halts the cascade after descending into the rule's
+# own `nested:` subtree. `ignore: true` suppresses materialization
+# and records a `kube-ignored` row on /discovery.
+#
+# Full reference: docs/config-schema.md §4 and
+# docs/adr/0002-kube-match-tree-cascade.md.
 kube:
-  annotationDomain: monitor.togglecorp.com
   resyncInterval: 30m
-  pause:
-    - host: api.foo.example.com
-      reason: "Endpoint under maintenance until 2026-06-01"
-    - host: "*.staging.example.com"
 
   # Auto-generated friendly name style for kube-discovered monitors.
   # Defaults to "compact" when omitted. Options:
@@ -50,83 +56,105 @@ kube:
   #   compact → (ns) ingress-name, with `-ingress` stripped    (default)
   #   dedupe  → also strip leading ingress tokens that already appear in ns
   #   title   → dedupe + Title Case With Spaces
-  # Examples for ns=betaco-core-backend-1, name=core-backend-1-api:
-  #   plain   → (betaco-core-backend-1) core-backend-1-api
-  #   compact → (betaco-core-backend-1) core-backend-1-api
-  #   dedupe  → (betaco-core-backend-1) api
-  #   title   → (Betaco Core Backend 1) Api
   friendlyName: compact
 
-  # Conditional preset resolution. Rules evaluated in declaration
-  # order; first match wins. Both `namespace` and `host` are optional
-  # globs (path.Match semantics — `*` matches any run of characters,
-  # so `betaco-core-backend-*` matches `betaco-core-backend-1`). When
-  # both fields are set on a rule, they AND together. A rule with
-  # no `when:` clause is the wildcard fallback (must be the last
-  # rule — anything after it is unreachable).
-  #
-  # Each rule must specify either `preset: <slug>` (materialize the
-  # ingress with that preset) OR `ignore: true` (skip the ingress
-  # entirely — no monitor, but a "kube-ignored" row still lands on
-  # /discovery so you can verify the rule is firing).
-  #
-  # Resolution order overall:
-  #   1. /kube.preset annotation (explicit)
-  #   2. first matching match[] rule (preset OR ignore)
-  #   3. otherwise → kube-invalid
   match:
-    # Skip short-lived test namespaces entirely — they churn the UI on
-    # every push and don't merit alerting.
+    # ── Root rule (REQUIRED) ───────────────────────────────────────
+    # Empty `when:` matches every (Ingress, host). Must carry every
+    # required monitor field so any leaf-most match still produces a
+    # valid monitor without additional input.
+    - when: {}
+      config:
+        scheme: https
+        path: /
+        httpMethod: GET
+        acceptedStatusCodes: [200]
+        interval: 5m
+        timeout: 10s
+        retries: 2
+        retryBackoff: 5s
+        followRedirects: false
+        reminderInterval: 3d
+        sslAlertThreshold: 30d
+        sslEscalationThreshold: 7d
+        sslReminderInterval: 3d
+        slack: ops-alerts
+        notify: [ops-team]
+
+    # ── Cluster-wide kill switch ───────────────────────────────────
+    # Any Ingress labeled `monitor.togglecorp.com/disabled=true` is
+    # suppressed. `final: true` prevents any later rule (e.g., an
+    # app-specific override) from un-ignoring it.
+    - when:
+        labels:
+          monitor.togglecorp.com/disabled: "true"
+      ignore: true
+      final: true
+
+    # ── Skip short-lived test namespaces ───────────────────────────
+    # `ignore:` cascades like a scalar, so a child can flip it back
+    # to `false` to un-ignore a specific subset (e.g., test-critical-*).
     - when: { namespace: "test-*" }
       ignore: true
+
+    # ── ACME namespace family ──────────────────────────────────────
+    # Notice the layering: this rule sets project-wide group + notify;
+    # the nested regex rule narrows to the Service-A sub-family; the
+    # deepest rule pins the per-app health-check path for minio
+    # Ingresses inside that sub-family.
+    - when: { namespace: "acme-*" }
+      config:
+        group: acme
+        notify: [alice]                              # unions with root's [ops-team]
+        tags: [acme]
+      nested:
+        - when: { namespaceRegex: "acme-service-a-eoapi-\\d+" }
+          config:
+            tags: [service-a, eoapi]                 # unions → [acme, service-a, eoapi]
+          nested:
+            - when:
+                labels:
+                  app.kubernetes.io/name: minio
+              config:
+                path: /minio/health/live
+                # `final: true` here prevents a later top-level
+                # "global minio" rule (below) from clobbering the
+                # project-specific `path` for this Ingress.
+              final: true
+
+    # ── BETACO namespace family ──────────────────────────────────────
+    # Production hosts get the public-API slack channel; everything
+    # else stays on ops-alerts (inherited from root).
     - when: { namespace: "betaco-core-backend-*" }
-      preset: internal-api
-    - when: { namespace: "acme-*", host: "*.example.com" }
-      preset: public-web
-    - when: { host: "*.k8s.example.com" }
-      preset: internal-api
-    # Wildcard fallback — un-annotated ingresses that didn't match
-    # any rule above land here. Omit this rule to keep the original
-    # "kube-invalid: no preset annotation" behavior.
-    - preset: public-web
+      config:
+        group: production-apis
+        tags: [betaco, internal]
+        dependsOn: [bastion-proxy]
+      nested:
+        - when: { host: "*.example.com" }
+          config:
+            slack: ops-alerts
+            notify: !override [ops-team, alice]      # replaces inherited notify, doesn't union
 
-  presets:
-    - slug: internal-api
-      scheme: https
-      path: /health
-      httpMethod: GET
-      acceptedStatusCodes: [200]
-      interval: 5m
-      timeout: 10s
-      retries: 2
-      retryBackoff: 5s
-      followRedirects: false
-      reminderInterval: 3d
-      sslAlertThreshold: 30d
-      sslEscalationThreshold: 7d
-      sslReminderInterval: 3d
-      slack: ops-alerts
-      notify: [alice]
-      group: production-apis
-      tags: [internal]
-      dependsOn: [bastion-proxy]
+    # ── Global minio convention ────────────────────────────────────
+    # Any Ingress labeled as a minio app, anywhere in the cluster,
+    # gets the standard health path. Project-specific rules above can
+    # use `final: true` to opt out (see the ACME subtree).
+    - when:
+        labels:
+          app.kubernetes.io/name: minio
+      config:
+        path: /minio/health/live
+        acceptedStatusCodes: [200]                   # replace-by-default for this field
 
-    - slug: public-web
-      scheme: https
-      path: /
-      httpMethod: GET
-      acceptedStatusCodes: [200, 301, 302]
-      interval: 5m
-      timeout: 15s
-      retries: 3
-      retryBackoff: 10s
-      followRedirects: false
-      reminderInterval: 3d
-      sslAlertThreshold: 30d
-      sslEscalationThreshold: 7d
-      sslReminderInterval: 3d
-      slack: ops-alerts
-      group: public
+    # ── Public web fallback for dev-environment hosts ──────────────
+    - when: { host: "*.example.com" }
+      config:
+        acceptedStatusCodes: [200, 301, 302]
+        timeout: 15s
+        retries: 3
+        retryBackoff: 10s
+        group: public
 
 # ── Slack ─────────────────────────────────────────────────────────────────────
 slack:

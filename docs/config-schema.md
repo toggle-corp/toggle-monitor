@@ -14,7 +14,6 @@ publicBaseURL: https://monitor.internal.example.com    # optional; omit to hide 
 dbBodyMaxChars: 4000
 
 kube:
-  annotationDomain: monitor.togglecorp.com
   resyncInterval: 30m
 
 ui:
@@ -78,7 +77,6 @@ env:
 | `displayTimezone` | string | ✓ | valid IANA TZ | UI rendering only; Slack uses viewer's TZ |
 | `publicBaseURL` | string | — | valid URL | If set, Slack messages include a `[View details]` button |
 | `dbBodyMaxChars` | int | ✓ | >= `slack.bodyMaxChars` | Truncate stored body to this length |
-| `kube.annotationDomain` | string | ✓ | DNS-name format | Base for `<domain>/kube.*` and `<domain>/config.*` ingress annotations |
 | `kube.resyncInterval` | duration | ✓ | >= 1m | k8s informer resync |
 | `ui.pageSize.homepageAlerts` | int | ✓ | 1–`maxPerPage` | |
 | `ui.pageSize.monitorListing` | int | ✓ | 1–`maxPerPage` | |
@@ -125,7 +123,7 @@ slack:
 | `slack.bodyMaxChars` | int | ✓ | >= 0; <= `dbBodyMaxChars` | Include response body inline in Slack only when smaller |
 | `slack.summaryChannel` | string | — | resolves to a `slack.channels[].slug` | Optional. Channel for the weekly operational summary (content/cadence design deferred). Omit to disable summary |
 | `slack.channels` | list | ✓ | non-empty | At least one destination |
-| `slack.channels[].slug` | string | ✓ | slug regex; unique across `slack.channels:` | Referenced by `monitors[].slack` and `kube.presets[].slack` |
+| `slack.channels[].slug` | string | ✓ | slug regex; unique across `slack.channels:` | Referenced by `monitors[].slack` and by `slack:` in any `kube.match[].config` block |
 | `slack.channels[].channelId` | string | ✓ | `^[CG][A-Z0-9]{8,}$` | Inline YAML comment recommended for human label. DMs (`D…`) rejected |
 | `slack.channels[].tokenEnv` | string | ✓ | env var name regex; env var set and non-empty at startup | |
 | `slack.userMapping` | map | — | optional | Without it, only raw `<!here>`/`<!channel>`/`<@U…>` markup is accepted in `notify:` |
@@ -145,7 +143,7 @@ through. Currently only SOCKS5 is supported.
 
 ```yaml
 proxies:
-  - slug: corp                              # referenced by monitors[].proxy / kube.presets[].proxy
+  - slug: corp                              # referenced by monitors[].proxy and by `proxy:` in any kube.match[].config block
     protocol: socks5                        # only supported value in v1
     server: proxy.internal.example
     port: 1080                              # optional; defaults to 1080 for socks5
@@ -177,7 +175,7 @@ groups:
     logoUrl: https://example.com/logos/prod.png         # optional
     color: "#ef4444"                                    # optional; falls back to theme.defaultGroupColor
 
-  - slug: kube-discovered                               # REQUIRED — fallback for ingress monitors without config.group
+  - slug: kube-discovered                               # REQUIRED — fallback for kube-discovered monitors whose resolved config doesn't set `group:`
     friendlyName: Kube Discovered
     description: Auto-discovered ingresses
 ```
@@ -185,7 +183,7 @@ groups:
 | Field | Type | Req | Validation | Notes |
 |---|---|---|---|---|
 | `groups` | list | ✓ | non-empty; must include a group with slug `kube-discovered` | |
-| `groups[].slug` | string | ✓ | slug regex; unique across `groups:` | Referenced by `monitors[].group`, `kube.presets[].group`, `<base>/config.group` annotation |
+| `groups[].slug` | string | ✓ | slug regex; unique across `groups:` | Referenced by `monitors[].group` and by `group:` in any `kube.match[].config` block |
 | `groups[].friendlyName` | string | ✓ | non-empty | |
 | `groups[].description` | string | — | | |
 | `groups[].logoUrl` | string | — | valid URL | Optional logo for group cards |
@@ -193,95 +191,259 @@ groups:
 
 **Behavior:**
 - Validator rejects start if no group with slug `kube-discovered` exists.
-- Validator rejects orphan references — every `monitors[].group` and `kube.presets[].group` value must resolve to a declared slug.
+- Validator rejects orphan references — every `monitors[].group` and every `group:` set inside a `kube.match[].config` block must resolve to a declared slug.
 - Group with zero monitors is allowed silently.
 - Display order in the UI follows the array order in `groups:`.
 
 ---
 
-## 4. Kube presets (auto-discovery)
+## 4. Kube auto-discovery (`kube.match` cascade)
+
+Every monitor materialized from a discovered Ingress is the merge of one or more rules in the `kube.match[]` tree. There is no preset registry, no `kube.pause:` block, no `kube.annotationDomain`, and no per-ingress annotations — every monitor field is set somewhere in the tree.
+
+Authoritative design: [ADR-0002 — `kube.match` as a cascading rule tree](./adr/0002-kube-match-tree-cascade.md).
 
 ```yaml
 kube:
-  annotationDomain: monitor.togglecorp.com
   resyncInterval: 30m
-  pause:                                            # optional; hard-pause list (host-based)
-    - host: api.foo.example.com
-      reason: "Maintenance until 2026-06-01"        # optional
-    - host: "*.staging.example.com"                 # glob supported
-  match:                                            # optional; first match wins
-    - when: { namespace: "test-*" }                 # ignore short-lived test namespaces
+  friendlyName: compact                              # compact | plain | dedupe | title (default: compact)
+
+  # The match tree. Every (Ingress, host) pair traverses the entire
+  # tree depth-first in document order; every rule whose `when:`
+  # matches contributes its `config:` to a merge stack.
+  match:
+    # Root rule — `when: {}` matches every (Ingress, host) and is
+    # MANDATORY at the top level. Supplies all required monitor fields
+    # so any leaf-most match still produces a valid monitor.
+    - when: {}
+      config:
+        scheme: https
+        path: /
+        httpMethod: GET
+        acceptedStatusCodes: [200]
+        interval: 5m
+        timeout: 10s
+        retries: 2
+        retryBackoff: 5s
+        followRedirects: false
+        reminderInterval: 3d
+        sslAlertThreshold: 30d
+        sslEscalationThreshold: 7d
+        sslReminderInterval: 3d
+        slack: ops-alerts
+        notify: [ops-team]
+
+    # Kill-switch convention: any Ingress carrying this label is
+    # suppressed; halt the cascade so nothing later un-ignores it.
+    - when:
+        labels:
+          monitor.togglecorp.com/disabled: "true"
       ignore: true
-    - when: { namespace: "prod-*" }
-      preset: internal-api
-    - preset: public-web                            # wildcard fallback (no when:)
-  presets:
-    - slug: internal-api
-      # URL construction
-      scheme: https                                     # https | http (default https)
-      path: /health
+      final: true
 
-      # HTTP check params
-      httpMethod: GET                                   # GET | HEAD | POST | PUT | DELETE
-      acceptedStatusCodes: [200]
-      interval: 5m
-      timeout: 10s
-      retries: 2
-      retryBackoff: 5s
-      followRedirects: false
-
-      # Reminders & SSL
-      reminderInterval: 3d
-      sslAlertThreshold: 30d
-      sslEscalationThreshold: 7d
-      sslReminderInterval: 3d
-
-      # Slack & mentions
-      slack: ops-alerts
-      notify: [alice]                                    # optional
-
-      # Group & metadata
-      group: production-apis                             # optional (falls back to kube-discovered)
-      tags: [internal]                                   # optional
-      dependsOn: [bastion-proxy]                         # optional; must resolve to a static monitor
+    # Narrow refinement by namespace glob.
+    - when: { namespace: "acme-*" }
+      config:
+        group: acme
+        notify: [alice]                              # union with the root's [ops-team]
+      nested:
+        - when: { namespaceRegex: "acme-service-a-eoapi-\\d+" }
+          config:
+            tags: [service-a, eoapi]
+          nested:
+            - when:
+                labels:
+                  app.kubernetes.io/name: minio
+              config:
+                path: /minio/health/live
+                acceptedStatusCodes: [200]          # replace-by-default for this field
+              final: true                            # nothing further (e.g., a later top-level
+                                                     # "global minio" rule) may clobber `path`
 ```
+
+### Rule shape
+
+Each rule is a map with up to five keys:
+
+| Key | Type | Notes |
+|---|---|---|
+| `when` | object | Selector — see vocabulary below. Absent or empty (`{}`) means "match anything reaching this point in the traversal." |
+| `config` | object | Monitor fields contributed to the merge stack when this rule matches. Optional. |
+| `nested` | list[rule] | Child rules, traversed only when this rule matches. Optional. |
+| `ignore` | bool | Rule-level directive. Cascades like a scalar; deepest matching rule wins. When the resolved value is `true`, no monitor is created and a discovery row with `status="kube-ignored"` is recorded instead. |
+| `final` | bool | Rule-level directive. When this rule matches, traversal descends into its own `nested:` subtree, then halts the entire tree walk for this `(Ingress, host)` pair. No later sibling, uncle, or top-level rule contributes. |
+
+`when:`, `config:`, and `nested:` may all be absent on the same rule (e.g., a marker rule that only carries `ignore: true`).
+
+### Selector vocabulary (`when:`)
+
+| Field | Type | Match semantics |
+|---|---|---|
+| `namespace` | string | Glob (`path.Match`). |
+| `namespaceRegex` | string | Go regexp, **auto-anchored** as `^…$`. Use `.*` explicitly for substring. |
+| `host` | string | Glob (`path.Match`) against the Ingress host. |
+| `hostRegex` | string | Go regexp, auto-anchored. |
+| `labels` | map[string]string | Exact key=value pairs on `ingress.metadata.labels`. Multiple keys AND together. |
+
+- Within a single `when:`, all set fields AND together.
+- `labels` matches the Ingress's **own** `metadata.labels` only — not labels on the backing Service / Deployment / Pod.
+- No `name:` selector in v1 — namespace + labels cover realistic cases.
+
+### Evaluation: multi-match accumulate
+
+For each `(Ingress, host)` pair the entire `kube.match[]` tree is walked depth-first in document order. **Every** rule whose `when:` matches contributes its `config:` to a merge stack. The final config for that monitor is the merge of the stack in stack order — root-first → deeper later.
+
+The first top-level rule with `when: {}` (or omitted) is the always-matching baseline that supplies defaults; it is mandatory (see below).
+
+### Merge rules
+
+| Field type | Rule |
+|---|---|
+| Scalars (string, int, bool, Duration) | Deeper / later rules override shallower / earlier. Unset = inherit from the next-shallower rule that set it. |
+| Arrays (`notify`, `tags`, `dependsOn`, …) | **Union by default**, deduplicated, shallow-first insertion order. |
+| Arrays tagged `!override` | The `!override` YAML custom tag swaps that single occurrence from union to replace; ancestors' values for that field are discarded. `!override []` clears an inherited list. |
+| `acceptedStatusCodes` | **Replace by default** — unioning HTTP status codes is almost always wrong. No `!override` needed. |
+
+```yaml
+config:
+  notify: !override [uday, ankit]   # ignores anything ancestors set for `notify`
+```
+
+There is no `!reset` tag (covered by `!override []` / natural empty scalars) and no `extends:` — inheritance is tree-only.
+
+### Root rule required, with all required fields
+
+A rule with `when: {}` at the top level is **mandatory** and must carry every required monitor field (`path`, `httpMethod`, `acceptedStatusCodes`, `interval`, `timeout`, `retries`, `retryBackoff`, `followRedirects`, `reminderInterval`, `sslAlertThreshold`, `sslEscalationThreshold`, `sslReminderInterval`, `slack`). Children override selectively but don't have to set anything. Missing root or missing required fields at the root is a validation error at startup.
+
+The root always matches, so every `(Ingress, host)` materializes with at least the root config. Operators wanting a deliberate-decision signal can write the root as `ignore: true` and explicitly un-ignore vetted namespaces — that stance is available, not forced.
+
+### `final: true` — halt the cascade
+
+A matching rule with `final: true` descends into its own `nested:` subtree (so further refinement within the subtree still applies), then halts the entire tree walk for this `(Ingress, host)` pair.
+
+`final: true` requires at least one selector field in `when:`. `final: true` with empty `when:` would halt the cascade for every Ingress on first occurrence — almost certainly a typo. Validation error.
+
+### `ignore: true` — suppress materialization
+
+`ignore:` lives at the rule level (sibling of `when:` / `config:` / `nested:` / `final:`), not inside `config:`. It cascades like a scalar (deepest matching rule wins), so a child can flip `ignore: false` to un-ignore a subset:
+
+```yaml
+- when: { namespace: "test-*" }
+  ignore: true
+  nested:
+    - when: { namespace: "test-critical-*" }
+      ignore: false
+```
+
+A resolved `ignore: true` means no monitor is created; a `status="kube-ignored"` discovery row is recorded so the operator sees the rule fired and can filter on `/discovery`.
+
+### `kube.*` field reference
 
 | Field | Type | Req | Validation | Notes |
 |---|---|---|---|---|
-| `kube.pause` | list | — | optional | Hard-pause kube-discovered monitors by host; matched monitors get `kube-paused` status |
-| `kube.pause[].host` | string | ✓ | non-empty; may include `*` glob | Matched against `ingress.spec.rules[].host` |
-| `kube.pause[].reason` | string | — | | Surfaces in the auto-discovery UI |
-| `kube.match` | list | — | optional | Conditional preset/ignore rules; evaluated in order, first match wins. A rule with no `when:` is the wildcard fallback (must be last). |
-| `kube.match[].when.namespace` | string | — | glob (path.Match) | Both `namespace`/`host` are optional; an empty `when` (no namespace, no host) marks the rule as the wildcard fallback |
-| `kube.match[].when.host` | string | — | glob (path.Match) | AND-ed with `namespace` when both set |
-| `kube.match[].preset` | string | — | resolves to a `kube.presets[].slug` | **Exactly one** of `preset` or `ignore` must be set per rule |
-| `kube.match[].ignore` | bool | — | default `false` | When `true`, the ingress is skipped entirely (no monitor); a `kube-ignored` snapshot row still lands on `/discovery` so the rule remains visible/filterable |
-| `kube.presets` | list | — | optional (no kube auto-discovery if absent) | Each preset materializes when an ingress carries `<base>/kube.preset: <slug>` |
-| `kube.presets[].slug` | string | ✓ | slug regex; unique across `kube.presets:` | |
-| `kube.presets[].scheme` | enum | ✓ | `https` or `http` | URL scheme for built URL |
-| `kube.presets[].path` | string | ✓ | starts with `/` | Appended to ingress host |
-| `kube.presets[].httpMethod` | enum | ✓ | one of: `GET`, `HEAD`, `POST`, `PUT`, `DELETE` | |
-| `kube.presets[].acceptedStatusCodes` | list[int] | ✓ | non-empty; each 100–599 | **Replaced (not merged)** on override |
-| `kube.presets[].interval` | duration | ✓ | >= 30s | |
-| `kube.presets[].timeout` | duration | ✓ | < interval | |
-| `kube.presets[].retries` | int | ✓ | >= 0 | |
-| `kube.presets[].retryBackoff` | duration | ✓ | >= 1s | |
-| `kube.presets[].followRedirects` | bool | ✓ | | |
-| `kube.presets[].tlsInsecureSkipVerify` | bool | — | default `false` | Same semantics as `monitors[].tlsInsecureSkipVerify`. |
-| `kube.presets[].proxy` | string | — | resolves to a `proxies[].slug` | Same semantics as `monitors[].proxy`. |
-| `kube.presets[].reminderInterval` | duration | ✓ | >= 1h | |
-| `kube.presets[].sslAlertThreshold` | duration | ✓ | > `sslEscalationThreshold` | |
-| `kube.presets[].sslEscalationThreshold` | duration | ✓ | > 0 | |
-| `kube.presets[].sslReminderInterval` | duration | ✓ | >= 1h | |
-| `kube.presets[].slack` | string | ✓ | resolves to a `slack.channels[].slug` | |
-| `kube.presets[].notify` | list[string] | — | each entry: a `slack.userMapping` slug OR `<...>` raw markup | Merged (union) on override |
-| `kube.presets[].group` | string | — | resolves to a `groups[].slug` | If absent, falls back to `kube-discovered` |
-| `kube.presets[].tags` | list[string] | — | each: slug regex | Merged (union) on override; `kube` always auto-added |
-| `kube.presets[].dependsOn` | list[string] | — | each: resolves to a **static** `monitors[].slug` (kube-discovered cannot be a parent) | Merged (union); validator detects cycles |
+| `kube.resyncInterval` | duration | ✓ | >= 1m | k8s informer resync (also referenced in §1). |
+| `kube.friendlyName` | enum | — | one of: `compact`, `plain`, `dedupe`, `title` (default `compact`) | Auto-generated display name style for kube-discovered monitors. |
+| `kube.match` | list | ✓ | non-empty; first top-level rule must have empty (`{}` or omitted) `when:` | The cascading rule tree. |
+| `kube.match[].when` | object | — | see selector table | Absent or `{}` means "match anything." |
+| `kube.match[].when.namespace` | string | — | valid glob | Mutually exclusive with `namespaceRegex` in the same `when:`. |
+| `kube.match[].when.namespaceRegex` | string | — | valid Go regexp; auto-anchored `^…$` | Mutually exclusive with `namespace`. |
+| `kube.match[].when.host` | string | — | valid glob | Mutually exclusive with `hostRegex`. |
+| `kube.match[].when.hostRegex` | string | — | valid Go regexp; auto-anchored | Mutually exclusive with `host`. |
+| `kube.match[].when.labels` | map[string]string | — | valid k8s label key syntax for each key | Matched against `ingress.metadata.labels`; all keys AND. |
+| `kube.match[].config` | object | — | see config-field table below | Optional contribution to the merge stack. |
+| `kube.match[].nested` | list[rule] | — | each entry follows the same rule shape | Recursive. |
+| `kube.match[].ignore` | bool | — | default unset | Cascades; deepest matching rule wins. Resolved `true` → no monitor, `kube-ignored` discovery row. |
+| `kube.match[].final` | bool | — | requires non-empty `when:` | Halts the tree walk after descending into this rule's `nested:`. |
 
-**Cross-field validation:**
-- `retries × (timeout + retryBackoff) < interval` (per Q10c). Refuse on violation.
-- `acceptedStatusCodes` must be non-empty (empty would mean "accept nothing" → useless).
+### `kube.match[].config` fields
+
+All monitor fields below are settable inside any `config:` block. The root must set all required fields; descendants override selectively.
+
+| Field | Type | Req at root | Validation | Notes |
+|---|---|---|---|---|
+| `scheme` | enum | — (defaults to `https` at materialization) | `https` or `http` | URL scheme for the built URL. |
+| `path` | string | ✓ | starts with `/` | Appended to the Ingress host. |
+| `httpMethod` | enum | ✓ | one of `GET`, `HEAD`, `POST`, `PUT`, `DELETE` | |
+| `acceptedStatusCodes` | list[int] | ✓ | non-empty; each 100–599 | **Replace by default** across the cascade (no `!override` needed). |
+| `interval` | duration | ✓ | >= 30s | |
+| `timeout` | duration | ✓ | < `interval` | |
+| `retries` | int | ✓ | >= 0 | |
+| `retryBackoff` | duration | ✓ | >= 1s | |
+| `followRedirects` | bool | ✓ | | |
+| `tlsInsecureSkipVerify` | bool | — | default `false` | Same semantics as `monitors[].tlsInsecureSkipVerify`. |
+| `proxy` | string | — | resolves to a `proxies[].slug` | Same semantics as `monitors[].proxy`. |
+| `reminderInterval` | duration | ✓ | >= 1h | |
+| `sslAlertThreshold` | duration | ✓ | > `sslEscalationThreshold` | |
+| `sslEscalationThreshold` | duration | ✓ | > 0 | |
+| `sslReminderInterval` | duration | ✓ | >= 1h | |
+| `slack` | string | ✓ | resolves to a `slack.channels[].slug` | |
+| `notify` | list[string] | — | each entry: a `slack.userMapping` slug OR `<...>` raw markup | Union across cascade by default; tag with `!override` to replace. |
+| `group` | string | — | resolves to a `groups[].slug` | If unset across the entire cascade, falls back to `kube-discovered`. |
+| `tags` | list[string] | — | each: slug regex | Union across cascade by default; `kube` is always auto-added at materialization. |
+| `dependsOn` | list[string] | — | each: resolves to a **static** `monitors[].slug` (kube-discovered cannot be a parent) | Union across cascade; validator detects cycles. |
+
+### Validation
+
+**Structural errors** (refuse to start):
+- Glob/regex conflict in the same `when:` (`namespace` + `namespaceRegex`, `host` + `hostRegex`).
+- Glob parse failure, regex parse failure, invalid label-key syntax.
+- `final: true` with empty `when:`.
+- Missing root rule (no top-level rule with empty `when:`).
+- Missing required fields at the root.
+- Orphan slug references inside any `config:` block (`slack`, `group`, `proxy`, `dependsOn`).
+
+**Structural warnings** (surface in UI invalid-config section, do not block startup):
+- Empty `when:` deeper than root (redundant — equivalent to lifting `config:` into the parent).
+- `ignore: true` at a leaf rule with a non-empty `config:` (dead config unless a child un-ignores).
+
+**Resolved-value errors at materialization time** (per-monitor, recorded as `status="kube-invalid"` discovery rows pointing at the rule chain — they don't block startup because they depend on which Ingresses actually exist):
+- `interval >= timeout`.
+- `sslAlertThreshold` / `sslEscalationThreshold` invariants.
+- `retries × (timeout + retryBackoff) >= interval`.
+- A required field that the root did set was overridden to an invalid value deeper in the tree.
+
+**Reachability is not validated.** Under multi-match accumulate, "unreachable rule" only means "no Ingress in the universe matches" — which is dynamic. The `toggle-monitor explain` CLI is the spot-check tool; rule chains in discovery surface rules that never fire in practice.
+
+### Identity: monitor slug derives from the Ingress only
+
+Monitor slug is:
+
+```
+<namespace>__<ingress-name>__<host>
+```
+
+Double-underscore separator avoids collision with single-dash content in any of the three parts. The slug carries no rule-derived component: the monitored thing is an `(Ingress, host)` pair and already has stable k8s identity. Pulling slug from config would mean a config edit can rename a monitor (breaking history, bookmarks, `dependsOn` references).
+
+Friendly display name remains controlled by `kube.friendlyName:` (compact / plain / dedupe / title styles).
+
+### Debug surface
+
+**Discovery `reason` field.** Carries the compact rule chain for each materialized (or ignored) monitor, e.g.:
+
+```
+match[1] (ns=acme-*) → [2] (ns=acme-service-a-*)
+  → [0] (nsRegex=acme-service-a-eoapi-\d+)
+  → [1] (labels.app.kubernetes.io/name=minio) [final]
+```
+
+Operators find the rules in the YAML and reason from there.
+
+**/discovery detail view.** Shows the rule chain alongside the full resolved config (the merged config that drives the monitor) so "why is `path` `/minio/health/live`?" answers in two glances.
+
+**No per-field provenance in v1.** Deferred until a real debugging session demands it; the rule chain gets 80% of the way for free.
+
+**CLI `toggle-monitor explain` subcommand.** Resolves the rule chain + final config either for a live cluster Ingress or for a hypothetical `(namespace, labels, host)` tuple:
+
+```
+toggle-monitor explain --ingress acme-service-a-eoapi-3/web
+toggle-monitor explain --ingress acme-service-a-eoapi-3/web --host api.example.com
+toggle-monitor explain \
+  --namespace acme-service-a-eoapi-3 \
+  --labels app.kubernetes.io/name=minio \
+  --host api.example.com
+```
+
+Output is human-readable YAML by default. `--from-file`, `--json`, and per-field provenance are deferred.
 
 ---
 
