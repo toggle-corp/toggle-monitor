@@ -453,6 +453,28 @@ URL changes:
   ADR-0002 — declaring a section that matches zero monitors is not
   an error.
 
+### Addendum (2026-05-24) — tag syntax broadened to allow `/`
+
+Tags are validated by a dedicated `slug.ValidateTag` pattern, separate
+from `slug.Validate`. A tag is one or more slug segments joined by
+`/`: `^[a-z][a-z0-9]*(-[a-z0-9]+)*(/[a-z][a-z0-9]*(-[a-z0-9]+)*)*$`.
+This permits operator-readable namespaced labels such as
+`acme/app-a`, `betaco/data-server`, `gamma/web-app` without
+loosening any slug-shaped identifier elsewhere (URLs, store keys,
+kube-discovered identity stay strict).
+
+The `/` is opaque to matching. Predicate-tree leaves continue to
+match by exact set membership against the monitor's tag set —
+`{ tags: [acme] }` does **not** match a monitor tagged
+`acme/app-a`. Operators encode org-level rollups by stamping
+both tags (typically via the kube cascade: parent `match` stamps
+`acme`, nested `match` stamps `acme/app-a`, the union lands on
+the monitor as `{acme, acme/app-a}`).
+
+Call sites updated: `monitor.tags` validation, `statusPages[].sections[].match.tags`
+validation, and `kube.match[].config.tags` validation now call
+`slug.ValidateTag`. Tag length cap is shared with `slug.MaxLen`.
+
 ## References
 
 - [ADR-0002](0002-kube-match-tree-cascade.md) §"Out of scope" — work

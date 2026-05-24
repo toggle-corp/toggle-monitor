@@ -76,6 +76,57 @@ func bytes(c byte, n int) []byte {
 	return b
 }
 
+// TestValidateTag_rules pins the tag pattern: one or more slug-shaped
+// segments joined by `/`. Tags are matched as opaque strings against
+// the StatusPage section predicate tree, so `/` carries no hierarchy
+// semantics — it is purely an operator-readable namespacing convention.
+// Slug uses (URLs, store keys, kube-discovered identity) remain on the
+// stricter slug regex via Validate.
+func TestValidateTag_rules(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		tag   string
+		valid bool
+	}{
+		// Accepted forms — a bare slug is still a valid tag.
+		{"bare slug", "acme", true},
+		{"slug with hyphen", "rc-select", true},
+		{"two segments", "acme/app-a", true},
+		{"two segments with hyphens", "betaco/data-server", true},
+		{"three segments", "acme/service-a/api", true},
+		{"digit in segment", "acme/eoapi3", true},
+
+		// Rejected forms — segment-level rules carry over.
+		{"empty", "", false},
+		{"leading slash", "/foo", false},
+		{"trailing slash", "foo/", false},
+		{"consecutive slashes", "foo//bar", false},
+		{"uppercase segment", "Foo/bar", false},
+		{"underscore in segment", "foo_bar/baz", false},
+		{"segment starts with digit", "1foo/bar", false},
+		{"segment ends with hyphen", "foo-/bar", false},
+		{"segment is single hyphen", "foo/-/bar", false},
+		{"dot in segment", "foo.bar/baz", false},
+		{"space in tag", "foo bar/baz", false},
+		{"over max length", "a/" + string(bytes('b', slug.MaxLen)), false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := slug.ValidateTag(tc.tag)
+			if tc.valid && err != nil {
+				t.Errorf("ValidateTag(%q) = %v; want nil", tc.tag, err)
+			}
+			if !tc.valid && err == nil {
+				t.Errorf("ValidateTag(%q) = nil; want non-nil error", tc.tag)
+			}
+		})
+	}
+}
+
 func TestSanitizeKubeDiscovered_happyPath(t *testing.T) {
 	got, err := slug.SanitizeKubeDiscovered("default", "foo", "foo.example.com")
 	if err != nil {

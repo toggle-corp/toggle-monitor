@@ -16,6 +16,13 @@ const MaxLen = 255
 // no leading or trailing hyphen, no consecutive hyphens.
 var pattern = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
 
+// tagPattern is the tag regex: one or more slug-shaped segments joined
+// by `/`. The slash is an opaque operator-readable namespacing device
+// (e.g. `acme/app-a`); the matcher treats tags as exact strings,
+// no prefix/hierarchy semantics. Slug uses (URLs, store keys,
+// kube-discovered identity) stay on the stricter pattern above.
+var tagPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*(/[a-z][a-z0-9]*(-[a-z0-9]+)*)*$`)
+
 // Validate reports whether s satisfies the toggle-monitor slug rules.
 // Returns nil if valid, otherwise an error explaining the violation.
 func Validate(s string) error {
@@ -27,6 +34,21 @@ func Validate(s string) error {
 	}
 	if !pattern.MatchString(s) {
 		return fmt.Errorf("slug %q must match %s", s, pattern.String())
+	}
+	return nil
+}
+
+// ValidateTag reports whether s is a valid tag — one or more slug
+// segments joined by `/`. Tag length cap matches MaxLen.
+func ValidateTag(s string) error {
+	if s == "" {
+		return errors.New("tag must not be empty")
+	}
+	if len(s) > MaxLen {
+		return fmt.Errorf("tag %q exceeds max length of %d characters", s, MaxLen)
+	}
+	if !tagPattern.MatchString(s) {
+		return fmt.Errorf("tag %q must match %s", s, tagPattern.String())
 	}
 	return nil
 }

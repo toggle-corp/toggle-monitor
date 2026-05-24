@@ -542,7 +542,7 @@ type Monitor struct {
 	Slack                 string   `yaml:"slack"`               // channel slug
 	Notify                []string `yaml:"notify,omitempty"`    // raw <...> Slack markup or userMapping slug
 	DependsOn             []string `yaml:"dependsOn,omitempty"` // upstream static-monitor slugs that gate this one
-	Tags                  []string `yaml:"tags,omitempty"`      // free-form labels; consumed by status[].match[].tags selectors
+	Tags                  []string `yaml:"tags,omitempty"`      // slug-segmented labels (a/b allowed); consumed by statusPages[].sections[].match tag leaves
 
 	// SSL thresholds — required when URL is HTTPS, allowed but
 	// ignored for HTTP URLs (so anchored defaults can be shared).
@@ -757,7 +757,7 @@ func (c *checker) validate(cfg *Config) {
 		}
 		seenMonitors[m.Slug] = struct{}{}
 		for j, tag := range m.Tags {
-			if err := slug.Validate(tag); err != nil {
+			if err := slug.ValidateTag(tag); err != nil {
 				c.errf(append(base, "tags", j), "%v", err)
 			}
 		}
@@ -933,7 +933,7 @@ func (c *checker) validateSectionMatch(m *SectionMatch, base []any) {
 	// Leaf.
 	if len(m.Tags) > 0 {
 		for i, tag := range m.Tags {
-			if err := slug.Validate(tag); err != nil {
+			if err := slug.ValidateTag(tag); err != nil {
 				c.errf(append(append([]any{}, base...), "tags", i), "%v", err)
 			}
 		}
@@ -1395,7 +1395,7 @@ func (c *checker) validateKubeConfig(
 	}
 	if k.IsSet("tags") {
 		for i, tag := range k.Tags.Values {
-			if err := slug.Validate(tag); err != nil {
+			if err := slug.ValidateTag(tag); err != nil {
 				c.errf(append(append([]any{}, base...), "tags", i),
 					"%v", err)
 			}
