@@ -36,6 +36,133 @@ httpClient:
 #   interval: 1m
 #   failOnStalledWorker: true
 
+# Kube auto-discovery — commented out by default; the local docker-
+# compose stack doesn't run a k8s informer. Uncomment and run the
+# binary against a kubeconfig (or `kubectl exec` inside a real
+# cluster) to exercise the cascade. Schema rules:
+#
+#   * `match` is a tree. For each (Ingress, host) every rule whose
+#     `when:` matches contributes its `config:` to a merge stack;
+#     deeper / later wins for scalars, arrays union by default,
+#     `acceptedStatusCodes` replaces by default.
+#   * The first rule MUST have an empty `when:` and carry every
+#     required-at-root field — it is the merge floor for any leaf-
+#     most match.
+#   * `final: true` on a matching rule descends into its own `nested:`
+#     subtree and then halts the rest of the tree walk. Use it to
+#     pin a project-specific override against a later global default.
+#   * `ignore: true` suppresses materialization (a `kube-ignored` row
+#     is still recorded on /discovery). A child can flip `ignore:
+#     false` to un-ignore a specific subset.
+#   * Selectors AND inside a `when:` (set both `namespace:` and
+#     `labels:` to require both). Glob fields (`namespace`/`host`)
+#     are path.Match; regex fields (`namespaceRegex`/`hostRegex`) are
+#     Go regexp auto-anchored ^...$. Glob+regex on the same dimension
+#     is a validation error.
+#   * `!override` on an array swaps union for replace at that point in
+#     the cascade. `!override []` clears the inherited list.
+#
+# kube:
+#   resyncInterval: 30m
+#   friendlyName: compact          # plain | compact | dedupe | title
+#
+#   match:
+#     # ── Root (REQUIRED) ────────────────────────────────────────
+#     # Empty `when:` matches every (Ingress, host); carries every
+#     # required monitor field.
+#     - when: {}
+#       config:
+#         scheme: https
+#         path: /
+#         httpMethod: GET
+#         acceptedStatusCodes: [200]
+#         interval: 5m
+#         timeout: 10s
+#         retries: 2
+#         retryBackoff: 5s
+#         followRedirects: false
+#         reminderInterval: 3d
+#         sslAlertThreshold: 30d
+#         sslEscalationThreshold: 7d
+#         sslReminderInterval: 3d
+#         slack: ops-alerts
+#         notify: [alice]
+#
+#     # ── Cluster-wide kill switch ───────────────────────────────
+#     # Any Ingress labeled `monitor.togglecorp.com/disabled=true`
+#     # is suppressed. `final: true` prevents a later rule (e.g. an
+#     # app-specific override) from un-ignoring it.
+#     - when:
+#         labels:
+#           monitor.togglecorp.com/disabled: "true"
+#       ignore: true
+#       final: true
+#
+#     # ── Skip ephemeral test namespaces ─────────────────────────
+#     # `ignore:` cascades like a scalar — the nested rule flips it
+#     # back to materialise critical test namespaces.
+#     - when: { namespace: "test-*" }
+#       ignore: true
+#       nested:
+#         - when: { namespace: "test-critical-*" }
+#           ignore: false
+#
+#     # ── ACME namespace family (tag accumulation) ───────────────
+#     # Tags union down the tree: acme → acme+service-a →
+#     # acme+service-a+eoapi. Status-page sections (above) bind
+#     # on these tags via tag-AND predicates.
+#     - when: { namespace: "acme-*" }
+#       config:
+#         tags: [acme]
+#         notify: [alice]                # unions with root [alice] (dedup)
+#       nested:
+#         - when: { namespaceRegex: "acme-service-a-eoapi-\\d+" }
+#           config:
+#             tags: [service-a, eoapi]   # → [acme, service-a, eoapi]
+#           nested:
+#             # Pin the minio health-check path for ingresses in this
+#             # subtree. `final: true` blocks the global minio rule
+#             # below from clobbering it.
+#             - when:
+#                 labels:
+#                   app.kubernetes.io/name: minio
+#               config:
+#                 path: /minio/health/live
+#               final: true
+#
+#     # ── BETACO: explicit notify replacement on prod hosts ────────
+#     - when: { namespace: "betaco-*" }
+#       config:
+#         tags: [betaco, internal]
+#       nested:
+#         - when: { hostRegex: ".*\\.api\\.example\\.com" }
+#           config:
+#             # !override replaces the inherited notify list instead
+#             # of unioning. Use sparingly — union is usually right.
+#             notify: !override ["<!here>"]
+#
+#     # ── Global minio convention (any cluster-wide minio app) ───
+#     # The project-specific rule above used `final: true` to opt
+#     # out for its subtree.
+#     - when:
+#         labels:
+#           app.kubernetes.io/name: minio
+#       config:
+#         path: /minio/health/live
+#         # acceptedStatusCodes is replace-by-default (no !override
+#         # needed) — append-by-union is almost always wrong for
+#         # HTTP status codes.
+#         acceptedStatusCodes: [200]
+#
+#     # ── Dev hosts: relax accepted codes + timing ───────────────
+#     - when: { host: "*.example.com" }
+#       config:
+#         acceptedStatusCodes: [200, 301, 302]
+#         timeout: 15s
+#         retries: 3
+#         retryBackoff: 10s
+#         tags: [dev, public]
+
 # Replace channelId + tokenEnv with real values to send actual Slack
 # messages. Default token is a non-working placeholder so the binary
 # starts (the auth.test failure becomes a warning, not a fatal).
