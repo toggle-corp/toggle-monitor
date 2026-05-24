@@ -342,12 +342,19 @@ func TestStatusIndex_emptyWhenNoConfig(t *testing.T) {
 
 func TestStatusIndex_listsConfiguredPages(t *testing.T) {
 	srv, _ := newServer(t)
+	// FriendlyNames deliberately chosen to defeat both ascending and
+	// descending alphabetical sorts — Mango/Apple/Zebra in config
+	// order is neither sort. If a future change reintroduces an
+	// alphabetical sort the position assertions below will fail.
 	srv.SetStatusConfigs([]*templates.StatusConfig{
-		{Slug: "public", FriendlyName: "Public", Sections: []templates.StatusConfigSection{
-			{Title: "Public", Match: templates.StatusMatch{HostRegex: regexp.MustCompile(`.*\.example\.com`)}},
+		{Slug: "mango", FriendlyName: "Mango", Sections: []templates.StatusConfigSection{
+			{Title: "Mango", Match: templates.StatusMatch{HostRegex: regexp.MustCompile(`.*\.example\.com`)}},
 		}},
-		{Slug: "internal", FriendlyName: "Internal", Sections: []templates.StatusConfigSection{
-			{Title: "Internal", Match: templates.StatusMatch{Tags: []string{"internal"}}},
+		{Slug: "apple", FriendlyName: "Apple", Sections: []templates.StatusConfigSection{
+			{Title: "Apple", Match: templates.StatusMatch{Tags: []string{"apple"}}},
+		}},
+		{Slug: "zebra", FriendlyName: "Zebra", Sections: []templates.StatusConfigSection{
+			{Title: "Zebra", Match: templates.StatusMatch{Tags: []string{"zebra"}}},
 		}},
 	})
 	resp, body := get(t, srv.Routes(), "/status")
@@ -355,16 +362,23 @@ func TestStatusIndex_listsConfiguredPages(t *testing.T) {
 		t.Fatalf("/status status: got %d, want 200", resp.StatusCode)
 	}
 	for _, want := range []string{
-		`href="/status/public"`,
-		`href="/status/internal"`,
-		">public<",
-		">internal<",
-		"Public",
-		"Internal",
+		`href="/status/mango"`,
+		`href="/status/apple"`,
+		`href="/status/zebra"`,
+		"Mango",
+		"Apple",
+		"Zebra",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("index body missing %q; first 600:\n%s", want, firstN(body, 600))
 		}
+	}
+	// Config order: Mango before Apple before Zebra.
+	iMango := strings.Index(body, `href="/status/mango"`)
+	iApple := strings.Index(body, `href="/status/apple"`)
+	iZebra := strings.Index(body, `href="/status/zebra"`)
+	if !(iMango < iApple && iApple < iZebra) {
+		t.Errorf("status pages not in config order: mango=%d apple=%d zebra=%d", iMango, iApple, iZebra)
 	}
 }
 

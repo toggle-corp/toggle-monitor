@@ -219,7 +219,8 @@ monitors:
 # ── Status pages ──────────────────────────────────────────────────────────────
 # StatusPage is the sole collection entity since ADR-0003. Each entry
 # is served at /status/<slug>; /status itself renders an index of all
-# configured pages (alphabetical by friendlyName). Membership is
+# configured pages (in the order they appear below — operators control
+# display order by ordering the YAML). Membership is
 # tag-driven: each section has a single predicate node — a leaf
 # (`tags:` AND-internally and/or `hostRegex:`) or a branch (`any:` /
 # `all:` recursive composition). A monitor can land on many pages and

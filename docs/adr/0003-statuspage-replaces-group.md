@@ -174,8 +174,8 @@ accounts for them; operators triage orphans via `/monitors`.
 
 **Routes.**
 
-- `GET /status` — index of all configured pages, alphabetical by
-  `friendlyName`.
+- `GET /status` — index of all configured pages, in config-file
+  order (operators control the surface by ordering the YAML).
 - `GET /status/<slug>` — page detail. Renders inside the standard
   operator nav with theme toggle (not the bare layout the current
   template uses). The deliberate stripping in
@@ -188,8 +188,9 @@ accounts for them; operators triage orphans via `/monitors`.
 
 **Dashboard `/` tiles.**
 
-- One tile per configured status page, in **config order** (not
-  alphabetical — operators control the surface by ordering the YAML).
+- One tile per configured status page, in **config order** (same
+  rule as `/status` — operators control the surface by ordering the
+  YAML).
 - Tile click target: `/status/<slug>`.
 - Counts shown match today's group tile: Total / Up / Down / Paused /
   SSL-expiring / SSL-skipped.
@@ -302,8 +303,8 @@ monitors" badge surfaces this at runtime.
   from the section's monitor set with the same 3-state rule.
 - **Section / page ordering by anything other than config order.**
   Operators control the surface by writing YAML in display order.
-- **Page ordering on `/`.** Same — config order. `/status` index uses
-  alphabetical for the directory role.
+- **Page ordering on `/` or `/status`.** Config order, full stop.
+  Operators control display order by editing the YAML.
 - **Migration tool.** Greenfield; hard break. Loud error message at
   config load is the migration UX.
 - **`explain --monitor <slug>`** sub-mode tracing predicate-tree
@@ -355,8 +356,7 @@ monitors" badge surfaces this at runtime.
     `filter.SectionIndex` for `?page=…&section=<n>`.
   - Update `handleStatusBySlug` to use the new shape and render
     with `navWrap` (operator nav + theme toggle).
-  - Update `handleStatusIndex` to list every page (alphabetical by
-    friendlyName).
+  - Update `handleStatusIndex` to list every page in config order.
   - Update `handleHomepage` to tile per status page (in config
     order) instead of per group.
   - Update `handleMonitorDetail` to compute "appears on" backlinks

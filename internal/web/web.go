@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net/http"
 	"path"
-	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -391,8 +390,9 @@ func (s *Server) issueCount(ctx context.Context) int {
 }
 
 // handleStatusIndex renders /status — a directory tile per
-// configured status page, alphabetical by FriendlyName, each carrying
-// the page's at-a-glance rollup.
+// configured status page, in config-file order (operators control the
+// surface by ordering the YAML), each carrying the page's at-a-glance
+// rollup.
 func (s *Server) handleStatusIndex(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var entries []templates.StatusPageStats
@@ -403,9 +403,6 @@ func (s *Server) handleStatusIndex(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		entries = computeStatusPageStats(s.statusConfigs, monitors)
-		sort.SliceStable(entries, func(i, j int) bool {
-			return strings.ToLower(entries[i].FriendlyName) < strings.ToLower(entries[j].FriendlyName)
-		})
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = templates.StatusIndexPage(entries).Render(ctx, w)

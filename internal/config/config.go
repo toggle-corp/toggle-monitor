@@ -407,7 +407,8 @@ type HTTPClient struct {
 
 // StatusPage is one collection-view entity. Each entry in statusPages
 // gets its own /status/<slug> URL; /status itself lists every
-// configured page alphabetically by FriendlyName. Slug is required and
+// configured page in the order they appear in this slice (operators
+// control the surface by ordering the YAML). Slug is required and
 // must be unique across the list.
 //
 // Membership is tag-driven: each Section's Match predicate evaluates
