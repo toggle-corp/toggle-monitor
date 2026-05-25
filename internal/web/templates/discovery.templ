@@ -380,56 +380,67 @@ templ cascadeResolvedWouldHaveBeen(resolved *config.KubeConfig) {
 	}
 }
 
-// resolvedRows is the shared field listing used by both the
-// materialized and would-have-been resolved cards. Ordering follows
-// docs/config-schema.md so operators see fields in the same order
-// they'd write them in YAML. Each row reuses the existing kv-shaped
-// markup so the styling matches the monitor detail page.
+// resolvedRows mirrors the layout + helpers used by configDialog on
+// the monitor detail page so the Resolved card and the "Show config"
+// dialog read identically. Each scalar runs through the same helper
+// (humanInterval, boolYesNo) the monitor detail page uses; HTTP
+// codes go through @kvHTTPCodes for the colored chip treatment;
+// tags go through @kvTags. The invalidField argument is the YAML
+// key (e.g. "interval") of the field that failed checkResolved —
+// rows whose backing key matches are wrapped in a rose-tinted
+// variant so the operator's eye lands on the failing field.
 templ resolvedRows(r *config.KubeConfig, invalidField string) {
-	@resolvedRow("scheme", r.Scheme, invalidField)
-	@resolvedRow("path", r.Path, invalidField)
-	@resolvedRow("httpMethod", r.HTTPMethod, invalidField)
-	@resolvedRow("acceptedStatusCodes", FormatTraceList(intsToTraceList(r.AcceptedStatusCodes)), invalidField)
-	@resolvedRow("interval", r.Interval.String(), invalidField)
-	@resolvedRow("timeout", r.Timeout.String(), invalidField)
-	@resolvedRow("retries", intToString(r.Retries), invalidField)
-	@resolvedRow("retryBackoff", r.RetryBackoff.String(), invalidField)
-	@resolvedRow("followRedirects", boolYesNo(r.FollowRedirects), invalidField)
-	@resolvedRow("tlsInsecureSkipVerify", boolYesNo(r.TLSInsecureSkipVerify), invalidField)
+	@resolvedKV("Scheme", r.Scheme, "scheme", invalidField)
+	@resolvedKV("Path", r.Path, "path", invalidField)
+	@resolvedKV("HTTP method", r.HTTPMethod, "httpMethod", invalidField)
+	if "acceptedStatusCodes" == invalidField {
+		@resolvedKV("Accepted status codes", FormatTraceList(intsToTraceList(r.AcceptedStatusCodes)), "acceptedStatusCodes", invalidField)
+	} else if len(r.AcceptedStatusCodes) > 0 {
+		@kvHTTPCodes("Accepted status codes", r.AcceptedStatusCodes)
+	}
+	@resolvedKV("Interval", humanInterval(r.Interval.AsDuration()), "interval", invalidField)
+	@resolvedKV("Timeout", humanInterval(r.Timeout.AsDuration()), "timeout", invalidField)
+	@resolvedKV("Retries", intToString(r.Retries), "retries", invalidField)
+	@resolvedKV("Retry backoff", humanInterval(r.RetryBackoff.AsDuration()), "retryBackoff", invalidField)
+	@resolvedKV("Follow redirects", boolYesNo(r.FollowRedirects), "followRedirects", invalidField)
+	@resolvedKV("TLS insecure skip verify", boolYesNo(r.TLSInsecureSkipVerify), "tlsInsecureSkipVerify", invalidField)
 	if r.Proxy != "" {
-		@resolvedRow("proxy", r.Proxy, invalidField)
+		@resolvedKV("Proxy", r.Proxy, "proxy", invalidField)
 	}
-	@resolvedRow("reminderInterval", r.ReminderInterval.String(), invalidField)
-	@resolvedRow("sslAlertThreshold", r.SSLAlertThreshold.String(), invalidField)
-	@resolvedRow("sslEscalationThreshold", r.SSLEscalationThreshold.String(), invalidField)
-	@resolvedRow("sslReminderInterval", r.SSLReminderInterval.String(), invalidField)
-	@resolvedRow("slack", r.Slack, invalidField)
+	@resolvedKV("Reminder interval", humanInterval(r.ReminderInterval.AsDuration()), "reminderInterval", invalidField)
+	if r.Scheme == "" || r.Scheme == "https" {
+		@resolvedKV("SSL alert threshold", humanInterval(r.SSLAlertThreshold.AsDuration()), "sslAlertThreshold", invalidField)
+		@resolvedKV("SSL escalation threshold", humanInterval(r.SSLEscalationThreshold.AsDuration()), "sslEscalationThreshold", invalidField)
+		@resolvedKV("SSL reminder interval", humanInterval(r.SSLReminderInterval.AsDuration()), "sslReminderInterval", invalidField)
+	}
+	@resolvedKV("Slack channel", r.Slack, "slack", invalidField)
 	if len(r.Notify.Values) > 0 {
-		@resolvedRow("notify", FormatTraceList(r.Notify.Values), invalidField)
+		@resolvedKV("Notify", FormatTraceList(r.Notify.Values), "notify", invalidField)
 	}
-	if len(r.Tags.Values) > 0 {
-		@resolvedRow("tags", FormatTraceList(r.Tags.Values), invalidField)
+	if "tags" == invalidField {
+		@resolvedKV("Tags", FormatTraceList(r.Tags.Values), "tags", invalidField)
+	} else if len(r.Tags.Values) > 0 {
+		@kvTags("Tags", r.Tags.Values)
 	}
 	if len(r.DependsOn.Values) > 0 {
-		@resolvedRow("dependsOn", FormatTraceList(r.DependsOn.Values), invalidField)
+		@resolvedKV("Depends on", FormatTraceList(r.DependsOn.Values), "dependsOn", invalidField)
 	}
 }
 
-// resolvedRow renders one resolved-config field. The shape mirrors
-// the kv() helper so the Resolved card lines up visually with the
-// monitor detail page's "Current state" section. The invalidField
-// branch tints the row rose so the operator can spot the field the
-// validator rejected.
-templ resolvedRow(key, value, invalidField string) {
+// resolvedKV renders one resolved-config field. The non-highlighted
+// branch delegates straight to the shared kv() helper so the Resolved
+// card visually matches every other kv row across the app. The
+// highlighted branch carries the same markup with a rose tint +
+// negative-margin/padding extension so the highlight reaches the
+// section's edges (matching the existing archived-row pattern on the
+// monitor detail page).
+templ resolvedKV(label, value, key, invalidField string) {
 	if key == invalidField {
 		<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0 bg-rose-50 dark:bg-rose-900/40 -mx-4 px-4">
-			<dt class="text-sm font-mono text-slate-500 dark:text-slate-400">{ key }</dt>
-			<dd class="text-sm text-slate-900 dark:text-slate-100 col-span-2 break-words font-mono">{ value }</dd>
+			<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
+			<dd class="text-sm text-slate-900 dark:text-slate-100 col-span-2 break-words">{ value }</dd>
 		</div>
 	} else {
-		<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-			<dt class="text-sm font-mono text-slate-500 dark:text-slate-400">{ key }</dt>
-			<dd class="text-sm text-slate-900 dark:text-slate-100 col-span-2 break-words font-mono">{ value }</dd>
-		</div>
+		@kv(label, value)
 	}
 }

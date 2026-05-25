@@ -1394,11 +1394,15 @@ func cascadeResolvedWouldHaveBeen(resolved *config.KubeConfig) templ.Component {
 	})
 }
 
-// resolvedRows is the shared field listing used by both the
-// materialized and would-have-been resolved cards. Ordering follows
-// docs/config-schema.md so operators see fields in the same order
-// they'd write them in YAML. Each row reuses the existing kv-shaped
-// markup so the styling matches the monitor detail page.
+// resolvedRows mirrors the layout + helpers used by configDialog on
+// the monitor detail page so the Resolved card and the "Show config"
+// dialog read identically. Each scalar runs through the same helper
+// (humanInterval, boolYesNo) the monitor detail page uses; HTTP
+// codes go through @kvHTTPCodes for the colored chip treatment;
+// tags go through @kvTags. The invalidField argument is the YAML
+// key (e.g. "interval") of the field that failed checkResolved —
+// rows whose backing key matches are wrapped in a rose-tinted
+// variant so the operator's eye lands on the failing field.
 func resolvedRows(r *config.KubeConfig, invalidField string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -1420,86 +1424,108 @@ func resolvedRows(r *config.KubeConfig, invalidField string) templ.Component {
 			templ_7745c5c3_Var52 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = resolvedRow("scheme", r.Scheme, invalidField).Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = resolvedKV("Scheme", r.Scheme, "scheme", invalidField).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = resolvedRow("path", r.Path, invalidField).Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = resolvedKV("Path", r.Path, "path", invalidField).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = resolvedRow("httpMethod", r.HTTPMethod, invalidField).Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = resolvedKV("HTTP method", r.HTTPMethod, "httpMethod", invalidField).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = resolvedRow("acceptedStatusCodes", FormatTraceList(intsToTraceList(r.AcceptedStatusCodes)), invalidField).Render(ctx, templ_7745c5c3_Buffer)
+		if "acceptedStatusCodes" == invalidField {
+			templ_7745c5c3_Err = resolvedKV("Accepted status codes", FormatTraceList(intsToTraceList(r.AcceptedStatusCodes)), "acceptedStatusCodes", invalidField).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		} else if len(r.AcceptedStatusCodes) > 0 {
+			templ_7745c5c3_Err = kvHTTPCodes("Accepted status codes", r.AcceptedStatusCodes).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = resolvedKV("Interval", humanInterval(r.Interval.AsDuration()), "interval", invalidField).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = resolvedRow("interval", r.Interval.String(), invalidField).Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = resolvedKV("Timeout", humanInterval(r.Timeout.AsDuration()), "timeout", invalidField).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = resolvedRow("timeout", r.Timeout.String(), invalidField).Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = resolvedKV("Retries", intToString(r.Retries), "retries", invalidField).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = resolvedRow("retries", intToString(r.Retries), invalidField).Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = resolvedKV("Retry backoff", humanInterval(r.RetryBackoff.AsDuration()), "retryBackoff", invalidField).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = resolvedRow("retryBackoff", r.RetryBackoff.String(), invalidField).Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = resolvedKV("Follow redirects", boolYesNo(r.FollowRedirects), "followRedirects", invalidField).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = resolvedRow("followRedirects", boolYesNo(r.FollowRedirects), invalidField).Render(ctx, templ_7745c5c3_Buffer)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = resolvedRow("tlsInsecureSkipVerify", boolYesNo(r.TLSInsecureSkipVerify), invalidField).Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = resolvedKV("TLS insecure skip verify", boolYesNo(r.TLSInsecureSkipVerify), "tlsInsecureSkipVerify", invalidField).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if r.Proxy != "" {
-			templ_7745c5c3_Err = resolvedRow("proxy", r.Proxy, invalidField).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = resolvedKV("Proxy", r.Proxy, "proxy", invalidField).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = resolvedRow("reminderInterval", r.ReminderInterval.String(), invalidField).Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = resolvedKV("Reminder interval", humanInterval(r.ReminderInterval.AsDuration()), "reminderInterval", invalidField).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = resolvedRow("sslAlertThreshold", r.SSLAlertThreshold.String(), invalidField).Render(ctx, templ_7745c5c3_Buffer)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
+		if r.Scheme == "" || r.Scheme == "https" {
+			templ_7745c5c3_Err = resolvedKV("SSL alert threshold", humanInterval(r.SSLAlertThreshold.AsDuration()), "sslAlertThreshold", invalidField).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 104, " ")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = resolvedKV("SSL escalation threshold", humanInterval(r.SSLEscalationThreshold.AsDuration()), "sslEscalationThreshold", invalidField).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 105, " ")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = resolvedKV("SSL reminder interval", humanInterval(r.SSLReminderInterval.AsDuration()), "sslReminderInterval", invalidField).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
 		}
-		templ_7745c5c3_Err = resolvedRow("sslEscalationThreshold", r.SSLEscalationThreshold.String(), invalidField).Render(ctx, templ_7745c5c3_Buffer)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = resolvedRow("sslReminderInterval", r.SSLReminderInterval.String(), invalidField).Render(ctx, templ_7745c5c3_Buffer)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = resolvedRow("slack", r.Slack, invalidField).Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = resolvedKV("Slack channel", r.Slack, "slack", invalidField).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if len(r.Notify.Values) > 0 {
-			templ_7745c5c3_Err = resolvedRow("notify", FormatTraceList(r.Notify.Values), invalidField).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = resolvedKV("Notify", FormatTraceList(r.Notify.Values), "notify", invalidField).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		if len(r.Tags.Values) > 0 {
-			templ_7745c5c3_Err = resolvedRow("tags", FormatTraceList(r.Tags.Values), invalidField).Render(ctx, templ_7745c5c3_Buffer)
+		if "tags" == invalidField {
+			templ_7745c5c3_Err = resolvedKV("Tags", FormatTraceList(r.Tags.Values), "tags", invalidField).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		} else if len(r.Tags.Values) > 0 {
+			templ_7745c5c3_Err = kvTags("Tags", r.Tags.Values).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
 		if len(r.DependsOn.Values) > 0 {
-			templ_7745c5c3_Err = resolvedRow("dependsOn", FormatTraceList(r.DependsOn.Values), invalidField).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = resolvedKV("Depends on", FormatTraceList(r.DependsOn.Values), "dependsOn", invalidField).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -1508,12 +1534,14 @@ func resolvedRows(r *config.KubeConfig, invalidField string) templ.Component {
 	})
 }
 
-// resolvedRow renders one resolved-config field. The shape mirrors
-// the kv() helper so the Resolved card lines up visually with the
-// monitor detail page's "Current state" section. The invalidField
-// branch tints the row rose so the operator can spot the field the
-// validator rejected.
-func resolvedRow(key, value, invalidField string) templ.Component {
+// resolvedKV renders one resolved-config field. The non-highlighted
+// branch delegates straight to the shared kv() helper so the Resolved
+// card visually matches every other kv row across the app. The
+// highlighted branch carries the same markup with a rose tint +
+// negative-margin/padding extension so the highlight reaches the
+// section's edges (matching the existing archived-row pattern on the
+// monitor detail page).
+func resolvedKV(label, value, key, invalidField string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -1535,64 +1563,38 @@ func resolvedRow(key, value, invalidField string) templ.Component {
 		}
 		ctx = templ.ClearChildren(ctx)
 		if key == invalidField {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 104, "<div class=\"py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0 bg-rose-50 dark:bg-rose-900/40 -mx-4 px-4\"><dt class=\"text-sm font-mono text-slate-500 dark:text-slate-400\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 106, "<div class=\"py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0 bg-rose-50 dark:bg-rose-900/40 -mx-4 px-4\"><dt class=\"text-sm text-slate-500 dark:text-slate-400\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var54 string
-			templ_7745c5c3_Var54, templ_7745c5c3_Err = templ.JoinStringErrs(key)
+			templ_7745c5c3_Var54, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/discovery.templ`, Line: 426, Col: 73}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/discovery.templ`, Line: 440, Col: 65}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var54))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 105, "</dt><dd class=\"text-sm text-slate-900 dark:text-slate-100 col-span-2 break-words font-mono\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 107, "</dt><dd class=\"text-sm text-slate-900 dark:text-slate-100 col-span-2 break-words\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var55 string
 			templ_7745c5c3_Var55, templ_7745c5c3_Err = templ.JoinStringErrs(value)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/discovery.templ`, Line: 427, Col: 98}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/discovery.templ`, Line: 441, Col: 88}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var55))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 106, "</dd></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 108, "</dd></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 107, "<div class=\"py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0\"><dt class=\"text-sm font-mono text-slate-500 dark:text-slate-400\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var56 string
-			templ_7745c5c3_Var56, templ_7745c5c3_Err = templ.JoinStringErrs(key)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/discovery.templ`, Line: 431, Col: 73}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var56))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 108, "</dt><dd class=\"text-sm text-slate-900 dark:text-slate-100 col-span-2 break-words font-mono\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var57 string
-			templ_7745c5c3_Var57, templ_7745c5c3_Err = templ.JoinStringErrs(value)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/discovery.templ`, Line: 432, Col: 98}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var57))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 109, "</dd></div>")
+			templ_7745c5c3_Err = kv(label, value).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
