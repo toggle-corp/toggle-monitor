@@ -97,6 +97,50 @@ func TestWatcher_observeOnly_recordsKubeInvalidForEveryHost(t *testing.T) {
 	}
 }
 
+// TestWatcher_reconcile_clockSkewDoesNotPrunePresentIngresses is a
+// regression test for the prune bug where the reconcile pass compared
+// Go-time (startedAt) against Postgres-time (last_seen_at). Normal NTP
+// drift between the toggle-monitor pod and the Postgres pod (tens of
+// ms) was enough to make the earliest upserts in a pass land with
+// last_seen_at < startedAt and get pruned in the same pass — soft-
+// deleting monitors whose ingresses were still in the cluster.
+//
+// We simulate the worst-case skew by injecting a Now() that puts the
+// watcher's clock 24h ahead of the Postgres clock. With the old
+// timestamp-watermark prune this would delete every just-upserted row;
+// with the observed-set prune it must be a no-op because every listed
+// ingress was observed this pass.
+func TestWatcher_reconcile_clockSkewDoesNotPrunePresentIngresses(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+
+	lister := &fakeLister{
+		Items: []*networkingv1.Ingress{
+			ingress("ns-a", "ing1", "h1.example.com"),
+			ingress("ns-a", "ing2", "h2.example.com"),
+			ingress("ns-b", "ing3", "h3.example.com"),
+		},
+	}
+
+	future := time.Now().Add(24 * time.Hour)
+	w := kube.New(repo, lister, kube.Options{
+		ResyncInterval: time.Minute,
+		Now:            func() time.Time { return future },
+	})
+
+	if err := w.Reconcile(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	rows, err := repo.ListDiscoverySnapshot(ctx)
+	if err != nil {
+		t.Fatalf("list snapshot: %v", err)
+	}
+	if got := len(rows); got != 3 {
+		t.Errorf("after reconcile with skewed clock: got %d rows, want 3 (every listed ingress should survive prune regardless of clock state)", got)
+	}
+}
+
 func TestWatcher_reconcile_prunesDisappearedIngresses(t *testing.T) {
 	repo := newRepo(t)
 	ctx := context.Background()
@@ -117,12 +161,9 @@ func TestWatcher_reconcile_prunesDisappearedIngresses(t *testing.T) {
 		t.Fatalf("after first reconcile: got %d rows, want 2", len(rows))
 	}
 
-	// Remove "goes" and re-reconcile.
+	// Remove "goes" and re-reconcile. The observed-set prune is
+	// clock-independent so no time.Sleep is needed between reconciles.
 	lister.Items = lister.Items[:1]
-	// Sleep briefly so the second reconcile's "before" cutoff is past
-	// the first reconcile's last_seen_at timestamps. (Could also use
-	// WithNow to inject a clock.)
-	time.Sleep(50 * time.Millisecond)
 	if err := w.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}

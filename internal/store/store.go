@@ -412,15 +412,62 @@ func (r *Repo) UpsertDiscoverySnapshot(ctx context.Context, row DiscoverySnapsho
 	return nil
 }
 
-// PruneDiscoverySnapshot removes snapshot rows whose last_seen_at is
-// older than the supplied threshold. Returns the count of pruned rows
-// plus the monitor slugs those rows pointed at (if any) — the kube
-// removal flow walks those to soft-delete the materialized monitor
-// and dispatch a closeout + warning.
-func (r *Repo) PruneDiscoverySnapshot(ctx context.Context, before time.Time) (int64, []string, error) {
-	rows, err := r.pool.Query(ctx,
-		`DELETE FROM discovery_snapshot WHERE last_seen_at < $1 RETURNING monitor_slug`,
-		before)
+// DiscoverySnapshotKey is the natural-key triple that identifies a
+// discovery_snapshot row. The reconcile pass collects one of these for
+// every (Ingress, host) observed in the cluster, then hands the set to
+// PruneDiscoverySnapshotExcept so the prune decision is made by
+// "what's in the cluster right now" rather than by comparing timestamps
+// from two different clocks (the Go process and Postgres).
+type DiscoverySnapshotKey struct {
+	Namespace   string
+	IngressName string
+	Host        string
+}
+
+// PruneDiscoverySnapshotExcept removes every snapshot row whose
+// (namespace, ingress_name, host) tuple is NOT in `observed`. Returns
+// the count of pruned rows plus the monitor slugs those rows pointed
+// at (if any) — the kube removal flow walks those to soft-delete the
+// materialized monitor and dispatch a closeout + warning.
+//
+// This replaces the earlier timestamp-watermark prune. The old prune
+// compared startedAt (Go's time.Now in the toggle-monitor pod) against
+// last_seen_at (Postgres' now() in the Postgres pod); even normal NTP
+// drift between two pods (tens of ms) was enough to make the earliest
+// upserts in a pass record last_seen_at < startedAt and get pruned in
+// the same pass — soft-deleting monitors whose ingresses were still in
+// the cluster. The observed-set prune is clock-independent.
+//
+// An empty `observed` slice is treated as "prune nothing" rather than
+// "prune everything"; the safety net for empty observations belongs in
+// the caller (kube.Watcher) where the distinction between "cluster
+// genuinely has no ingresses" and "informer cache transiently empty"
+// is decidable.
+func (r *Repo) PruneDiscoverySnapshotExcept(ctx context.Context, observed []DiscoverySnapshotKey) (int64, []string, error) {
+	if len(observed) == 0 {
+		return 0, nil, nil
+	}
+	namespaces := make([]string, len(observed))
+	names := make([]string, len(observed))
+	hosts := make([]string, len(observed))
+	for i, k := range observed {
+		namespaces[i] = k.Namespace
+		names[i] = k.IngressName
+		hosts[i] = k.Host
+	}
+	rows, err := r.pool.Query(ctx, `
+		WITH observed (ns, name, host) AS (
+			SELECT * FROM unnest($1::text[], $2::text[], $3::text[])
+		)
+		DELETE FROM discovery_snapshot d
+		WHERE NOT EXISTS (
+			SELECT 1 FROM observed o
+			WHERE o.ns   = d.namespace
+			  AND o.name = d.ingress_name
+			  AND o.host = d.host
+		)
+		RETURNING monitor_slug
+	`, namespaces, names, hosts)
 	if err != nil {
 		return 0, nil, fmt.Errorf("prune discovery_snapshot: %w", err)
 	}

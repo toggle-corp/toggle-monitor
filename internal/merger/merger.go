@@ -19,7 +19,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	networkingv1 "k8s.io/api/networking/v1"
 
@@ -62,12 +61,7 @@ type Materializer struct {
 	proxies     *proxypool.Pool
 
 	mu        sync.RWMutex
-	kubePlans map[string]planEntry
-}
-
-type planEntry struct {
-	plan     scheduler.Plan
-	lastSeen time.Time
+	kubePlans map[string]scheduler.Plan
 }
 
 // New builds a Materializer from the loaded YAML. staticSlugs is the
@@ -95,7 +89,7 @@ func New(s MonitorStore, cfg config.Config, proxies *proxypool.Pool) *Materializ
 		userMapping:       cfg.Slack.UserMapping,
 		bodyMaxBase:       cfg.Slack.BodyMaxChars,
 		proxies:           proxies,
-		kubePlans:         map[string]planEntry{},
+		kubePlans:         map[string]scheduler.Plan{},
 	}
 }
 
@@ -244,7 +238,7 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 		SSLReminderInterval:    resolved.SSLReminderInterval.AsDuration(),
 	}
 	m.mu.Lock()
-	m.kubePlans[monSlug] = planEntry{plan: plan, lastSeen: time.Now()}
+	m.kubePlans[monSlug] = plan
 	m.mu.Unlock()
 
 	reason := "added: " + chainStr
@@ -621,20 +615,25 @@ func (m *Materializer) CurrentPlans() []scheduler.Plan {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make([]scheduler.Plan, 0, len(m.kubePlans))
-	for _, e := range m.kubePlans {
-		out = append(out, e.plan)
+	for _, p := range m.kubePlans {
+		out = append(out, p)
 	}
 	return out
 }
 
-// Prune drops every cached plan whose lastSeen timestamp is older
-// than `before`. The kube.Watcher calls this at the end of every
-// reconcile pass so disappeared ingresses stop being scheduled.
-func (m *Materializer) Prune(before time.Time) {
+// Prune drops every cached plan whose slug is NOT in `observed`. The
+// kube.Watcher calls this at the end of every reconcile pass with the
+// set of slugs that materialized successfully, so disappeared (or
+// newly kube-ignored / kube-invalid) ingresses stop being scheduled.
+//
+// This is observed-set based by design — the prior timestamp-watermark
+// version mirrored the snapshot prune's clock-mismatch bug and could
+// drop plans for monitors whose ingresses were still in the cluster.
+func (m *Materializer) Prune(observed map[string]struct{}) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for slug, e := range m.kubePlans {
-		if e.lastSeen.Before(before) {
+	for slug := range m.kubePlans {
+		if _, ok := observed[slug]; !ok {
 			delete(m.kubePlans, slug)
 		}
 	}

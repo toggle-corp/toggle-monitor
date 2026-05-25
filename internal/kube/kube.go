@@ -24,12 +24,15 @@ import (
 // SnapshotStore is the slim seam the watcher uses to persist
 // discovery rows. Production wires *store.Repo; tests inject a fake.
 //
-// PruneDiscoverySnapshot now returns the slugs of materialized
+// PruneDiscoverySnapshotExcept returns the slugs of materialized
 // monitors that disappeared so the watcher can hand them off to a
-// RemovalSink for soft-delete + Slack closeout.
+// RemovalSink for soft-delete + Slack closeout. The observed-set
+// argument is the (ns, name, host) tuples the watcher actually
+// upserted this pass; anything else in the table is treated as
+// "no longer in the cluster" and pruned.
 type SnapshotStore interface {
 	UpsertDiscoverySnapshot(ctx context.Context, row store.DiscoverySnapshotRow) error
-	PruneDiscoverySnapshot(ctx context.Context, before time.Time) (int64, []string, error)
+	PruneDiscoverySnapshotExcept(ctx context.Context, observed []store.DiscoverySnapshotKey) (int64, []string, error)
 }
 
 // RemovalSink is the seam the watcher calls when a kube-discovered
@@ -87,9 +90,10 @@ type Materializer interface {
 // Pruner is an optional interface a Materializer can implement to
 // receive a post-reconcile "drop everything you didn't see this
 // pass" signal. Mirrors the snapshot-table pruning the watcher does
-// directly.
+// directly. The `observed` set is the monitor slugs the materializer
+// returned this pass; anything not in it is dropped.
 type Pruner interface {
-	Prune(before time.Time)
+	Prune(observed map[string]struct{})
 }
 
 // Options configures a Watcher.
@@ -98,6 +102,11 @@ type Options struct {
 	Materializer   Materializer
 	RemovalSink    RemovalSink
 	Logger         *slog.Logger
+	// Now is a test seam for the watcher's wall-clock reads. Production
+	// leaves it nil and the watcher uses time.Now. Tests that need to
+	// assert clock-independent behaviour (e.g. the observed-set prune
+	// surviving extreme Go-vs-Postgres skew) inject a fake here.
+	Now func() time.Time
 }
 
 // New constructs a Watcher against a SnapshotStore + IngressLister.
@@ -110,12 +119,16 @@ func New(s SnapshotStore, lister IngressLister, opts Options) *Watcher {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
 	return &Watcher{
 		store:          s,
 		lister:         lister,
 		resyncInterval: opts.ResyncInterval,
 		log:            opts.Logger,
-		now:            time.Now,
+		now:            now,
 		materialize:    opts.Materializer,
 		onRemoval:      opts.RemovalSink,
 	}
@@ -150,8 +163,15 @@ func (w *Watcher) Run(ctx context.Context) {
 // Reconcile walks every observed Ingress + host, upserts the
 // resulting snapshot row, then prunes rows that weren't touched.
 // Exported so tests can drive a single pass deterministically.
+//
+// The prune step is observed-set based — it deletes any snapshot row
+// whose (ns, name, host) tuple was not seen in this pass — rather
+// than comparing a Go-time watermark against Postgres' last_seen_at.
+// An earlier implementation mixed clocks that way and prune-deleted
+// rows whose just-completed upsert happened to record last_seen_at
+// slightly behind startedAt under normal NTP drift between the
+// toggle-monitor pod and the Postgres pod.
 func (w *Watcher) Reconcile(ctx context.Context) error {
-	startedAt := w.now()
 	ingresses, err := w.lister.List()
 	if err != nil {
 		return fmt.Errorf("list ingresses: %w", err)
@@ -166,8 +186,22 @@ func (w *Watcher) Reconcile(ctx context.Context) error {
 	} else {
 		w.log.Info("kube reconcile", "ingresses", len(ingresses))
 	}
+
+	observedKeys := make([]store.DiscoverySnapshotKey, 0)
+	observedSlugs := make(map[string]struct{})
 	for _, ing := range ingresses {
 		for _, host := range uniqueHosts(ing) {
+			// Record the cluster's reality BEFORE we attempt to
+			// materialize/upsert: the ingress×host exists in this
+			// pass regardless of whether we manage to refresh its
+			// row in this iteration. Transient materialize or upsert
+			// failures must not cause the prune to soft-delete the
+			// monitor on the next step.
+			observedKeys = append(observedKeys, store.DiscoverySnapshotKey{
+				Namespace:   ing.Namespace,
+				IngressName: ing.Name,
+				Host:        host,
+			})
 			row, err := w.snapshotRowFor(ctx, ing, host)
 			if err != nil {
 				w.log.Warn("materialize ingress host", "ns", ing.Namespace, "name", ing.Name, "host", host, "error", err)
@@ -175,14 +209,29 @@ func (w *Watcher) Reconcile(ctx context.Context) error {
 			}
 			if err := w.store.UpsertDiscoverySnapshot(ctx, row); err != nil {
 				w.log.Warn("upsert discovery snapshot", "ns", ing.Namespace, "name", ing.Name, "host", host, "error", err)
+				continue
+			}
+			if row.MonitorSlug != nil && *row.MonitorSlug != "" {
+				observedSlugs[*row.MonitorSlug] = struct{}{}
 			}
 		}
 	}
+
+	// Safety net: if the lister returned no ingresses, decline to
+	// prune. A genuinely empty cluster is rare; a transient empty
+	// list (informer cache mid-relist, RBAC blip, etc.) is the
+	// scenario that historically nuked every materialized monitor
+	// in one pass. Leave stale rows in place — the next reconcile
+	// will pick them up.
+	if len(ingresses) == 0 {
+		return nil
+	}
+
 	// Sweep rows we didn't observe this pass. Each removed snapshot
 	// row that pointed at a materialized monitor flows through the
 	// optional RemovalSink so the lifecycle can soft-delete + post
 	// the closeout + warning.
-	_, prunedMonitors, err := w.store.PruneDiscoverySnapshot(ctx, startedAt)
+	_, prunedMonitors, err := w.store.PruneDiscoverySnapshotExcept(ctx, observedKeys)
 	if err != nil {
 		w.log.Warn("prune discovery snapshot", "error", err)
 	}
@@ -192,7 +241,7 @@ func (w *Watcher) Reconcile(ctx context.Context) error {
 		}
 	}
 	if p, ok := w.materialize.(Pruner); ok {
-		p.Prune(startedAt)
+		p.Prune(observedSlugs)
 	}
 	return nil
 }
