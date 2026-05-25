@@ -181,7 +181,7 @@ func extractChartConfigMap(t *testing.T, manifest string) (string, bool) {
 		if doc.Kind != "ConfigMap" {
 			continue
 		}
-		if doc.Metadata.Labels["app.kubernetes.io/name"] != "toggle-monitor" {
+		if doc.Metadata.Labels["app.kubernetes.io/name"] != "toggle-monitor-helm" {
 			continue
 		}
 		for _, v := range doc.Data {
