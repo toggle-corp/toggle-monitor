@@ -154,6 +154,17 @@ func hostFromURL(s string) string {
 	return u.Host
 }
 
+// rootURL returns the scheme+host portion of a URL — the application
+// "open this app" link, distinct from the full health-check URL the
+// monitor probes. Empty when the URL can't be parsed or lacks a host.
+func rootURL(s string) string {
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" || u.Scheme == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
 // statusBadgeKind picks the page-level 3-state badge:
 //   - "none"  → no monitors selected on this page
 //   - "down"  → any monitor down

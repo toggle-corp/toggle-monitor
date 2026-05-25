@@ -162,6 +162,17 @@ func hostFromURL(s string) string {
 	return u.Host
 }
 
+// rootURL returns the scheme+host portion of a URL — the application
+// "open this app" link, distinct from the full health-check URL the
+// monitor probes. Empty when the URL can't be parsed or lacks a host.
+func rootURL(s string) string {
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" || u.Scheme == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
 // statusBadgeKind picks the page-level 3-state badge:
 //   - "none"  → no monitors selected on this page
 //   - "down"  → any monitor down
@@ -307,7 +318,7 @@ func StatusPage(cfg *StatusConfig, sections []StatusSection, stats StatusPageSta
 					var templ_7745c5c3_Var5 string
 					templ_7745c5c3_Var5, templ_7745c5c3_Err = templruntime.SanitizeStyleAttributeValues("background-color: " + cfg.Color)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 243, Col: 79}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 254, Col: 79}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 					if templ_7745c5c3_Err != nil {
@@ -326,7 +337,7 @@ func StatusPage(cfg *StatusConfig, sections []StatusSection, stats StatusPageSta
 					var templ_7745c5c3_Var6 string
 					templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.ResolveAttributeValue(cfg.LogoURL)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 246, Col: 27}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 257, Col: 27}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var6)
 					if templ_7745c5c3_Err != nil {
@@ -344,7 +355,7 @@ func StatusPage(cfg *StatusConfig, sections []StatusSection, stats StatusPageSta
 				var templ_7745c5c3_Var7 string
 				templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(pageTitle(cfg))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 250, Col: 57}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 261, Col: 57}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 				if templ_7745c5c3_Err != nil {
@@ -357,7 +368,7 @@ func StatusPage(cfg *StatusConfig, sections []StatusSection, stats StatusPageSta
 				var templ_7745c5c3_Var8 string
 				templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(cfg.Slug)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 251, Col: 147}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 262, Col: 147}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 				if templ_7745c5c3_Err != nil {
@@ -392,7 +403,7 @@ func StatusPage(cfg *StatusConfig, sections []StatusSection, stats StatusPageSta
 				var templ_7745c5c3_Var11 string
 				templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(statusBadgeLabel(kind))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 253, Col: 31}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 264, Col: 31}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 				if templ_7745c5c3_Err != nil {
@@ -410,7 +421,7 @@ func StatusPage(cfg *StatusConfig, sections []StatusSection, stats StatusPageSta
 					var templ_7745c5c3_Var12 string
 					templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(cfg.Description)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 257, Col: 82}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 268, Col: 82}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 					if templ_7745c5c3_Err != nil {
@@ -461,7 +472,7 @@ func StatusPage(cfg *StatusConfig, sections []StatusSection, stats StatusPageSta
 					var templ_7745c5c3_Var13 templ.SafeURL
 					templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(sectionListingURL(cfg.Slug, idx)))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 274, Col: 63}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 285, Col: 63}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 					if templ_7745c5c3_Err != nil {
@@ -474,7 +485,7 @@ func StatusPage(cfg *StatusConfig, sections []StatusSection, stats StatusPageSta
 					var templ_7745c5c3_Var14 string
 					templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(sec.Title)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 274, Col: 101}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 285, Col: 101}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 					if templ_7745c5c3_Err != nil {
@@ -502,7 +513,7 @@ func StatusPage(cfg *StatusConfig, sections []StatusSection, stats StatusPageSta
 							var templ_7745c5c3_Var15 templ.SafeURL
 							templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/monitor/" + m.Slug))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 294, Col: 56}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 305, Col: 56}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 							if templ_7745c5c3_Err != nil {
@@ -670,7 +681,7 @@ func StatusIndexPage(entries []StatusPageStats) templ.Component {
 				var templ_7745c5c3_Var18 string
 				templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprint(len(entries)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 385, Col: 32}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/status.templ`, Line: 396, Col: 32}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 				if templ_7745c5c3_Err != nil {

@@ -500,12 +500,15 @@ func TestStatusPage_sectionsAndMatching(t *testing.T) {
 		t.Errorf("expected the Internal monitor to render in exactly one section; got %d occurrences", strings.Count(body, ">Internal<"))
 	}
 
-	// New URL column: the host-only 🔗 link plus the dim full URL.
+	// New URL column: the 🔗 link points at the application root
+	// (scheme+host) so operators can open the app, while the full URL
+	// underneath links to the health-check endpoint the monitor probes.
 	for _, want := range []string{
 		"🔗",
 		">api.example.com<",
-		"https://api.example.com/health",
-		`href="https://api.example.com/health"`,
+		`href="https://api.example.com"`,        // app-root link
+		`href="https://api.example.com/health"`, // health-check link
+		">https://api.example.com/health<",      // visible URL text
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("status URL column missing %q; first 1500:\n%s", want, firstN(body, 1500))
