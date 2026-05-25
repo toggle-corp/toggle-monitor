@@ -6,7 +6,9 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"os"
 	"strconv"
 	"strings"
 
@@ -54,18 +56,56 @@ func LatestVersion() (uint, error) {
 	return highest, nil
 }
 
-// Up applies all pending migrations against the given Postgres DSN.
-// Idempotent: returns nil if the schema is already at the latest
-// version.
+// Up applies all pending migrations against the given Postgres DSN
+// and writes a per-migration progress report to os.Stdout. Idempotent:
+// returns nil with a "no pending migrations" line if the schema is
+// already at the latest version.
 func Up(dsn string) error {
+	return UpTo(dsn, os.Stdout)
+}
+
+// UpTo is the Up variant that writes its progress report to the given
+// writer. Useful for tests; production code should call Up.
+func UpTo(dsn string, w io.Writer) error {
 	m, err := open(dsn)
 	if err != nil {
 		return err
 	}
 	defer closeM(m)
+
+	latest, err := LatestVersion()
+	if err != nil {
+		return err
+	}
+	current, _, vErr := m.Version()
+	if vErr != nil && !errors.Is(vErr, migrate.ErrNilVersion) {
+		return fmt.Errorf("read schema version: %w", vErr)
+	}
+	currentDisplay := strconv.FormatUint(uint64(current), 10)
+	if errors.Is(vErr, migrate.ErrNilVersion) {
+		currentDisplay = "none"
+	}
+
+	pending, err := PendingNames(uint(current), latest)
+	if err != nil {
+		return err
+	}
+	if len(pending) == 0 {
+		_, _ = fmt.Fprintf(w, "schema is at version %s (latest); no migrations to apply\n", currentDisplay)
+		return nil
+	}
+
+	_, _ = fmt.Fprintf(w, "schema at version %s; applying %d pending migration(s) to reach version %d:\n",
+		currentDisplay, len(pending), latest)
+	for _, name := range pending {
+		_, _ = fmt.Fprintf(w, "  - %s\n", name)
+	}
+
+	m.Log = &writerLogger{w: w}
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("apply migrations: %w", err)
 	}
+	_, _ = fmt.Fprintf(w, "schema is now at version %d (%d migration(s) applied)\n", latest, len(pending))
 	return nil
 }
 
@@ -98,6 +138,39 @@ func Check(dsn string) error {
 	return nil
 }
 
+// PendingNames returns the migration filenames (without `.up.sql`
+// extension) that would be applied to move the schema from `current`
+// to `latest`. Order matches the on-disk filename ordering.
+func PendingNames(current, latest uint) ([]string, error) {
+	if current >= latest {
+		return nil, nil
+	}
+	entries, err := fs.ReadDir(Migrations, "migrations")
+	if err != nil {
+		return nil, fmt.Errorf("read embedded migrations: %w", err)
+	}
+	var names []string
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".up.sql") {
+			continue
+		}
+		under := strings.IndexByte(name, '_')
+		if under <= 0 {
+			continue
+		}
+		v, err := strconv.ParseUint(name[:under], 10, 32)
+		if err != nil {
+			continue
+		}
+		if uint(v) <= current {
+			continue
+		}
+		names = append(names, strings.TrimSuffix(name, ".up.sql"))
+	}
+	return names, nil
+}
+
 func open(dsn string) (*migrate.Migrate, error) {
 	src, err := iofs.New(Migrations, "migrations")
 	if err != nil {
@@ -116,3 +189,16 @@ func open(dsn string) (*migrate.Migrate, error) {
 func closeM(m *migrate.Migrate) {
 	_, _ = m.Close()
 }
+
+// writerLogger adapts an io.Writer to golang-migrate's Logger
+// interface so per-step library output ("Read and execute 8/u ...",
+// "Finished after ...") lands in the same stream as our summary.
+type writerLogger struct {
+	w io.Writer
+}
+
+func (l *writerLogger) Printf(format string, v ...interface{}) {
+	_, _ = fmt.Fprintf(l.w, "  "+format, v...)
+}
+
+func (l *writerLogger) Verbose() bool { return true }

@@ -56,9 +56,8 @@ func runMigrateCLI(cfgPath string, checkOnly bool) error {
 		_, _ = fmt.Fprintln(os.Stdout, "schema is at the latest version")
 		return nil
 	}
-	if err := migrate.Up(dsn); err != nil {
-		return err
-	}
-	_, _ = fmt.Fprintln(os.Stdout, "migrations applied")
-	return nil
+	// Progress + per-migration logging lives inside migrate.Up itself
+	// — it writes to os.Stdout so operators see the full plan and
+	// the per-step library messages.
+	return migrate.Up(dsn)
 }
