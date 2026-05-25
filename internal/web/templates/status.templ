@@ -292,8 +292,7 @@ templ StatusPage(cfg *StatusConfig, sections []StatusSection, stats StatusPageSt
 						<table class="w-full bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 overflow-hidden">
 							<thead>
 								<tr class="bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
-									<th class="py-2 px-3">Name</th>
-									<th class="py-2 px-3">URL</th>
+									<th class="py-2 px-3">Monitor</th>
 									<th class="py-2 px-3 text-right">SSL</th>
 									<th class="py-2 px-3 text-right">Status</th>
 								</tr>
@@ -301,13 +300,13 @@ templ StatusPage(cfg *StatusConfig, sections []StatusSection, stats StatusPageSt
 							<tbody>
 								for _, m := range sec.Monitors {
 									<tr class="border-b border-slate-100 dark:border-slate-800 last:border-0 align-top">
-										<td class="py-2 px-3 font-medium">
-											<a href={ templ.SafeURL("/monitor/" + m.Slug) } class="hover:underline inline-flex items-center gap-1.5">
-												@MonitorName(m.FriendlyName)
-											</a>
-										</td>
-										<td class="py-2 px-3 text-sm">
-											@MonitorURLCell(m.URL)
+										<td class="py-2 px-3">
+											<div class="flex flex-col gap-0.5 min-w-0">
+												<a href={ templ.SafeURL("/monitor/" + m.Slug) } class="font-medium hover:underline inline-flex items-center gap-1.5">
+													@MonitorName(m.FriendlyName)
+												</a>
+												@MonitorURLCell(m.URL)
+											</div>
 										</td>
 										<td class="py-2 px-3 text-sm text-right whitespace-nowrap">
 											{{ var sslStatus string }}
