@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/a-h/templ v0.3.1020
+	github.com/getsentry/sentry-go v0.46.2
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/prometheus/client_golang v1.23.2

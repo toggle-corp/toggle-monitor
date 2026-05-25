@@ -15,7 +15,7 @@ import (
 	"github.com/toggle-corp/toggle-monitor/internal/lifecycle"
 )
 
-func newServeCmd() *cobra.Command {
+func newServeCmd(build BuildInfo) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the monitor service (default action)",
@@ -23,7 +23,7 @@ func newServeCmd() *cobra.Command {
 			cfgPath, _ := cmd.Flags().GetString("config")
 			listenAddr, _ := cmd.Flags().GetString("listen")
 			kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
-			return runServeCLI(cmd.Context(), cfgPath, listenAddr, kubeconfig)
+			return runServeCLI(cmd.Context(), cfgPath, listenAddr, kubeconfig, build)
 		},
 	}
 	cmd.Flags().String("config", "/etc/toggle-monitor/config.yaml", "path to the YAML config")
@@ -37,7 +37,7 @@ func newServeCmd() *cobra.Command {
 // runServeCLI is the entrypoint for `toggle-monitor serve`. It reads
 // the config file, resolves the DB password from the configured env
 // var, and hands off to lifecycle.RunServe.
-func runServeCLI(ctx context.Context, cfgPath, listenAddr, kubeconfigPath string) error {
+func runServeCLI(ctx context.Context, cfgPath, listenAddr, kubeconfigPath string, build BuildInfo) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -56,6 +56,17 @@ func runServeCLI(ctx context.Context, cfgPath, listenAddr, kubeconfigPath string
 	pw := os.Getenv(cfg.Database.PasswordEnv)
 	if pw == "" {
 		return fmt.Errorf("env var %q (named by database.passwordEnv) is not set", cfg.Database.PasswordEnv)
+	}
+
+	// Resolve Sentry DSN at the same boundary as the DB password.
+	// Validator already guarantees DSNEnv matches the env-var regex
+	// when Sentry is enabled; here we enforce the value is non-empty.
+	var sentryDSN string
+	if cfg.Sentry != nil && cfg.Sentry.Enabled {
+		sentryDSN = os.Getenv(cfg.Sentry.DSNEnv)
+		if sentryDSN == "" {
+			return fmt.Errorf("env var %q (named by sentry.dsnEnv) is not set", cfg.Sentry.DSNEnv)
+		}
 	}
 
 	dbCfg := db.Config{
@@ -81,5 +92,7 @@ func runServeCLI(ctx context.Context, cfgPath, listenAddr, kubeconfigPath string
 		ListenAddr:     listenAddr,
 		KubeconfigPath: kubeconfigPath,
 		Logger:         logger,
+		Release:        build.Version,
+		SentryDSN:      sentryDSN,
 	})
 }

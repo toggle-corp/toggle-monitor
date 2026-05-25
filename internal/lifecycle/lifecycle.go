@@ -34,6 +34,7 @@ import (
 	"github.com/toggle-corp/toggle-monitor/internal/proxypool"
 	"github.com/toggle-corp/toggle-monitor/internal/scheduler"
 	"github.com/toggle-corp/toggle-monitor/internal/secret"
+	tmsentry "github.com/toggle-corp/toggle-monitor/internal/sentry"
 	"github.com/toggle-corp/toggle-monitor/internal/slack"
 	"github.com/toggle-corp/toggle-monitor/internal/store"
 	"github.com/toggle-corp/toggle-monitor/internal/web"
@@ -48,6 +49,15 @@ type ServeOptions struct {
 	ListenAddr string              // e.g. ":8080"
 	Logger     *slog.Logger        // nil → slog.Default()
 	OnReady    func(addr net.Addr) // optional, called once listener is bound
+
+	// Release is stamped onto every Sentry event. CLI threads the
+	// build-time version variable here; tests pass "" or a stub.
+	Release string
+
+	// SentryDSN, when non-empty AND Config.Sentry.Enabled, overrides
+	// the env-var lookup. CLI does the env lookup itself; tests
+	// inject DSNs directly without setenv.
+	SentryDSN string
 
 	// SlackBaseURL lets tests point the Slack client at an httptest
 	// server. Empty → slack.DefaultBaseURL.
@@ -80,6 +90,18 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	if log == nil {
 		log = slog.Default()
 	}
+
+	// Sentry first: any panic in subsequent startup steps should reach
+	// the SDK. When disabled, sentryFlush is a no-op and Handler()
+	// returns a no-op handler.
+	sentryFlush, err := tmsentry.Init(buildSentryConfig(opts), opts.Release)
+	if err != nil {
+		return fmt.Errorf("sentry init: %w", err)
+	}
+	defer sentryFlush()
+	// Wrap the caller's logger so ERROR records also go to Sentry.
+	// The base handler keeps emitting to stdout regardless.
+	log = slog.New(tmsentry.NewMultiHandler(log.Handler(), tmsentry.Handler()))
 
 	pool, err := db.ConnectWithBackoff(ctx, opts.DBConfig, log)
 	if err != nil {
@@ -242,7 +264,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		return fmt.Errorf("bind listen address %q: %w", opts.ListenAddr, err)
 	}
 	httpServer := &http.Server{
-		Handler:           srv.Routes(),
+		Handler:           tmsentry.HTTPMiddleware(srv.Routes()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -403,6 +425,40 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	}
 	log.Info("shutdown complete")
 	return nil
+}
+
+// buildSentryConfig flattens the optional ServeOptions.Config.Sentry
+// block into the internal/sentry.Config the SDK needs. Returns a
+// zero (Enabled=false) Config when the YAML block is absent, which
+// is how the bridge stays no-op for operators who don't run Sentry.
+//
+// Defaulting rules:
+//   - SampleRate: 0 → 1.0 (so omitting the field doesn't silently
+//     drop every event).
+//   - Environment: "" → "production".
+//   - DSN: opts.SentryDSN (CLI-resolved env var); empty + Enabled is
+//     a startup-time error caught upstream in cli/serve.go.
+func buildSentryConfig(opts ServeOptions) tmsentry.Config {
+	if opts.Config.Sentry == nil || !opts.Config.Sentry.Enabled {
+		return tmsentry.Config{}
+	}
+	s := opts.Config.Sentry
+	env := s.Environment
+	if env == "" {
+		env = "production"
+	}
+	sampleRate := s.SampleRate
+	if sampleRate == 0 {
+		sampleRate = 1.0
+	}
+	return tmsentry.Config{
+		Enabled:          true,
+		DSN:              opts.SentryDSN,
+		Environment:      env,
+		SampleRate:       sampleRate,
+		TracesSampleRate: s.TracesSampleRate,
+		ServerName:       s.ServerName,
+	}
 }
 
 // compileSectionMatch converts a config.SectionMatch (which carries

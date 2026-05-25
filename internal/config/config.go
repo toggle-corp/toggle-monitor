@@ -44,6 +44,7 @@ type Config struct {
 	HTTPClient      HTTPClient   `yaml:"httpClient"`
 	Heartbeat       *Heartbeat   `yaml:"heartbeat,omitempty"` // optional; nil disables the deadman loop
 	Kube            *Kube        `yaml:"kube,omitempty"`      // optional; nil disables auto-discovery
+	Sentry          *Sentry      `yaml:"sentry,omitempty"`    // optional; nil disables Sentry forwarding
 	Slack           Slack        `yaml:"slack"`
 	Proxies         []Proxy      `yaml:"proxies,omitempty"`
 	Monitors        []Monitor    `yaml:"monitors"`
@@ -67,6 +68,20 @@ type Heartbeat struct {
 	URL                 string   `yaml:"url"`
 	Interval            Duration `yaml:"interval"`
 	FailOnStalledWorker bool     `yaml:"failOnStalledWorker"`
+}
+
+// Sentry is the optional error-tracking block. When nil (or
+// Enabled=false), the binary's slog→Sentry bridge is a no-op and
+// nothing is shipped. When Enabled=true, the env var named by DSNEnv
+// must resolve to a non-empty DSN at startup (checked in cli/serve.go
+// alongside the database/Slack env vars).
+type Sentry struct {
+	Enabled          bool    `yaml:"enabled"`
+	DSNEnv           string  `yaml:"dsnEnv"`
+	Environment      string  `yaml:"environment,omitempty"`      // default: "production"
+	SampleRate       float64 `yaml:"sampleRate,omitempty"`       // default: 1.0; [0.0..1.0]
+	TracesSampleRate float64 `yaml:"tracesSampleRate,omitempty"` // default: 0.0; [0.0..1.0]
+	ServerName       string  `yaml:"serverName,omitempty"`       // default: os.Hostname()
 }
 
 // Kube is the auto-discovery block. When nil, no informer is started
@@ -645,6 +660,23 @@ func (c *checker) validate(cfg *Config) {
 		}
 		if cfg.Heartbeat.Interval.AsDuration() < 30*time.Second {
 			c.errf([]any{"heartbeat", "interval"}, "must be >= 30s, got %s", cfg.Heartbeat.Interval)
+		}
+	}
+
+	if cfg.Sentry != nil {
+		if cfg.Sentry.Enabled {
+			if !envVarNamePattern.MatchString(cfg.Sentry.DSNEnv) {
+				c.errf([]any{"sentry", "dsnEnv"},
+					"%q must match ^[A-Z][A-Z0-9_]*$ (do not interpolate ${...} into this field)", cfg.Sentry.DSNEnv)
+			}
+		}
+		if cfg.Sentry.SampleRate < 0 || cfg.Sentry.SampleRate > 1 {
+			c.errf([]any{"sentry", "sampleRate"},
+				"must be in [0.0, 1.0], got %v", cfg.Sentry.SampleRate)
+		}
+		if cfg.Sentry.TracesSampleRate < 0 || cfg.Sentry.TracesSampleRate > 1 {
+			c.errf([]any{"sentry", "tracesSampleRate"},
+				"must be in [0.0, 1.0], got %v", cfg.Sentry.TracesSampleRate)
 		}
 	}
 

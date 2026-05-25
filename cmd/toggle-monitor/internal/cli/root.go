@@ -5,9 +5,17 @@ package cli
 
 import "github.com/spf13/cobra"
 
+// BuildInfo captures values stamped into the binary at build time.
+// main.go populates Version from a -X ldflag; tests construct it
+// directly. Passed into the serve command so it can surface in
+// startup logs and as the Sentry release.
+type BuildInfo struct {
+	Version string
+}
+
 // NewRootCmd returns the configured root command. The default action
 // (no subcommand) delegates to `serve`.
-func NewRootCmd() *cobra.Command {
+func NewRootCmd(build BuildInfo) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "toggle-monitor",
 		Short: "Kubernetes-native uptime and SSL monitor",
@@ -16,8 +24,9 @@ func NewRootCmd() *cobra.Command {
 			"state changes and surfacing current state in a read-only UI.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Version:       build.Version,
 	}
-	serve := newServeCmd()
+	serve := newServeCmd(build)
 	// Mirror serve's RunE so `toggle-monitor` with no subcommand starts
 	// the service (matching the design's "default action is serve").
 	root.RunE = serve.RunE

@@ -16,6 +16,7 @@ import (
 
 	"github.com/toggle-corp/toggle-monitor/internal/alert"
 	"github.com/toggle-corp/toggle-monitor/internal/httpcheck"
+	tmsentry "github.com/toggle-corp/toggle-monitor/internal/sentry"
 	"github.com/toggle-corp/toggle-monitor/internal/store"
 )
 
@@ -263,9 +264,20 @@ func (s *Scheduler) runMonitor(ctx context.Context, p Plan) {
 	}
 
 	for {
-		if err := s.Tick(ctx, p); err != nil && !errors.Is(err, context.Canceled) {
-			s.log.Error("tick error", "monitor", p.Slug, "error", err)
-		}
+		func() {
+			// Recover panics per-tick so a single bad monitor cannot kill
+			// the scheduler. The panic is reported to Sentry + logged;
+			// the next tick proceeds normally.
+			defer tmsentry.RecoverPanic(s.log, "scheduler.tick")
+			if err := s.Tick(ctx, p); err != nil && !errors.Is(err, context.Canceled) {
+				// WARN, not ERROR: a probed endpoint failing is the
+				// tool's expected business signal — Prometheus +
+				// Slack carry the operator-actionable surface. Routing
+				// this through ERROR would flood Sentry for every
+				// down-tick of every down monitor.
+				s.log.Warn("tick error", "monitor", p.Slug, "error", err)
+			}
+		}()
 		if !sleep(ctx, p.Interval) {
 			return
 		}
@@ -414,7 +426,9 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 	prevSSL := row.SSL()
 	nextSSL, sslEvent := alert.ApplySSL(prevSSL, sslCheck)
 	if err := s.repo.ApplySSLCheck(ctx, p.Slug, nextSSL, sslCheck.ExpiresAt, issuer, subject, sslEvent); err != nil {
-		s.log.Error("apply ssl check", "monitor", p.Slug, "error", err)
+		// WARN, not ERROR: the uptime side is already committed and the
+		// next tick will retry. Not Sentry-worthy.
+		s.log.Warn("apply ssl check", "monitor", p.Slug, "error", err)
 		return nil // not fatal — uptime side already committed
 	}
 

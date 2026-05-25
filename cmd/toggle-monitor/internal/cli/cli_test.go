@@ -13,7 +13,7 @@ import (
 // run executes the root command with the given args and returns
 // stdout/stderr plus the exit error, mirroring what `main` does.
 func run(args ...string) (string, error) {
-	root := cli.NewRootCmd()
+	root := cli.NewRootCmd(cli.BuildInfo{Version: "test"})
 	out := &bytes.Buffer{}
 	root.SetOut(out)
 	root.SetErr(out)

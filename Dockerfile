@@ -12,9 +12,14 @@ RUN go mod download
 # drift before something leaks.
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
+# VERSION is the release stamp burned into the binary (read by main.version,
+# emitted as the Sentry release on every event). Defaults to "dev" so
+# `docker build` works without --build-arg; CI/CD overrides with the tag.
+ARG VERSION=dev
 # CGO disabled → fully static binary; trimpath strips build-host paths
 # from the binary so it's reproducible.
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags '-s -w' \
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags "-s -w -X main.version=${VERSION}" \
     -o /out/toggle-monitor ./cmd/toggle-monitor
 
 FROM gcr.io/distroless/static-debian12:nonroot

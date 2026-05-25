@@ -76,11 +76,34 @@ Log levels:
   load summary, ingress reconcile summary, startup + shutdown.
 - `WARN`: best-effort failures the worker recovered from (Slack
   retry exhausted, snapshot pruning hiccup, soft-delete lookup
-  miss, etc.).
-- `ERROR`: things you should investigate (unexpected DB error,
-  scheduler tick error after retries, etc.).
+  miss, **scheduler tick error**, **SSL apply failure**, **kube
+  reconcile failure**).
+- `ERROR`: operator-actionable failures — Slack notifier sink
+  errors, HTTP listener crash, recovered goroutine panics. These
+  are also the events forwarded to Sentry when the integration is
+  enabled (see [Sentry](#sentry) below).
 - `DEBUG` (opt-in): every check result, full Slack call detail,
   individual ingress events. Toggle via `--log-level=debug`.
+
+### Sentry
+
+The binary ships with an optional Sentry forwarder (see
+[`config-schema.md`](config-schema.md) §`sentry`). When enabled, two
+classes of events reach Sentry:
+
+1. **`ERROR`-level slog records.** Routine failures (monitor probes
+   failing, transient apiserver errors, SSL cert problems) are
+   classified WARN by design and never reach Sentry — they belong
+   in Prometheus + the Slack alerting pipeline. The remaining ERROR
+   sites (`event sink`, `ssl sink`, `http server`, `recovered
+   panic`) are what an operator should look at.
+2. **Recovered panics** in the HTTP server, scheduler worker, and
+   kube reconciler. Each carries a full stacktrace.
+
+Each event is tagged with `monitor=<slug>` (when applicable),
+stamped with the binary's build-time `version` as the release, and
+labelled with `environment` from the YAML config. The bridge is a
+no-op when `sentry.enabled: false` or the `sentry:` block is absent.
 
 ### Secret masking
 

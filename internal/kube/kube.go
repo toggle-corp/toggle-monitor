@@ -18,6 +18,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	tmsentry "github.com/toggle-corp/toggle-monitor/internal/sentry"
 	"github.com/toggle-corp/toggle-monitor/internal/store"
 )
 
@@ -142,10 +143,20 @@ func (w *Watcher) Lister() IngressLister { return w.lister }
 
 // Run performs an initial reconcile and then re-reconciles every
 // resyncInterval until ctx is cancelled.
+//
+// Each reconcile runs inside a panic-recovery wrapper: a panic in
+// one pass must not kill the informer goroutine. WARN (not ERROR) on
+// reconcile failure — transient k8s API errors are expected and the
+// next tick retries; flooding Sentry on apiserver hiccups would
+// drown the actually-actionable events.
 func (w *Watcher) Run(ctx context.Context) {
-	if err := w.Reconcile(ctx); err != nil {
-		w.log.Error("kube reconcile failed", "error", err)
+	reconcile := func() {
+		defer tmsentry.RecoverPanic(w.log, "kube.reconcile")
+		if err := w.Reconcile(ctx); err != nil {
+			w.log.Warn("kube reconcile failed", "error", err)
+		}
 	}
+	reconcile()
 	t := time.NewTicker(w.resyncInterval)
 	defer t.Stop()
 	for {
@@ -153,9 +164,7 @@ func (w *Watcher) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := w.Reconcile(ctx); err != nil {
-				w.log.Error("kube reconcile failed", "error", err)
-			}
+			reconcile()
 		}
 	}
 }

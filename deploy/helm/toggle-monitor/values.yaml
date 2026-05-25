@@ -28,6 +28,10 @@ envFromSecrets: []
 #   secret:
 #     name: toggle-monitor-slack
 #     key: bot-token
+# - name: SENTRY_DSN                          # required when config.inline.sentry.enabled=true
+#   secret:
+#     name: toggle-monitor-sentry
+#     key: dsn
 
 # By default the Deployment carries a `checksum/config` annotation
 # (sha256 of the rendered ConfigMap data) so any `helm upgrade` that
@@ -101,6 +105,13 @@ config:
     #   url: https://hc-ping.com/<uuid>
     #   interval: 1m
     #   failOnStalledWorker: true
+
+    # sentry:                                 # optional; uncomment + edit to enable
+    #   enabled: true
+    #   dsnEnv: SENTRY_DSN                    # add a matching envFromSecrets entry above
+    #   environment: production               # default: "production"
+    #   sampleRate: 1.0                       # default: 1.0
+    #   tracesSampleRate: 0.0                 # default: 0.0; performance tracing off in v1
 
     # Kube auto-discovery. `kube.match` is a cascading rule tree. The
     # root rule (empty `when:`) is REQUIRED and must carry every

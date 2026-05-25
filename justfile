@@ -32,9 +32,11 @@ default:
 
 # --- Build / test / lint ---------------------------------------------
 
-# Compile the binary into bin/.
+# Compile the binary into bin/. Stamps the git-derived version into
+# main.version (used as the Sentry release tag on every event).
 build:
-    {{go}} build -o {{binary}} ./cmd/toggle-monitor
+    @VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"; \
+        {{go}} build -ldflags "-X main.version=$VERSION" -o {{binary}} ./cmd/toggle-monitor
 
 # Run unit tests (fast, no Docker required).
 test:

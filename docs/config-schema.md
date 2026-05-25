@@ -40,6 +40,14 @@ heartbeat:                                              # optional block; omit t
   interval: 1m
   failOnStalledWorker: true
 
+sentry:                                                 # optional block; omit to disable
+  enabled: true                                          # required when block is present
+  dsnEnv: SENTRY_DSN                                     # env var holding the DSN; SecretString-masked in logs
+  environment: production                                # default: "production"
+  sampleRate: 1.0                                        # default: 1.0; [0.0..1.0]
+  tracesSampleRate: 0.0                                  # default: 0.0; performance tracing off in v1
+  serverName: ""                                         # default: os.Hostname()
+
 database:
   host: cnpg-cluster-rw.cnpg-system.svc.cluster.local
   port: 5432
