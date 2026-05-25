@@ -27,8 +27,8 @@ type MonitorsFilter struct {
 	Tags []string
 }
 
-// hasTag reports whether `t` is in f.Tags. Used by the multi-select
-// widget to repaint the user's selection on render.
+// hasTag reports whether `t` is in f.Tags. Used by the chip-style
+// tag checkboxes to repaint the user's selection on render.
 func (f MonitorsFilter) hasTag(t string) bool {
 	for _, x := range f.Tags {
 		if x == t {
@@ -121,13 +121,15 @@ templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPa
 			</div>
 			if len(distinctTags) > 0 {
 				<div>
-					<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="tag">Tags</label>
-					<select id="tag" name="tag" multiple size="4" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm min-w-[10rem]">
+					<div class="text-xs text-slate-500 dark:text-slate-400 mb-1">Tags <span class="text-slate-400 dark:text-slate-500">· AND match</span></div>
+					<div class="flex flex-wrap items-center gap-1.5 max-w-md">
 						for _, t := range distinctTags {
-							<option value={ t } selected?={ filter.hasTag(t) }>{ t }</option>
+							<label class="cursor-pointer select-none">
+								<input type="checkbox" name="tag" value={ t } checked?={ filter.hasTag(t) } class="peer sr-only"/>
+								<span class="inline-flex items-center px-2.5 py-1 rounded-full border text-xs border-slate-300 dark:border-slate-700 bg-white text-slate-700 dark:bg-slate-900 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 peer-checked:bg-slate-900 peer-checked:text-white peer-checked:border-slate-900 dark:peer-checked:bg-slate-200 dark:peer-checked:text-slate-900 dark:peer-checked:border-slate-200 peer-checked:before:content-['✓'] peer-checked:before:mr-1 peer-focus-visible:ring-2 peer-focus-visible:ring-blue-500 transition-colors">{ t }</span>
+							</label>
 						}
-					</select>
-					<p class="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">ctrl/⌘-click for multiple · AND match</p>
+					</div>
 				</div>
 			}
 			<div>

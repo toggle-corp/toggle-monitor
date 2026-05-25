@@ -181,9 +181,9 @@ func TestMonitorsListing_tagFilter(t *testing.T) {
 	if strings.Contains(body, "/monitor/c") {
 		t.Errorf("?tag=prod should exclude c (staging)")
 	}
-	// The selected option round-trips.
-	if !strings.Contains(body, `value="prod" selected`) {
-		t.Errorf("?tag=prod should mark the option selected; first 1500:\n%s", firstN(body, 1500))
+	// The selected chip round-trips as a checked input.
+	if !strings.Contains(body, `value="prod" checked`) {
+		t.Errorf("?tag=prod should mark the chip checked; first 1500:\n%s", firstN(body, 1500))
 	}
 
 	// ?tag=prod&tag=web is AND — only Alpha matches.

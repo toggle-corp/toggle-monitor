@@ -35,8 +35,8 @@ type MonitorsFilter struct {
 	Tags []string
 }
 
-// hasTag reports whether `t` is in f.Tags. Used by the multi-select
-// widget to repaint the user's selection on render.
+// hasTag reports whether `t` is in f.Tags. Used by the chip-style
+// tag checkboxes to repaint the user's selection on render.
 func (f MonitorsFilter) hasTag(t string) bool {
 	for _, x := range f.Tags {
 		if x == t {
@@ -435,19 +435,19 @@ func MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPag
 				return templ_7745c5c3_Err
 			}
 			if len(distinctTags) > 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, "<div><label class=\"block text-xs text-slate-500 dark:text-slate-400 mb-1\" for=\"tag\">Tags</label> <select id=\"tag\" name=\"tag\" multiple size=\"4\" class=\"border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm min-w-[10rem]\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, "<div><div class=\"text-xs text-slate-500 dark:text-slate-400 mb-1\">Tags <span class=\"text-slate-400 dark:text-slate-500\">· AND match</span></div><div class=\"flex flex-wrap items-center gap-1.5 max-w-md\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				for _, t := range distinctTags {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 45, "<option value=\"")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 45, "<label class=\"cursor-pointer select-none\"><input type=\"checkbox\" name=\"tag\" value=\"")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 					var templ_7745c5c3_Var15 string
 					templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.ResolveAttributeValue(t)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 127, Col: 24}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 128, Col: 51}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var15)
 					if templ_7745c5c3_Err != nil {
@@ -458,30 +458,30 @@ func MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPag
 						return templ_7745c5c3_Err
 					}
 					if filter.hasTag(t) {
-						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 47, " selected")
+						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 47, " checked")
 						if templ_7745c5c3_Err != nil {
 							return templ_7745c5c3_Err
 						}
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 48, ">")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 48, " class=\"peer sr-only\"> <span class=\"inline-flex items-center px-2.5 py-1 rounded-full border text-xs border-slate-300 dark:border-slate-700 bg-white text-slate-700 dark:bg-slate-900 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 peer-checked:bg-slate-900 peer-checked:text-white peer-checked:border-slate-900 dark:peer-checked:bg-slate-200 dark:peer-checked:text-slate-900 dark:peer-checked:border-slate-200 peer-checked:before:content-['✓'] peer-checked:before:mr-1 peer-focus-visible:ring-2 peer-focus-visible:ring-blue-500 transition-colors\">")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 					var templ_7745c5c3_Var16 string
 					templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(t)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 127, Col: 61}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 129, Col: 551}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 49, "</option>")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 49, "</span></label>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 50, "</select><p class=\"text-[10px] text-slate-400 dark:text-slate-500 mt-0.5\">ctrl/⌘-click for multiple · AND match</p></div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 50, "</div></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
