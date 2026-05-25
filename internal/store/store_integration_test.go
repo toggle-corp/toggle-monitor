@@ -366,3 +366,85 @@ func TestHomepageStats_countsByStatus(t *testing.T) {
 		t.Errorf("Down: got %d, want 1", stats.Down)
 	}
 }
+
+func TestListMonitors_tagsFilterIsAndContainment(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+
+	for _, s := range []store.MonitorSpec{
+		{Slug: "a", FriendlyName: "A", URL: "http://a", Tags: []string{"prod", "web"}, Source: store.SourceStatic},
+		{Slug: "b", FriendlyName: "B", URL: "http://b", Tags: []string{"prod", "api"}, Source: store.SourceStatic},
+		{Slug: "c", FriendlyName: "C", URL: "http://c", Tags: []string{"staging", "web"}, Source: store.SourceStatic},
+		{Slug: "d", FriendlyName: "D", URL: "http://d", Source: store.SourceStatic},
+	} {
+		if err := repo.ReconcileMonitor(ctx, s); err != nil {
+			t.Fatalf("reconcile %s: %v", s.Slug, err)
+		}
+	}
+
+	// Single tag — every row with `prod` matches.
+	listing, err := repo.ListMonitors(ctx, store.ListMonitorsOpts{Tags: []string{"prod"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotSlugs := func(l store.MonitorListing) map[string]bool {
+		m := map[string]bool{}
+		for _, r := range l.Items {
+			m[r.Slug] = true
+		}
+		return m
+	}
+	got := gotSlugs(listing)
+	if !(got["a"] && got["b"]) || got["c"] || got["d"] {
+		t.Errorf("Tags=[prod]: got %v, want {a,b}", got)
+	}
+
+	// AND containment — only `a` carries both prod AND web.
+	listing, err = repo.ListMonitors(ctx, store.ListMonitorsOpts{Tags: []string{"prod", "web"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = gotSlugs(listing)
+	if !got["a"] || got["b"] || got["c"] || got["d"] {
+		t.Errorf("Tags=[prod,web]: got %v, want {a}", got)
+	}
+
+	// Empty Tags slice — no predicate.
+	listing, _ = repo.ListMonitors(ctx, store.ListMonitorsOpts{Tags: []string{}})
+	if listing.Total != 4 {
+		t.Errorf("empty Tags: total = %d, want 4", listing.Total)
+	}
+}
+
+func TestDistinctTags_sortedAcrossAllMonitors(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+
+	for _, s := range []store.MonitorSpec{
+		{Slug: "a", FriendlyName: "A", URL: "http://a", Tags: []string{"prod", "web"}, Source: store.SourceStatic},
+		{Slug: "b", FriendlyName: "B", URL: "http://b", Tags: []string{"prod", "api"}, Source: store.SourceStatic},
+		{Slug: "c", FriendlyName: "C", URL: "http://c", Source: store.SourceStatic},
+	} {
+		if err := repo.ReconcileMonitor(ctx, s); err != nil {
+			t.Fatalf("reconcile %s: %v", s.Slug, err)
+		}
+	}
+	// Archive `b` — its tags should still appear.
+	if err := repo.SoftDeleteMonitor(ctx, "b", "x"); err != nil {
+		t.Fatal(err)
+	}
+
+	tags, err := repo.DistinctTags(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"api", "prod", "web"}
+	if len(tags) != len(want) {
+		t.Fatalf("DistinctTags: got %v, want %v", tags, want)
+	}
+	for i := range want {
+		if tags[i] != want[i] {
+			t.Errorf("DistinctTags[%d]: got %q, want %q", i, tags[i], want[i])
+		}
+	}
+}

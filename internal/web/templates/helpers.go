@@ -276,6 +276,11 @@ func paramsFromFilter(f MonitorsFilter) url.Values {
 	if f.Archived != "" && f.Archived != "active" {
 		v.Set("archived", f.Archived)
 	}
+	for _, t := range f.Tags {
+		if t != "" {
+			v.Add("tag", t)
+		}
+	}
 	return v
 }
 

@@ -145,6 +145,60 @@ func TestMonitorsListing_rendersAndFilters(t *testing.T) {
 	}
 }
 
+func TestMonitorsListing_tagFilter(t *testing.T) {
+	srv, repo := newServer(t)
+	ctx := context.Background()
+
+	for _, s := range []store.MonitorSpec{
+		{Slug: "a", FriendlyName: "Alpha", URL: "http://a", Tags: []string{"prod", "web"}, Source: store.SourceStatic},
+		{Slug: "b", FriendlyName: "Beta", URL: "http://b", Tags: []string{"prod", "api"}, Source: store.SourceStatic},
+		{Slug: "c", FriendlyName: "Gamma", URL: "http://c", Tags: []string{"staging", "web"}, Source: store.SourceStatic},
+	} {
+		if err := repo.ReconcileMonitor(ctx, s); err != nil {
+			t.Fatalf("reconcile %s: %v", s.Slug, err)
+		}
+	}
+
+	// The tag dropdown is rendered with every distinct tag.
+	resp, body := get(t, srv.Routes(), "/monitors")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/monitors: got %d, want 200", resp.StatusCode)
+	}
+	for _, tag := range []string{"prod", "web", "api", "staging"} {
+		if !strings.Contains(body, `value="`+tag+`"`) {
+			t.Errorf("tag dropdown missing option %q; first 1500:\n%s", tag, firstN(body, 1500))
+		}
+	}
+
+	// ?tag=prod narrows to Alpha + Beta.
+	resp, body = get(t, srv.Routes(), "/monitors?tag=prod")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/monitors?tag=prod: got %d", resp.StatusCode)
+	}
+	if !strings.Contains(body, "/monitor/a") || !strings.Contains(body, "/monitor/b") {
+		t.Errorf("?tag=prod should include a and b; first 1500:\n%s", firstN(body, 1500))
+	}
+	if strings.Contains(body, "/monitor/c") {
+		t.Errorf("?tag=prod should exclude c (staging)")
+	}
+	// The selected option round-trips.
+	if !strings.Contains(body, `value="prod" selected`) {
+		t.Errorf("?tag=prod should mark the option selected; first 1500:\n%s", firstN(body, 1500))
+	}
+
+	// ?tag=prod&tag=web is AND — only Alpha matches.
+	resp, body = get(t, srv.Routes(), "/monitors?tag=prod&tag=web")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/monitors?tag=prod&tag=web: got %d", resp.StatusCode)
+	}
+	if !strings.Contains(body, "/monitor/a") {
+		t.Errorf("?tag=prod&tag=web should include a")
+	}
+	if strings.Contains(body, "/monitor/b") || strings.Contains(body, "/monitor/c") {
+		t.Errorf("?tag=prod&tag=web should exclude b and c (AND semantics)")
+	}
+}
+
 func TestMonitorDetail_renders(t *testing.T) {
 	srv, repo := newServer(t)
 	ctx := context.Background()
@@ -444,6 +498,18 @@ func TestStatusPage_sectionsAndMatching(t *testing.T) {
 	// — verify by checking that "Internal" only renders once.
 	if strings.Count(body, ">Internal<") != 1 {
 		t.Errorf("expected the Internal monitor to render in exactly one section; got %d occurrences", strings.Count(body, ">Internal<"))
+	}
+
+	// New URL column: the host-only 🔗 link plus the dim full URL.
+	for _, want := range []string{
+		"🔗",
+		">api.example.com<",
+		"https://api.example.com/health",
+		`href="https://api.example.com/health"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("status URL column missing %q; first 1500:\n%s", want, firstN(body, 1500))
+		}
 	}
 }
 

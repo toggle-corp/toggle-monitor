@@ -21,6 +21,21 @@ type MonitorsFilter struct {
 	// Archived selects the archived subset: "" or "active" (default,
 	// non-archived only), "archived" (archived only), or "any" (both).
 	Archived string
+	// Tags is the AND set of tags the listing is restricted to. Empty
+	// → no tag predicate. Survives the URL round-trip as repeated
+	// ?tag=foo&tag=bar query params.
+	Tags []string
+}
+
+// hasTag reports whether `t` is in f.Tags. Used by the multi-select
+// widget to repaint the user's selection on render.
+func (f MonitorsFilter) hasTag(t string) bool {
+	for _, x := range f.Tags {
+		if x == t {
+			return true
+		}
+	}
+	return false
 }
 
 // sortableHeader renders one <th> as a clickable link that toggles
@@ -61,7 +76,7 @@ templ Paginator(basePath string, page, perPage, total int, extraParams url.Value
 	}
 }
 
-templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPages []*StatusConfig, page, perPage int) {
+templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPages []*StatusConfig, distinctTags []string, page, perPage int) {
 	@Layout("Monitors") {
 		<h1 class="text-xl font-semibold mb-3">Monitors</h1>
 		<form
@@ -104,6 +119,17 @@ templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPa
 					}
 				</select>
 			</div>
+			if len(distinctTags) > 0 {
+				<div>
+					<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="tag">Tags</label>
+					<select id="tag" name="tag" multiple size="4" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm min-w-[10rem]">
+						for _, t := range distinctTags {
+							<option value={ t } selected?={ filter.hasTag(t) }>{ t }</option>
+						}
+					</select>
+					<p class="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">ctrl/⌘-click for multiple · AND match</p>
+				</div>
+			}
 			<div>
 				<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="archived">Archived</label>
 				<select id="archived" name="archived" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
@@ -113,7 +139,7 @@ templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPa
 				</select>
 			</div>
 			<button class="bg-slate-900 dark:bg-slate-200 dark:text-slate-900 text-white text-sm px-3 py-1.5 rounded">Apply</button>
-			if filter.Search != "" || filter.Status != "" || filter.SSL != "" || filter.Page != "" || (filter.Archived != "" && filter.Archived != "active") {
+			if filter.Search != "" || filter.Status != "" || filter.SSL != "" || filter.Page != "" || len(filter.Tags) > 0 || (filter.Archived != "" && filter.Archived != "active") {
 				<a class="text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100" href="/monitors">Clear filters</a>
 			}
 		</form>

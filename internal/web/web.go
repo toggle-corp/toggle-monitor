@@ -275,6 +275,7 @@ func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	tags := nonEmpty(r.URL.Query()["tag"])
 	filter := templates.MonitorsFilter{
 		Search:   r.URL.Query().Get("q"),
 		Status:   r.URL.Query().Get("status"),
@@ -284,6 +285,12 @@ func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
 		Sort:     normalizeSortKey(r.URL.Query().Get("sort")),
 		SortDesc: r.URL.Query().Get("dir") == "desc",
 		Archived: archived,
+		Tags:     tags,
+	}
+	distinctTags, err := s.repo.DistinctTags(ctx)
+	if err != nil {
+		s.renderDBUnavailable(ctx, w, err)
+		return
 	}
 	// Page/section filter: resolve to a slug whitelist by evaluating
 	// predicates against active monitors, then pass to the DB as a
@@ -306,7 +313,7 @@ func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
 			// No monitor matches the page/section — short-circuit to an
 			// empty listing without touching the DB again.
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_ = templates.MonitorsPage(store.MonitorListing{}, filter, s.statusConfigs, page, perPage).Render(ctx, w)
+			_ = templates.MonitorsPage(store.MonitorListing{}, filter, s.statusConfigs, distinctTags, page, perPage).Render(ctx, w)
 			return
 		}
 	}
@@ -315,6 +322,7 @@ func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
 		Status:   filter.Status,
 		SSL:      filter.SSL,
 		Slugs:    slugFilter,
+		Tags:     filter.Tags,
 		Archived: archived,
 		Sort:     filter.Sort,
 		SortDesc: filter.SortDesc,
@@ -326,7 +334,7 @@ func (s *Server) handleMonitorsListing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.MonitorsPage(listing, filter, s.statusConfigs, page, perPage).Render(ctx, w)
+	_ = templates.MonitorsPage(listing, filter, s.statusConfigs, distinctTags, page, perPage).Render(ctx, w)
 }
 
 // collectMonitorSlugsForPage evaluates pageCfg's section predicates
@@ -767,6 +775,22 @@ func normalizeSortKey(raw string) string {
 		}
 	}
 	return ""
+}
+
+// nonEmpty returns vals with empty strings removed, preserving order.
+// Used to filter repeated query-string values (e.g., ?tag=&tag=foo)
+// down to the actual selections.
+func nonEmpty(vals []string) []string {
+	if len(vals) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(vals))
+	for _, v := range vals {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // normalizeArchivedFilter coerces the `?archived=` query parameter to

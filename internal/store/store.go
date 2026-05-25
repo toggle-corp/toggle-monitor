@@ -171,6 +171,10 @@ type ListMonitorsOpts struct {
 	Status string   // "" → no status filter
 	SSL    string   // "" → no ssl_status filter ('ok' | 'ssl-expiring' | 'ssl-skipped')
 	Slugs  []string // empty → no slug filter; non-empty restricts to these slugs (used to back ?page=/?section= predicate filters)
+	// Tags AND-filters: a row matches only when its tags column
+	// contains every value in this slice (Postgres `tags @> $N`).
+	// Empty slice → no tag predicate.
+	Tags []string
 	// Archived selects which subset to include:
 	//   "" or "active"  → archived = FALSE (default)
 	//   "archived"      → archived = TRUE
@@ -285,6 +289,10 @@ func (r *Repo) ListMonitors(ctx context.Context, opts ListMonitorsOpts) (Monitor
 		args = append(args, opts.Slugs)
 		conds = append(conds, fmt.Sprintf("slug = ANY($%d)", len(args)))
 	}
+	if len(opts.Tags) > 0 {
+		args = append(args, opts.Tags)
+		conds = append(conds, fmt.Sprintf("tags @> $%d", len(args)))
+	}
 	if opts.Search != "" {
 		args = append(args, "%"+opts.Search+"%")
 		conds = append(conds, fmt.Sprintf("(friendly_name ILIKE $%d OR slug ILIKE $%d)", len(args), len(args)))
@@ -329,6 +337,32 @@ func (r *Repo) ListMonitors(ctx context.Context, opts ListMonitorsOpts) (Monitor
 func itoa(n int) string {
 	// small-allocation friendly integer-to-decimal
 	return strconv.Itoa(n)
+}
+
+// DistinctTags returns the sorted set of tag values used anywhere in
+// the monitors table (archived rows included, so a filter selection
+// doesn't vanish when its last monitor flips to archived). Empty when
+// no monitor has any tags.
+func (r *Repo) DistinctTags(ctx context.Context) ([]string, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT DISTINCT unnest(tags) AS tag
+		FROM monitors
+		WHERE array_length(tags, 1) > 0
+		ORDER BY tag
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("distinct tags: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // HomepageStats returns the count of monitors in each status. Used by
