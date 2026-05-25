@@ -277,9 +277,6 @@ templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []stri
 				@kv("Slug", m.Slug)
 				@kvURL("URL", m.URL)
 				@kv("Source", string(m.Source))
-				if discoveredFrom != nil {
-					@kvDiscoveredFrom("Discovered from", *discoveredFrom)
-				}
 				if len(m.Tags) > 0 {
 					@kvTags("Tags", m.Tags)
 				}
@@ -320,7 +317,7 @@ templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []stri
 		</section>
 
 		if cfg != nil {
-			@configDialog(m, *cfg)
+			@configDialog(m, *cfg, discoveredFrom)
 		}
 
 		<section>
@@ -354,10 +351,10 @@ templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []stri
 // native <dialog>. The detail page pre-renders it (hidden) and the
 // "Show config" button calls showModal(). ESC + backdrop-click close
 // the dialog via the small inline JS handler at the bottom.
-templ configDialog(m store.MonitorRow, cfg MonitorConfig) {
+templ configDialog(m store.MonitorRow, cfg MonitorConfig, discoveredFrom *DiscoveredFrom) {
 	<dialog
 		id="monitor-config-dialog"
-		class="w-[calc(100%-2rem)] max-w-2xl rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-2xl backdrop:bg-slate-900/60 p-0"
+		class="w-[calc(100%-2rem)] max-w-4xl rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-2xl backdrop:bg-slate-900/60 p-0"
 	>
 		<form method="dialog" class="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-6 py-4 rounded-t-xl">
 			<h2 class="text-sm uppercase tracking-wide font-semibold text-slate-500 dark:text-slate-400">Effective configuration</h2>
@@ -368,6 +365,9 @@ templ configDialog(m store.MonitorRow, cfg MonitorConfig) {
 				@kv("Slug", m.Slug)
 				@kvURL("URL", m.URL)
 				@kv("Source", string(m.Source))
+				if discoveredFrom != nil {
+					@kvDiscoveredFrom("Discovered from", *discoveredFrom)
+				}
 				if len(m.Tags) > 0 {
 					@kvTags("Tags", m.Tags)
 				}

@@ -237,8 +237,11 @@ templ cascadeBannerInvalid(view DiscoveryDetailView) {
 // passed through so each event card can highlight a row whose key
 // matches the offending field.
 templ cascadeRules(traces []merger.RuleTrace, invalidField string) {
-	<div class="space-y-3 mb-6">
-		for _, rt := range traces {
+	<div class="mb-6">
+		for i, rt := range traces {
+			if i > 0 {
+				<div class="mt-3"></div>
+			}
 			@cascadeRuleCard(rt, invalidField)
 		}
 	</div>
@@ -249,19 +252,19 @@ templ cascadeRules(traces []merger.RuleTrace, invalidField string) {
 // per-key events.
 templ cascadeRuleCard(rt merger.RuleTrace, invalidField string) {
 	<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 overflow-hidden">
-		<header class="flex items-center gap-2 px-4 py-2 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
+		<header class="flex items-center gap-2 px-4 py-2 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800">
 			<code class="text-sm font-mono text-slate-700 dark:text-slate-200">{ rt.Label }</code>
 			if rt.When != " ()" {
 				<span class="text-xs text-slate-500 dark:text-slate-400 font-mono">{ rt.When }</span>
 			}
 			if rt.Final {
-				<span class="ml-auto inline-block text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">final</span>
+				<span class="ml-auto inline-block text-xs uppercase tracking-wide px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">final</span>
 			}
 		</header>
 		if len(rt.Events) == 0 {
 			<div class="px-4 py-2 text-xs text-slate-500 dark:text-slate-400 italic">no config writes — selector match only</div>
 		} else {
-			<dl class="divide-y divide-slate-100 dark:divide-slate-800">
+			<dl class="px-4 py-1">
 				for _, ev := range rt.Events {
 					@traceEventRow(ev, invalidField)
 				}
@@ -270,23 +273,30 @@ templ cascadeRuleCard(rt merger.RuleTrace, invalidField string) {
 	</section>
 }
 
-// traceEventRow renders one (rule, key) write. The shape mirrors the
-// per-rule diff cascade preview the user picked during /grill-me:
-//   key   ·action·   old → new   (or list-specific +/✕ deltas)
+// traceEventRow renders one (rule, key) write. Layout mirrors the
+// kv() helper so operators read these the same way they read the
+// monitor detail page: 3-column grid, monospace key on the left,
+// value (with diff annotations) on the right.
 templ traceEventRow(ev merger.TraceEvent, invalidField string) {
-	{{ rowClass := "py-1.5 px-4 grid grid-cols-12 gap-3 items-baseline" }}
 	if ev.Key == invalidField {
-		{{ rowClass = rowClass + " bg-rose-50 dark:bg-rose-950/30" }}
+		<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0 bg-rose-50 dark:bg-rose-900/40 -mx-4 px-4">
+			@traceEventRowBody(ev)
+		</div>
+	} else {
+		<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
+			@traceEventRowBody(ev)
+		</div>
 	}
-	<div class={ rowClass }>
-		<dt class="col-span-3 text-sm font-mono text-slate-600 dark:text-slate-300">{ ev.Key }</dt>
-		<dd class="col-span-2">
-			<span class={ "inline-block text-[11px] font-mono px-1.5 py-0.5 rounded " + TraceActionClass(ev.Action) }>{ string(ev.Action) }</span>
-		</dd>
-		<dd class="col-span-7 text-sm text-slate-700 dark:text-slate-200 break-words">
-			@traceEventValue(ev)
-		</dd>
-	</div>
+}
+
+templ traceEventRowBody(ev merger.TraceEvent) {
+	<dt class="text-sm font-mono text-slate-500 dark:text-slate-400 flex items-center gap-2">
+		<span>{ ev.Key }</span>
+		<span class={ "inline-block text-xs font-mono px-1.5 py-0.5 rounded " + TraceActionClass(ev.Action) }>{ string(ev.Action) }</span>
+	</dt>
+	<dd class="text-sm text-slate-900 dark:text-slate-100 col-span-2 break-words">
+		@traceEventValue(ev)
+	</dd>
 }
 
 // traceEventValue picks the right "what changed" rendering for the
@@ -304,11 +314,11 @@ templ traceEventValue(ev merger.TraceEvent) {
 		case merger.TraceReplace:
 			if len(ev.NewList) > 0 || len(ev.OldList) > 0 {
 				<code class="font-mono text-xs line-through text-slate-400 dark:text-slate-500">{ FormatTraceList(ev.OldList) }</code>
-				<span class="mx-1 text-slate-400">→</span>
+				<span class="px-1 text-slate-400">→</span>
 				<code class="font-mono text-xs">{ FormatTraceList(ev.NewList) }</code>
 			} else {
 				<code class="font-mono text-xs line-through text-slate-400 dark:text-slate-500">{ ev.OldValue }</code>
-				<span class="mx-1 text-slate-400">→</span>
+				<span class="px-1 text-slate-400">→</span>
 				<code class="font-mono text-xs">{ ev.NewValue }</code>
 			}
 		case merger.TraceAdd:
@@ -322,26 +332,26 @@ templ traceEventValue(ev merger.TraceEvent) {
 			<span class="text-slate-400 text-xs ml-2">(now { FormatTraceList(ev.NewList) })</span>
 		case merger.TraceOverride:
 			<code class="font-mono text-xs line-through text-slate-400 dark:text-slate-500">{ FormatTraceList(ev.OldList) }</code>
-			<span class="mx-1 text-slate-400">→</span>
+			<span class="px-1 text-slate-400">→</span>
 			<code class="font-mono text-xs">{ FormatTraceList(ev.NewList) }</code>
-			<span class="text-xs text-rose-600 dark:text-rose-400 ml-2">!override</span>
+			<span class="text-xs text-rose-700 dark:text-rose-300 ml-2">!override</span>
 	}
 }
 
-// cascadeResolved renders the final resolved KubeConfig as a key/value
-// table — the "what the daemon would do" card. When invalidField is
-// non-empty, the row for that key is tinted red so the operator's eye
-// lands on the failing field. Slug, when non-empty, links to the
-// materialized monitor.
+// cascadeResolved renders the final resolved KubeConfig using the
+// same @kv-shaped row pattern as the monitor detail page. When
+// invalidField is non-empty, the row for that key is tinted red so
+// the operator's eye lands on the failing field. Slug, when
+// non-empty, links to the materialized monitor.
 templ cascadeResolved(resolved *config.KubeConfig, invalidField, slug string) {
 	if resolved != nil {
-		<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mt-4">
+		<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6">
 			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Resolved</h2>
-			<dl class="divide-y divide-slate-100 dark:divide-slate-800">
+			<dl>
 				if slug != "" {
-					<div class="py-1.5 grid grid-cols-3 gap-3">
+					<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
 						<dt class="text-sm text-slate-500 dark:text-slate-400">Monitor slug</dt>
-						<dd class="text-sm col-span-2 break-words">
+						<dd class="text-sm text-slate-900 dark:text-slate-100 col-span-2 break-words">
 							<a class="text-blue-700 dark:text-blue-400 hover:underline font-mono" href={ templ.URL("/monitor/" + slug) }>{ slug }</a>
 						</dd>
 					</div>
@@ -357,12 +367,12 @@ templ cascadeResolved(resolved *config.KubeConfig, invalidField, slug string) {
 // matching the locked design for the ignored outcome.
 templ cascadeResolvedWouldHaveBeen(resolved *config.KubeConfig) {
 	if resolved != nil {
-		<details class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 mt-4 group">
+		<details class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 mb-6">
 			<summary class="cursor-pointer px-4 py-2 text-sm text-slate-600 dark:text-slate-300 select-none">
 				Would have materialized as… <span class="text-xs text-slate-400">(click to expand)</span>
 			</summary>
-			<div class="px-4 pb-3">
-				<dl class="divide-y divide-slate-100 dark:divide-slate-800">
+			<div class="px-4 py-3 border-t border-slate-100 dark:border-slate-800">
+				<dl>
 					@resolvedRows(resolved, "")
 				</dl>
 			</div>
@@ -373,7 +383,8 @@ templ cascadeResolvedWouldHaveBeen(resolved *config.KubeConfig) {
 // resolvedRows is the shared field listing used by both the
 // materialized and would-have-been resolved cards. Ordering follows
 // docs/config-schema.md so operators see fields in the same order
-// they'd write them in YAML.
+// they'd write them in YAML. Each row reuses the existing kv-shaped
+// markup so the styling matches the monitor detail page.
 templ resolvedRows(r *config.KubeConfig, invalidField string) {
 	@resolvedRow("scheme", r.Scheme, invalidField)
 	@resolvedRow("path", r.Path, invalidField)
@@ -381,10 +392,10 @@ templ resolvedRows(r *config.KubeConfig, invalidField string) {
 	@resolvedRow("acceptedStatusCodes", FormatTraceList(intsToTraceList(r.AcceptedStatusCodes)), invalidField)
 	@resolvedRow("interval", r.Interval.String(), invalidField)
 	@resolvedRow("timeout", r.Timeout.String(), invalidField)
-	@resolvedRowInt("retries", r.Retries, invalidField)
+	@resolvedRow("retries", intToString(r.Retries), invalidField)
 	@resolvedRow("retryBackoff", r.RetryBackoff.String(), invalidField)
-	@resolvedRowBool("followRedirects", r.FollowRedirects, invalidField)
-	@resolvedRowBool("tlsInsecureSkipVerify", r.TLSInsecureSkipVerify, invalidField)
+	@resolvedRow("followRedirects", boolYesNo(r.FollowRedirects), invalidField)
+	@resolvedRow("tlsInsecureSkipVerify", boolYesNo(r.TLSInsecureSkipVerify), invalidField)
 	if r.Proxy != "" {
 		@resolvedRow("proxy", r.Proxy, invalidField)
 	}
@@ -404,21 +415,21 @@ templ resolvedRows(r *config.KubeConfig, invalidField string) {
 	}
 }
 
+// resolvedRow renders one resolved-config field. The shape mirrors
+// the kv() helper so the Resolved card lines up visually with the
+// monitor detail page's "Current state" section. The invalidField
+// branch tints the row rose so the operator can spot the field the
+// validator rejected.
 templ resolvedRow(key, value, invalidField string) {
-	{{ cls := "py-1.5 grid grid-cols-3 gap-3" }}
 	if key == invalidField {
-		{{ cls = cls + " bg-rose-50 dark:bg-rose-950/30 -mx-4 px-4" }}
+		<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0 bg-rose-50 dark:bg-rose-900/40 -mx-4 px-4">
+			<dt class="text-sm font-mono text-slate-500 dark:text-slate-400">{ key }</dt>
+			<dd class="text-sm text-slate-900 dark:text-slate-100 col-span-2 break-words font-mono">{ value }</dd>
+		</div>
+	} else {
+		<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
+			<dt class="text-sm font-mono text-slate-500 dark:text-slate-400">{ key }</dt>
+			<dd class="text-sm text-slate-900 dark:text-slate-100 col-span-2 break-words font-mono">{ value }</dd>
+		</div>
 	}
-	<div class={ cls }>
-		<dt class="text-sm font-mono text-slate-500 dark:text-slate-400">{ key }</dt>
-		<dd class="text-sm col-span-2 break-words font-mono">{ value }</dd>
-	</div>
-}
-
-templ resolvedRowInt(key string, value int, invalidField string) {
-	@resolvedRow(key, intToString(value), invalidField)
-}
-
-templ resolvedRowBool(key string, value bool, invalidField string) {
-	@resolvedRow(key, boolYesNo(value), invalidField)
 }

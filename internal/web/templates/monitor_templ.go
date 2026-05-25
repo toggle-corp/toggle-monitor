@@ -1103,12 +1103,6 @@ func MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []strin
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			if discoveredFrom != nil {
-				templ_7745c5c3_Err = kvDiscoveredFrom("Discovered from", *discoveredFrom).Render(ctx, templ_7745c5c3_Buffer)
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-			}
 			if len(m.Tags) > 0 {
 				templ_7745c5c3_Err = kvTags("Tags", m.Tags).Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
@@ -1186,7 +1180,7 @@ func MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []strin
 				return templ_7745c5c3_Err
 			}
 			if cfg != nil {
-				templ_7745c5c3_Err = configDialog(m, *cfg).Render(ctx, templ_7745c5c3_Buffer)
+				templ_7745c5c3_Err = configDialog(m, *cfg, discoveredFrom).Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -1240,7 +1234,7 @@ func MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []strin
 						var templ_7745c5c3_Var46 string
 						templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.JoinStringErrs(*ev.Error)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitor.templ`, Line: 340, Col: 66}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitor.templ`, Line: 337, Col: 66}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var46))
 						if templ_7745c5c3_Err != nil {
@@ -1259,7 +1253,7 @@ func MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []strin
 						var templ_7745c5c3_Var47 string
 						templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprint(*ev.DowntimeSeconds))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitor.templ`, Line: 343, Col: 99}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitor.templ`, Line: 340, Col: 99}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var47))
 						if templ_7745c5c3_Err != nil {
@@ -1298,7 +1292,7 @@ func MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []strin
 // native <dialog>. The detail page pre-renders it (hidden) and the
 // "Show config" button calls showModal(). ESC + backdrop-click close
 // the dialog via the small inline JS handler at the bottom.
-func configDialog(m store.MonitorRow, cfg MonitorConfig) templ.Component {
+func configDialog(m store.MonitorRow, cfg MonitorConfig, discoveredFrom *DiscoveredFrom) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -1319,7 +1313,7 @@ func configDialog(m store.MonitorRow, cfg MonitorConfig) templ.Component {
 			templ_7745c5c3_Var48 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 89, "<dialog id=\"monitor-config-dialog\" class=\"w-[calc(100%-2rem)] max-w-2xl rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-2xl backdrop:bg-slate-900/60 p-0\"><form method=\"dialog\" class=\"sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-6 py-4 rounded-t-xl\"><h2 class=\"text-sm uppercase tracking-wide font-semibold text-slate-500 dark:text-slate-400\">Effective configuration</h2><button class=\"text-sm px-3 py-1.5 rounded border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors\" aria-label=\"Close\">Close</button></form><div class=\"px-6 py-5 max-h-[70vh] overflow-y-auto\"><dl class=\"[&>div]:py-2.5\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 89, "<dialog id=\"monitor-config-dialog\" class=\"w-[calc(100%-2rem)] max-w-4xl rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-2xl backdrop:bg-slate-900/60 p-0\"><form method=\"dialog\" class=\"sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-6 py-4 rounded-t-xl\"><h2 class=\"text-sm uppercase tracking-wide font-semibold text-slate-500 dark:text-slate-400\">Effective configuration</h2><button class=\"text-sm px-3 py-1.5 rounded border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors\" aria-label=\"Close\">Close</button></form><div class=\"px-6 py-5 max-h-[70vh] overflow-y-auto\"><dl class=\"[&>div]:py-2.5\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1334,6 +1328,12 @@ func configDialog(m store.MonitorRow, cfg MonitorConfig) templ.Component {
 		templ_7745c5c3_Err = kv("Source", string(m.Source)).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
+		}
+		if discoveredFrom != nil {
+			templ_7745c5c3_Err = kvDiscoveredFrom("Discovered from", *discoveredFrom).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
 		}
 		if len(m.Tags) > 0 {
 			templ_7745c5c3_Err = kvTags("Tags", m.Tags).Render(ctx, templ_7745c5c3_Buffer)
