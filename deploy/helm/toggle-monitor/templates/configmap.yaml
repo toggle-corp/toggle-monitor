@@ -14,6 +14,9 @@ kind: ConfigMap
 metadata:
   name: {{ include "toggle-monitor.fullname" . }}
   labels: {{- include "toggle-monitor.labels" . | nindent 4 }}
+  annotations:
+    # Create before the migrate Job (wave -1) so its volume mount resolves.
+    argocd.argoproj.io/sync-wave: "-2"
 data:
   {{ .Values.config.existingConfigMap.key }}: |
 {{ toYaml .Values.config.inline | indent 4 }}

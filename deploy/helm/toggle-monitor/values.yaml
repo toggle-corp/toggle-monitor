@@ -197,9 +197,11 @@ serviceMonitor:
   scrapeTimeout: 10s
   labels: {}
 
-# ArgoCD PreSync hook: a one-shot Job that runs `toggle-monitor migrate`
-# before the new app pod rolls out. Disable if you're not on ArgoCD —
-# the chart falls back to Helm pre-install/pre-upgrade hooks.
+# ArgoCD sync hook: a one-shot Job that runs `toggle-monitor migrate`
+# before the new app pod rolls out. Uses ArgoCD's Sync phase with
+# sync-wave ordering (SA/ConfigMap at -2, this Job at -1, Deployment at 0)
+# so the SA exists before the Job's pod starts. Disable if you're not on
+# ArgoCD — the chart falls back to Helm pre-install/pre-upgrade hooks.
 migrate:
   argoCDPreSyncHook: true
   resources:

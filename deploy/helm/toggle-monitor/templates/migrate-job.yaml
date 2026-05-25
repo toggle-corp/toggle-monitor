@@ -5,9 +5,12 @@ metadata:
   labels: {{- include "toggle-monitor.labels" . | nindent 4 }}
   annotations:
     {{- if .Values.migrate.argoCDPreSyncHook }}
-    # Run before each ArgoCD sync, before the new app pod rolls out.
-    argocd.argoproj.io/hook: PreSync
-    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+    # Sync hook at wave -1: runs after SA/ConfigMap (wave -2) and before
+    # the Deployment (wave 0). BeforeHookCreation forces a fresh Job on
+    # every sync since Job specs are immutable.
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "-1"
     {{- else }}
     # Helm hook fallback for non-ArgoCD installs. PreInstall + PreUpgrade
     # so migrations apply before the new Deployment rolls out.
