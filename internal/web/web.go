@@ -16,6 +16,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	networkingv1 "k8s.io/api/networking/v1"
+
+	"github.com/toggle-corp/toggle-monitor/internal/config"
 	"github.com/toggle-corp/toggle-monitor/internal/store"
 	"github.com/toggle-corp/toggle-monitor/internal/web/templates"
 )
@@ -57,6 +60,7 @@ type Server struct {
 	mapping         MappingHealthReader
 	missingParents  MissingParentReader
 	configLookup    ConfigLookup
+	cascadeSource   CascadeSource
 	statusConfigs   []*templates.StatusConfig
 	statusBySlug    map[string]*templates.StatusConfig
 	discoveryStatus templates.DiscoveryStatus
@@ -140,6 +144,39 @@ func (s *Server) SetDiscoveryStatus(d templates.DiscoveryStatus) { s.discoverySt
 // scheduler.Plan, shaped for the UI). When nil, the monitor detail
 // page renders the store-side spec only.
 func (s *Server) SetConfigLookup(c ConfigLookup) { s.configLookup = c }
+
+// CascadeSource is the seam the discovery detail page uses to
+// re-run the kube.match cascade live against the current informer
+// cache + loaded config. Two methods:
+//
+//   - GetIngress fetches one Ingress from the kube informer cache.
+//     Returns ErrIngressNotInCascadeSource when the cache has no row
+//     for (ns, name) — typical when the Ingress has been deleted but
+//     the discovery_snapshot row hasn't been pruned yet, in which
+//     case the handler renders the persisted-only fallback banner.
+//   - MatchRules returns the currently-loaded kube.match[] tree.
+//     stakater/reloader restarts the pod on ConfigMap change, so
+//     this value is effectively immutable at process lifetime; the
+//     interface returns by value so a future hot-reload could swap
+//     without locking on the read path.
+//
+// Wired only when cfg.Kube != nil. nil = kube disabled; the handler
+// falls through to the existing "auto-discovery is disabled" path.
+type CascadeSource interface {
+	GetIngress(namespace, name string) (*networkingv1.Ingress, error)
+	MatchRules() []config.KubeMatchRule
+}
+
+// ErrIngressNotInCascadeSource signals "the live cache has no Ingress
+// at (ns, name)" — either the ingress has been deleted from the
+// cluster or the informer hasn't seen it yet. The discovery detail
+// handler turns this into a persisted-only fallback render.
+var ErrIngressNotInCascadeSource = errors.New("ingress not in cascade source")
+
+// SetCascadeSource plugs in the kube-side live recompute seam. When
+// nil (kube disabled, or tests), the discovery detail page renders
+// only the persisted snapshot row + monitor link.
+func (s *Server) SetCascadeSource(c CascadeSource) { s.cascadeSource = c }
 
 // New constructs a Server. Call MarkReady once the DB is connected and
 // the config has loaded so /readyz starts returning 200.
@@ -575,14 +612,34 @@ func (s *Server) handleDiscoveryDetail(w http.ResponseWriter, r *http.Request) {
 		s.renderDBUnavailable(ctx, w, err)
 		return
 	}
-	for _, row := range rows {
-		if row.Namespace == ns && row.IngressName == name && row.Host == host {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_ = templates.DiscoveryDetail(row).Render(ctx, w)
-			return
+	var row *store.DiscoverySnapshotRow
+	for i := range rows {
+		if rows[i].Namespace == ns && rows[i].IngressName == name && rows[i].Host == host {
+			row = &rows[i]
+			break
 		}
 	}
-	http.NotFound(w, r)
+	if row == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	view := templates.DiscoveryDetailView{Row: *row, Outcome: templates.DiscoveryOutcomeDisabled}
+	if s.cascadeSource != nil {
+		ing, ierr := s.cascadeSource.GetIngress(ns, name)
+		switch {
+		case errors.Is(ierr, ErrIngressNotInCascadeSource):
+			view.Outcome = templates.DiscoveryOutcomeStale
+		case ierr != nil:
+			s.log.Warn("cascade ingress lookup", "ns", ns, "name", name, "error", ierr)
+			view.Outcome = templates.DiscoveryOutcomeStale
+		default:
+			templates.PopulateCascadeView(&view, s.cascadeSource.MatchRules(), ing, host)
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = templates.DiscoveryDetail(view).Render(ctx, w)
 }
 
 // pagination resolves the requested page + per-page from the URL,
@@ -667,8 +724,25 @@ func (s *Server) handleMonitorDetail(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// Kube-source monitors carry a backlink to their discovery detail
+	// page (`/discovery/{ns}/{name}/{host}`) so the operator can ask
+	// "why does this monitor have these settings?" without grepping
+	// the discovery listing. Static monitors skip the lookup entirely.
+	var discoveredFrom *templates.DiscoveredFrom
+	if m.Source == store.SourceKube {
+		row, derr := s.repo.FindDiscoveryByMonitorSlug(ctx, slug)
+		if derr == nil {
+			discoveredFrom = &templates.DiscoveredFrom{
+				Namespace:   row.Namespace,
+				IngressName: row.IngressName,
+				Host:        row.Host,
+			}
+		} else if !errors.Is(derr, store.ErrNotFound) {
+			s.log.Warn("discovery backlink lookup", "slug", slug, "error", derr)
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.MonitorDetail(m, cfg, gatingParents, history, appearsOn).Render(ctx, w)
+	_ = templates.MonitorDetail(m, cfg, gatingParents, history, appearsOn, discoveredFrom).Render(ctx, w)
 }
 
 // renderDBUnavailable serves a 503 with the friendly fallback page.

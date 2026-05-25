@@ -4,14 +4,17 @@ package kube
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	networkingv1listers "k8s.io/client-go/listers/networking/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -38,10 +41,19 @@ type RemovalSink interface {
 }
 
 // IngressLister abstracts the informer's lister so tests can provide a
-// hand-built slice without a fake informer setup.
+// hand-built slice without a fake informer setup. Get returns
+// ErrIngressNotFound when no Ingress matches (ns, name); production
+// code surfaces this as a "live recompute unavailable" branch in the
+// UI rather than a server error.
 type IngressLister interface {
 	List() ([]*networkingv1.Ingress, error)
+	Get(namespace, name string) (*networkingv1.Ingress, error)
 }
+
+// ErrIngressNotFound is returned by IngressLister.Get when the
+// requested Ingress isn't in the informer cache (deleted, not yet
+// observed, or RBAC-filtered out). Callers compare with errors.Is.
+var ErrIngressNotFound = errors.New("ingress not found")
 
 // Watcher owns the informer lifecycle and the periodic reconcile pass.
 type Watcher struct {
@@ -108,6 +120,12 @@ func New(s SnapshotStore, lister IngressLister, opts Options) *Watcher {
 		onRemoval:      opts.RemovalSink,
 	}
 }
+
+// Lister returns the IngressLister the watcher reads from. Used by
+// lifecycle to plumb the same informer cache into the web layer's
+// cascade source, so the discovery detail page can re-run the
+// cascade against fresh data without owning its own informer.
+func (w *Watcher) Lister() IngressLister { return w.lister }
 
 // Run performs an initial reconcile and then re-reconciles every
 // resyncInterval until ctx is cancelled.
@@ -278,13 +296,26 @@ func NewWithCluster(ctx context.Context, s SnapshotStore, opts Options, kubeconf
 // ingressInformerLister wraps the client-go informer's typed lister
 // behind our IngressLister interface.
 type ingressInformerLister struct {
-	lister interface {
-		List(selector labels.Selector) ([]*networkingv1.Ingress, error)
-	}
+	lister networkingv1listers.IngressLister
 }
 
 func (l *ingressInformerLister) List() ([]*networkingv1.Ingress, error) {
 	return l.lister.List(labels.Everything())
+}
+
+// Get fetches one Ingress from the informer cache. The wrapper maps
+// the typed lister's NotFound to our package-level sentinel so the
+// UI can render "ingress no longer in cluster" without importing
+// client-go.
+func (l *ingressInformerLister) Get(namespace, name string) (*networkingv1.Ingress, error) {
+	ing, err := l.lister.Ingresses(namespace).Get(name)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, ErrIngressNotFound
+		}
+		return nil, err
+	}
+	return ing, nil
 }
 
 func loadClusterConfig(kubeconfigPath string) (*rest.Config, error) {

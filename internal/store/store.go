@@ -406,6 +406,38 @@ func (r *Repo) PruneDiscoverySnapshot(ctx context.Context, before time.Time) (in
 	return pruned, prunedMonitors, rows.Err()
 }
 
+// FindDiscoveryByMonitorSlug returns the freshest discovery_snapshot
+// row that materialized the given monitor slug, used by the monitor
+// detail page to render a backlink to /discovery/{ns}/{name}/{host}.
+// Returns ErrNotFound when no row references this slug — which is the
+// common case for static monitors (source != 'kube').
+//
+// Multiple historical rows can reference the same slug (rare: ingress
+// deleted and recreated with the same ns/name); ORDER BY last_seen_at
+// DESC picks the freshest so the link always points at the current
+// (ns, name, host) the daemon is reconciling against.
+func (r *Repo) FindDiscoveryByMonitorSlug(ctx context.Context, monitorSlug string) (DiscoverySnapshotRow, error) {
+	row := r.pool.QueryRow(ctx, `
+		SELECT id, namespace, ingress_name, host, status, reason, monitor_slug, last_seen_at
+		FROM discovery_snapshot
+		WHERE monitor_slug = $1
+		ORDER BY last_seen_at DESC
+		LIMIT 1
+	`, monitorSlug)
+	var out DiscoverySnapshotRow
+	if err := row.Scan(
+		&out.ID, &out.Namespace, &out.IngressName, &out.Host,
+		&out.Status, &out.Reason, &out.MonitorSlug,
+		&out.LastSeenAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return DiscoverySnapshotRow{}, ErrNotFound
+		}
+		return DiscoverySnapshotRow{}, fmt.Errorf("find discovery by monitor_slug %q: %w", monitorSlug, err)
+	}
+	return out, nil
+}
+
 // CountKubeInvalid returns the number of discovery_snapshot rows
 // currently at status='kube-invalid'. Used by the operator nav to
 // surface a count badge on the Issues tab; intentionally a thin

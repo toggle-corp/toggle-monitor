@@ -27,6 +27,17 @@ func (f *fakeLister) List() ([]*networkingv1.Ingress, error) {
 	return f.Items, nil
 }
 
+// Get matches the production IngressLister contract so the fake stays
+// substitutable. Tests that drive Get directly populate Items first.
+func (f *fakeLister) Get(namespace, name string) (*networkingv1.Ingress, error) {
+	for _, it := range f.Items {
+		if it.Namespace == namespace && it.Name == name {
+			return it, nil
+		}
+	}
+	return nil, kube.ErrIngressNotFound
+}
+
 func ingress(ns, name string, hosts ...string) *networkingv1.Ingress {
 	rules := make([]networkingv1.IngressRule, 0, len(hosts))
 	for _, h := range hosts {

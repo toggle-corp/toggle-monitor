@@ -218,7 +218,28 @@ templ archivedBanner(m store.MonitorRow) {
 	</div>
 }
 
-templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []string, history []store.AlertEventRow, appearsOn []AppearsOnEntry) {
+// DiscoveredFrom is the (namespace, ingress, host) triple a kube-
+// source monitor was materialized from. The monitor detail page
+// renders a backlink to /discovery/{ns}/{name}/{host} where the
+// cascade trace explains how the monitor's settings were derived.
+// nil for static monitors (and for kube monitors whose snapshot row
+// has been pruned).
+type DiscoveredFrom struct {
+	Namespace   string
+	IngressName string
+	Host        string
+}
+
+templ kvDiscoveredFrom(label string, d DiscoveredFrom) {
+	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
+		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
+		<dd class="text-sm col-span-2 break-words">
+			<a class="text-blue-700 dark:text-blue-400 hover:underline font-mono" href={ templ.URL("/discovery/" + d.Namespace + "/" + d.IngressName + "/" + d.Host) }>{ d.Namespace }/{ d.IngressName } · { d.Host }</a>
+		</dd>
+	</div>
+}
+
+templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []string, history []store.AlertEventRow, appearsOn []AppearsOnEntry, discoveredFrom *DiscoveredFrom) {
 	{{ layoutTitle := m.FriendlyName }}
 	if m.Archived {
 		{{ layoutTitle = "[archived] " + m.FriendlyName }}
@@ -256,6 +277,9 @@ templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []stri
 				@kv("Slug", m.Slug)
 				@kvURL("URL", m.URL)
 				@kv("Source", string(m.Source))
+				if discoveredFrom != nil {
+					@kvDiscoveredFrom("Discovered from", *discoveredFrom)
+				}
 				if len(m.Tags) > 0 {
 					@kvTags("Tags", m.Tags)
 				}

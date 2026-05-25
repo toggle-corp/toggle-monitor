@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	networkingv1 "k8s.io/api/networking/v1"
+
 	"github.com/toggle-corp/toggle-monitor/internal/alert"
 	"github.com/toggle-corp/toggle-monitor/internal/config"
 	"github.com/toggle-corp/toggle-monitor/internal/db"
@@ -336,14 +338,20 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 			Logger:         log,
 		}
 		var watcher *kube.Watcher
+		var lister kube.IngressLister
 		if opts.KubeIngressLister != nil {
-			watcher = kube.New(repo, opts.KubeIngressLister, kubeOpts)
+			lister = opts.KubeIngressLister
+			watcher = kube.New(repo, lister, kubeOpts)
 		} else {
 			watcher, err = kube.NewWithCluster(ctx, repo, kubeOpts, opts.KubeconfigPath)
 			if err != nil {
 				return fmt.Errorf("kube watcher: %w", err)
 			}
+			lister = watcher.Lister()
 		}
+		// Wire the cascade source so the discovery detail page can
+		// re-run merger.ResolveWithTrace against the live cache.
+		srv.SetCascadeSource(&cascadeSource{lister: lister, rules: kc.Match})
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -570,6 +578,29 @@ func (a *missingParentAdapter) MissingParents() []web.MissingParent {
 	}
 	return out
 }
+
+// cascadeSource implements web.CascadeSource by combining the kube
+// informer's IngressLister with the currently-loaded kube.match[]
+// tree. The discovery detail page calls into this seam to re-run
+// merger.ResolveWithTrace against the live cluster state on every
+// render — no schema additions, no stale trace risk.
+type cascadeSource struct {
+	lister kube.IngressLister
+	rules  []config.KubeMatchRule
+}
+
+func (c *cascadeSource) GetIngress(namespace, name string) (*networkingv1.Ingress, error) {
+	ing, err := c.lister.Get(namespace, name)
+	if err != nil {
+		if errors.Is(err, kube.ErrIngressNotFound) {
+			return nil, web.ErrIngressNotInCascadeSource
+		}
+		return nil, err
+	}
+	return ing, nil
+}
+
+func (c *cascadeSource) MatchRules() []config.KubeMatchRule { return c.rules }
 
 // kubeRemovalSink dispatches the same soft-delete + Slack closeout +
 // warning flow used for static removals, against monitors materialized
