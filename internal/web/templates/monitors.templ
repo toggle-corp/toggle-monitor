@@ -27,8 +27,8 @@ type MonitorsFilter struct {
 	Tags []string
 }
 
-// hasTag reports whether `t` is in f.Tags. Used by the chip-style
-// tag checkboxes to repaint the user's selection on render.
+// hasTag reports whether `t` is in f.Tags. Used by the tag-picker
+// checkboxes to repaint the user's selection on render.
 func (f MonitorsFilter) hasTag(t string) bool {
 	for _, x := range f.Tags {
 		if x == t {
@@ -36,6 +36,135 @@ func (f MonitorsFilter) hasTag(t string) bool {
 		}
 	}
 	return false
+}
+
+// tagPickerLabel renders the picker button caption: "Add tags…" when
+// no tag is selected, "N selected" when one or more are. Pre-rendered
+// server-side so the no-JS path shows the correct count.
+func tagPickerLabel(n int) string {
+	if n == 0 {
+		return "Add tags…"
+	}
+	return fmt.Sprintf("%d selected", n)
+}
+
+// tagFilter wires the popover-based tag picker on /monitors. The
+// underlying `<input type="checkbox" name="tag">` array is the source
+// of truth — submission happens via the form's existing Apply button
+// (repeated `?tag=foo&tag=bar` params). JS only handles popover
+// open/close, in-popover search, the selected-chips preview, and the
+// "Clear all tags" link. Without JS the user gets a native
+// <details>-driven disclosure with the same checkboxes inside; the
+// chip preview row simply stays in its server-rendered state.
+script tagFilter() {
+	(function() {
+		document.querySelectorAll("[data-tag-filter]").forEach(function(root) {
+			var details = root.querySelector("details");
+			if (!details) return;
+			var label = root.querySelector("[data-tag-label]");
+			var search = root.querySelector("[data-tag-search]");
+			var options = Array.prototype.slice.call(root.querySelectorAll("[data-tag-option]"));
+			var emptyState = root.querySelector("[data-tag-empty]");
+			var clearBtn = root.querySelector("[data-tag-clear]");
+			var form = root.closest("form");
+			var chipsRoot = form ? form.querySelector("[data-tag-chips]") : null;
+			var chipTpl = form ? form.querySelector("[data-tag-chip-template]") : null;
+
+			function checkedBoxes() {
+				return Array.prototype.slice.call(root.querySelectorAll("input[name='tag']:checked"));
+			}
+
+			function refresh() {
+				var checked = checkedBoxes();
+				if (label) {
+					label.textContent = checked.length === 0 ? "Add tags…" : checked.length + " selected";
+				}
+				if (chipsRoot && chipTpl) {
+					chipsRoot.innerHTML = "";
+					if (checked.length === 0) {
+						chipsRoot.classList.add("hidden");
+					} else {
+						chipsRoot.classList.remove("hidden");
+						checked.forEach(function(cb) {
+							var node = chipTpl.content.firstElementChild.cloneNode(true);
+							node.setAttribute("data-tag-chip-for", cb.value);
+							var lbl = node.querySelector("[data-tag-chip-label]");
+							if (lbl) lbl.textContent = cb.value;
+							var rm = node.querySelector("[data-tag-chip-remove]");
+							if (rm) {
+								rm.setAttribute("data-tag-chip-remove", cb.value);
+								rm.setAttribute("aria-label", "Remove " + cb.value);
+							}
+							chipsRoot.appendChild(node);
+						});
+					}
+				}
+			}
+
+			if (search) {
+				search.addEventListener("input", function() {
+					var q = search.value.toLowerCase().trim();
+					var anyVisible = false;
+					options.forEach(function(opt) {
+						var tag = (opt.getAttribute("data-tag") || "").toLowerCase();
+						var match = q === "" || tag.indexOf(q) !== -1;
+						opt.hidden = !match;
+						if (match) anyVisible = true;
+					});
+					if (emptyState) emptyState.hidden = anyVisible;
+				});
+			}
+
+			options.forEach(function(opt) {
+				var cb = opt.querySelector("input[type='checkbox']");
+				if (cb) cb.addEventListener("change", refresh);
+			});
+
+			if (clearBtn) {
+				clearBtn.addEventListener("click", function() {
+					var changed = false;
+					options.forEach(function(opt) {
+						var cb = opt.querySelector("input[type='checkbox']");
+						if (cb && cb.checked) {
+							cb.checked = false;
+							changed = true;
+						}
+					});
+					if (changed) refresh();
+				});
+			}
+
+			if (chipsRoot) {
+				chipsRoot.addEventListener("click", function(e) {
+					var btn = e.target.closest("[data-tag-chip-remove]");
+					if (!btn) return;
+					var tag = btn.getAttribute("data-tag-chip-remove");
+					if (!tag) return;
+					var cb = root.querySelector("input[name='tag'][value=\"" + tag.replace(/"/g, '\\"') + "\"]");
+					if (cb) {
+						cb.checked = false;
+						refresh();
+					}
+				});
+			}
+
+			document.addEventListener("click", function(e) {
+				if (details.open && !details.contains(e.target)) {
+					details.open = false;
+				}
+			});
+			document.addEventListener("keydown", function(e) {
+				if (e.key === "Escape" && details.open) {
+					details.open = false;
+				}
+			});
+			details.addEventListener("toggle", function() {
+				if (details.open && search) {
+					search.focus();
+				}
+			});
+		});
+	})();
 }
 
 // sortableHeader renders one <th> as a clickable link that toggles
@@ -85,66 +214,100 @@ templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPa
 			hx-push-url="true"
 			method="get"
 			action="/monitors"
-			class="flex flex-wrap items-end gap-3 mb-4 bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-3"
+			class="mb-4 bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-3"
 		>
-			<div>
-				<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="q">Search</label>
-				<input id="q" name="q" value={ filter.Search } class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm" placeholder="name or slug"/>
-			</div>
-			<div>
-				<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="status">Status</label>
-				<select id="status" name="status" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
-					<option value="" selected?={ filter.Status == "" }>(any)</option>
-					<option value="up" selected?={ filter.Status == "up" }>up</option>
-					<option value="down" selected?={ filter.Status == "down" }>down</option>
-					<option value="temporary-paused" selected?={ filter.Status == "temporary-paused" }>temporary-paused</option>
-				</select>
-			</div>
-			<div>
-				<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="ssl">SSL</label>
-				<select id="ssl" name="ssl" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
-					<option value="" selected?={ filter.SSL == "" }>(any)</option>
-					<option value="ok" selected?={ filter.SSL == "ok" }>ok</option>
-					<option value="ssl-expiring" selected?={ filter.SSL == "ssl-expiring" }>ssl-expiring</option>
-					<option value="expired" selected?={ filter.SSL == "expired" }>expired</option>
-					<option value="ssl-skipped" selected?={ filter.SSL == "ssl-skipped" }>ssl-skipped</option>
-				</select>
-			</div>
-			<div>
-				<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="status_page">Status page</label>
-				<select id="status_page" name="status_page" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
-					<option value="" selected?={ filter.Page == "" }>(any)</option>
-					for _, p := range statusPages {
-						<option value={ p.Slug } selected?={ filter.Page == p.Slug }>{ p.FriendlyName }</option>
-					}
-				</select>
+			<div class="flex flex-wrap items-end gap-3">
+				<div>
+					<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="q">Search</label>
+					<input id="q" name="q" value={ filter.Search } class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm" placeholder="name or slug"/>
+				</div>
+				<div>
+					<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="status">Status</label>
+					<select id="status" name="status" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
+						<option value="" selected?={ filter.Status == "" }>(any)</option>
+						<option value="up" selected?={ filter.Status == "up" }>up</option>
+						<option value="down" selected?={ filter.Status == "down" }>down</option>
+						<option value="temporary-paused" selected?={ filter.Status == "temporary-paused" }>temporary-paused</option>
+					</select>
+				</div>
+				<div>
+					<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="ssl">SSL</label>
+					<select id="ssl" name="ssl" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
+						<option value="" selected?={ filter.SSL == "" }>(any)</option>
+						<option value="ok" selected?={ filter.SSL == "ok" }>ok</option>
+						<option value="ssl-expiring" selected?={ filter.SSL == "ssl-expiring" }>ssl-expiring</option>
+						<option value="expired" selected?={ filter.SSL == "expired" }>expired</option>
+						<option value="ssl-skipped" selected?={ filter.SSL == "ssl-skipped" }>ssl-skipped</option>
+					</select>
+				</div>
+				<div>
+					<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="status_page">Status page</label>
+					<select id="status_page" name="status_page" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
+						<option value="" selected?={ filter.Page == "" }>(any)</option>
+						for _, p := range statusPages {
+							<option value={ p.Slug } selected?={ filter.Page == p.Slug }>{ p.FriendlyName }</option>
+						}
+					</select>
+				</div>
+				if len(distinctTags) > 0 {
+					<div data-tag-filter>
+						<div class="text-xs text-slate-500 dark:text-slate-400 mb-1">Tags <span class="text-slate-400 dark:text-slate-500">· AND match</span></div>
+						<details class="relative">
+							<summary class="list-none cursor-pointer inline-flex items-center gap-2 border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm min-w-[10rem]">
+								<span class="flex-1" data-tag-label>{ tagPickerLabel(len(filter.Tags)) }</span>
+								<span aria-hidden="true" class="text-slate-400">▾</span>
+							</summary>
+							<div class="absolute z-10 mt-1 w-72 max-h-80 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded shadow-lg flex flex-col">
+								<div class="p-2 border-b border-slate-200 dark:border-slate-700">
+									<input type="text" placeholder="Filter tags…" data-tag-search class="w-full border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm"/>
+								</div>
+								<div class="overflow-y-auto flex-1" data-tag-options>
+									for _, t := range distinctTags {
+										<label data-tag-option data-tag={ t } class="flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800">
+											<input type="checkbox" name="tag" value={ t } checked?={ filter.hasTag(t) } class="rounded border-slate-300 dark:border-slate-700"/>
+											<span>{ t }</span>
+										</label>
+									}
+									<div data-tag-empty hidden class="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">No matching tags</div>
+								</div>
+								<div class="p-2 border-t border-slate-200 dark:border-slate-700 flex justify-end">
+									<button type="button" data-tag-clear class="text-xs text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100">Clear all tags</button>
+								</div>
+							</div>
+						</details>
+					</div>
+				}
+				<div>
+					<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="archived">Archived</label>
+					<select id="archived" name="archived" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
+						<option value="" selected?={ filter.Archived == "" || filter.Archived == "active" }>active</option>
+						<option value="archived" selected?={ filter.Archived == "archived" }>archived</option>
+						<option value="any" selected?={ filter.Archived == "any" }>any</option>
+					</select>
+				</div>
+				<button class="bg-slate-900 dark:bg-slate-200 dark:text-slate-900 text-white text-sm px-3 py-1.5 rounded">Apply</button>
+				if filter.Search != "" || filter.Status != "" || filter.SSL != "" || filter.Page != "" || len(filter.Tags) > 0 || (filter.Archived != "" && filter.Archived != "active") {
+					<a class="text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100" href="/monitors">Clear filters</a>
+				}
 			</div>
 			if len(distinctTags) > 0 {
-				<div>
-					<div class="text-xs text-slate-500 dark:text-slate-400 mb-1">Tags <span class="text-slate-400 dark:text-slate-500">· AND match</span></div>
-					<div class="flex flex-wrap items-center gap-1.5 max-w-md">
-						for _, t := range distinctTags {
-							<label class="cursor-pointer select-none">
-								<input type="checkbox" name="tag" value={ t } checked?={ filter.hasTag(t) } class="peer sr-only"/>
-								<span class="inline-flex items-center px-2.5 py-1 rounded-full border text-xs border-slate-300 dark:border-slate-700 bg-white text-slate-700 dark:bg-slate-900 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 peer-checked:bg-slate-900 peer-checked:text-white peer-checked:border-slate-900 dark:peer-checked:bg-slate-200 dark:peer-checked:text-slate-900 dark:peer-checked:border-slate-200 peer-checked:before:content-['✓'] peer-checked:before:mr-1 peer-focus-visible:ring-2 peer-focus-visible:ring-blue-500 transition-colors">{ t }</span>
-							</label>
-						}
-					</div>
+				<div data-tag-chips class={ "mt-3 flex flex-wrap gap-1.5", templ.KV("hidden", len(filter.Tags) == 0) }>
+					for _, t := range filter.Tags {
+						<span data-tag-chip-for={ t } class="inline-flex items-center gap-1 pl-2.5 pr-1 py-0.5 rounded-full border text-xs border-slate-900 dark:border-slate-200 bg-slate-900 dark:bg-slate-200 text-white dark:text-slate-900">
+							<span data-tag-chip-label>{ t }</span>
+							<button type="button" data-tag-chip-remove={ t } aria-label={ "Remove " + t } class="inline-flex items-center justify-center w-4 h-4 rounded-full hover:bg-slate-700 dark:hover:bg-slate-400 text-white dark:text-slate-900 leading-none">×</button>
+						</span>
+					}
 				</div>
-			}
-			<div>
-				<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="archived">Archived</label>
-				<select id="archived" name="archived" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
-					<option value="" selected?={ filter.Archived == "" || filter.Archived == "active" }>active</option>
-					<option value="archived" selected?={ filter.Archived == "archived" }>archived</option>
-					<option value="any" selected?={ filter.Archived == "any" }>any</option>
-				</select>
-			</div>
-			<button class="bg-slate-900 dark:bg-slate-200 dark:text-slate-900 text-white text-sm px-3 py-1.5 rounded">Apply</button>
-			if filter.Search != "" || filter.Status != "" || filter.SSL != "" || filter.Page != "" || len(filter.Tags) > 0 || (filter.Archived != "" && filter.Archived != "active") {
-				<a class="text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100" href="/monitors">Clear filters</a>
+				<template data-tag-chip-template>
+					<span data-tag-chip-for="" class="inline-flex items-center gap-1 pl-2.5 pr-1 py-0.5 rounded-full border text-xs border-slate-900 dark:border-slate-200 bg-slate-900 dark:bg-slate-200 text-white dark:text-slate-900">
+						<span data-tag-chip-label></span>
+						<button type="button" data-tag-chip-remove="" aria-label="Remove tag" class="inline-flex items-center justify-center w-4 h-4 rounded-full hover:bg-slate-700 dark:hover:bg-slate-400 text-white dark:text-slate-900 leading-none">×</button>
+					</span>
+				</template>
 			}
 		</form>
+		@tagFilter()
 
 		if len(listing.Items) == 0 {
 			<div class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-6 text-center text-sm text-slate-500 dark:text-slate-400">

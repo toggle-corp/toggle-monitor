@@ -35,8 +35,8 @@ type MonitorsFilter struct {
 	Tags []string
 }
 
-// hasTag reports whether `t` is in f.Tags. Used by the chip-style
-// tag checkboxes to repaint the user's selection on render.
+// hasTag reports whether `t` is in f.Tags. Used by the tag-picker
+// checkboxes to repaint the user's selection on render.
 func (f MonitorsFilter) hasTag(t string) bool {
 	for _, x := range f.Tags {
 		if x == t {
@@ -44,6 +44,141 @@ func (f MonitorsFilter) hasTag(t string) bool {
 		}
 	}
 	return false
+}
+
+// tagPickerLabel renders the picker button caption: "Add tags…" when
+// no tag is selected, "N selected" when one or more are. Pre-rendered
+// server-side so the no-JS path shows the correct count.
+func tagPickerLabel(n int) string {
+	if n == 0 {
+		return "Add tags…"
+	}
+	return fmt.Sprintf("%d selected", n)
+}
+
+// tagFilter wires the popover-based tag picker on /monitors. The
+// underlying `<input type="checkbox" name="tag">` array is the source
+// of truth — submission happens via the form's existing Apply button
+// (repeated `?tag=foo&tag=bar` params). JS only handles popover
+// open/close, in-popover search, the selected-chips preview, and the
+// "Clear all tags" link. Without JS the user gets a native
+// <details>-driven disclosure with the same checkboxes inside; the
+// chip preview row simply stays in its server-rendered state.
+func tagFilter() templ.ComponentScript {
+	return templ.ComponentScript{
+		Name: `__templ_tagFilter_f4dc`,
+		Function: `function __templ_tagFilter_f4dc(){(function() {
+		document.querySelectorAll("[data-tag-filter]").forEach(function(root) {
+			var details = root.querySelector("details");
+			if (!details) return;
+			var label = root.querySelector("[data-tag-label]");
+			var search = root.querySelector("[data-tag-search]");
+			var options = Array.prototype.slice.call(root.querySelectorAll("[data-tag-option]"));
+			var emptyState = root.querySelector("[data-tag-empty]");
+			var clearBtn = root.querySelector("[data-tag-clear]");
+			var form = root.closest("form");
+			var chipsRoot = form ? form.querySelector("[data-tag-chips]") : null;
+			var chipTpl = form ? form.querySelector("[data-tag-chip-template]") : null;
+
+			function checkedBoxes() {
+				return Array.prototype.slice.call(root.querySelectorAll("input[name='tag']:checked"));
+			}
+
+			function refresh() {
+				var checked = checkedBoxes();
+				if (label) {
+					label.textContent = checked.length === 0 ? "Add tags…" : checked.length + " selected";
+				}
+				if (chipsRoot && chipTpl) {
+					chipsRoot.innerHTML = "";
+					if (checked.length === 0) {
+						chipsRoot.classList.add("hidden");
+					} else {
+						chipsRoot.classList.remove("hidden");
+						checked.forEach(function(cb) {
+							var node = chipTpl.content.firstElementChild.cloneNode(true);
+							node.setAttribute("data-tag-chip-for", cb.value);
+							var lbl = node.querySelector("[data-tag-chip-label]");
+							if (lbl) lbl.textContent = cb.value;
+							var rm = node.querySelector("[data-tag-chip-remove]");
+							if (rm) {
+								rm.setAttribute("data-tag-chip-remove", cb.value);
+								rm.setAttribute("aria-label", "Remove " + cb.value);
+							}
+							chipsRoot.appendChild(node);
+						});
+					}
+				}
+			}
+
+			if (search) {
+				search.addEventListener("input", function() {
+					var q = search.value.toLowerCase().trim();
+					var anyVisible = false;
+					options.forEach(function(opt) {
+						var tag = (opt.getAttribute("data-tag") || "").toLowerCase();
+						var match = q === "" || tag.indexOf(q) !== -1;
+						opt.hidden = !match;
+						if (match) anyVisible = true;
+					});
+					if (emptyState) emptyState.hidden = anyVisible;
+				});
+			}
+
+			options.forEach(function(opt) {
+				var cb = opt.querySelector("input[type='checkbox']");
+				if (cb) cb.addEventListener("change", refresh);
+			});
+
+			if (clearBtn) {
+				clearBtn.addEventListener("click", function() {
+					var changed = false;
+					options.forEach(function(opt) {
+						var cb = opt.querySelector("input[type='checkbox']");
+						if (cb && cb.checked) {
+							cb.checked = false;
+							changed = true;
+						}
+					});
+					if (changed) refresh();
+				});
+			}
+
+			if (chipsRoot) {
+				chipsRoot.addEventListener("click", function(e) {
+					var btn = e.target.closest("[data-tag-chip-remove]");
+					if (!btn) return;
+					var tag = btn.getAttribute("data-tag-chip-remove");
+					if (!tag) return;
+					var cb = root.querySelector("input[name='tag'][value=\"" + tag.replace(/"/g, '\\"') + "\"]");
+					if (cb) {
+						cb.checked = false;
+						refresh();
+					}
+				});
+			}
+
+			document.addEventListener("click", function(e) {
+				if (details.open && !details.contains(e.target)) {
+					details.open = false;
+				}
+			});
+			document.addEventListener("keydown", function(e) {
+				if (e.key === "Escape" && details.open) {
+					details.open = false;
+				}
+			});
+			details.addEventListener("toggle", function() {
+				if (details.open && search) {
+					search.focus();
+				}
+			});
+		});
+	})();
+}`,
+		Call:       templ.SafeScript(`__templ_tagFilter_f4dc`),
+		CallInline: templ.SafeScriptInline(`__templ_tagFilter_f4dc`),
+	}
 }
 
 // sortableHeader renders one <th> as a clickable link that toggles
@@ -78,7 +213,7 @@ func sortableHeader(label, key string, f MonitorsFilter) templ.Component {
 		var templ_7745c5c3_Var2 templ.SafeURL
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(sortHref(key, f)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 47, Col: 125}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 176, Col: 125}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
@@ -91,7 +226,7 @@ func sortableHeader(label, key string, f MonitorsFilter) templ.Component {
 		var templ_7745c5c3_Var3 string
 		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 48, Col: 10}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 177, Col: 10}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 		if templ_7745c5c3_Err != nil {
@@ -155,7 +290,7 @@ func Paginator(basePath string, page, perPage, total int, extraParams url.Values
 			var templ_7745c5c3_Var5 string
 			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprint(page))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 68, Col: 75}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 197, Col: 75}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 			if templ_7745c5c3_Err != nil {
@@ -168,7 +303,7 @@ func Paginator(basePath string, page, perPage, total int, extraParams url.Values
 			var templ_7745c5c3_Var6 string
 			templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprint(pageCount(total, perPage)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 68, Col: 120}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 197, Col: 120}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 			if templ_7745c5c3_Err != nil {
@@ -181,7 +316,7 @@ func Paginator(basePath string, page, perPage, total int, extraParams url.Values
 			var templ_7745c5c3_Var7 string
 			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprint(total))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 68, Col: 145}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 197, Col: 145}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 			if templ_7745c5c3_Err != nil {
@@ -199,7 +334,7 @@ func Paginator(basePath string, page, perPage, total int, extraParams url.Values
 				var templ_7745c5c3_Var8 templ.SafeURL
 				templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinURLErrs(paginatorLink(basePath, extraParams, page-1))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 70, Col: 115}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 199, Col: 115}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 				if templ_7745c5c3_Err != nil {
@@ -218,7 +353,7 @@ func Paginator(basePath string, page, perPage, total int, extraParams url.Values
 				var templ_7745c5c3_Var9 templ.SafeURL
 				templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinURLErrs(paginatorLink(basePath, extraParams, page+1))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 73, Col: 115}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 202, Col: 115}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 				if templ_7745c5c3_Err != nil {
@@ -271,14 +406,14 @@ func MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPag
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "<h1 class=\"text-xl font-semibold mb-3\">Monitors</h1><form hx-get=\"/monitors\" hx-target=\"body\" hx-push-url=\"true\" method=\"get\" action=\"/monitors\" class=\"flex flex-wrap items-end gap-3 mb-4 bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-3\"><div><label class=\"block text-xs text-slate-500 dark:text-slate-400 mb-1\" for=\"q\">Search</label> <input id=\"q\" name=\"q\" value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "<h1 class=\"text-xl font-semibold mb-3\">Monitors</h1><form hx-get=\"/monitors\" hx-target=\"body\" hx-push-url=\"true\" method=\"get\" action=\"/monitors\" class=\"mb-4 bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-3\"><div class=\"flex flex-wrap items-end gap-3\"><div><label class=\"block text-xs text-slate-500 dark:text-slate-400 mb-1\" for=\"q\">Search</label> <input id=\"q\" name=\"q\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var12 string
 			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.ResolveAttributeValue(filter.Search)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 92, Col: 48}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 222, Col: 49}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var12)
 			if templ_7745c5c3_Err != nil {
@@ -396,7 +531,7 @@ func MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPag
 				var templ_7745c5c3_Var13 string
 				templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.ResolveAttributeValue(p.Slug)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 118, Col: 28}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 248, Col: 29}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var13)
 				if templ_7745c5c3_Err != nil {
@@ -419,7 +554,7 @@ func MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPag
 				var templ_7745c5c3_Var14 string
 				templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(p.FriendlyName)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 118, Col: 83}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 248, Col: 84}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 				if templ_7745c5c3_Err != nil {
@@ -435,108 +570,232 @@ func MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPag
 				return templ_7745c5c3_Err
 			}
 			if len(distinctTags) > 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, "<div><div class=\"text-xs text-slate-500 dark:text-slate-400 mb-1\">Tags <span class=\"text-slate-400 dark:text-slate-500\">· AND match</span></div><div class=\"flex flex-wrap items-center gap-1.5 max-w-md\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, "<div data-tag-filter><div class=\"text-xs text-slate-500 dark:text-slate-400 mb-1\">Tags <span class=\"text-slate-400 dark:text-slate-500\">· AND match</span></div><details class=\"relative\"><summary class=\"list-none cursor-pointer inline-flex items-center gap-2 border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm min-w-[10rem]\"><span class=\"flex-1\" data-tag-label>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var15 string
+				templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(tagPickerLabel(len(filter.Tags)))
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 257, Col: 78}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 45, "</span> <span aria-hidden=\"true\" class=\"text-slate-400\">▾</span></summary><div class=\"absolute z-10 mt-1 w-72 max-h-80 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded shadow-lg flex flex-col\"><div class=\"p-2 border-b border-slate-200 dark:border-slate-700\"><input type=\"text\" placeholder=\"Filter tags…\" data-tag-search class=\"w-full border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm\"></div><div class=\"overflow-y-auto flex-1\" data-tag-options>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				for _, t := range distinctTags {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 45, "<label class=\"cursor-pointer select-none\"><input type=\"checkbox\" name=\"tag\" value=\"")
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					var templ_7745c5c3_Var15 string
-					templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.ResolveAttributeValue(t)
-					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 128, Col: 51}
-					}
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var15)
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 46, "\"")
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					if filter.hasTag(t) {
-						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 47, " checked")
-						if templ_7745c5c3_Err != nil {
-							return templ_7745c5c3_Err
-						}
-					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 48, " class=\"peer sr-only\"> <span class=\"inline-flex items-center px-2.5 py-1 rounded-full border text-xs border-slate-300 dark:border-slate-700 bg-white text-slate-700 dark:bg-slate-900 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 peer-checked:bg-slate-900 peer-checked:text-white peer-checked:border-slate-900 dark:peer-checked:bg-slate-200 dark:peer-checked:text-slate-900 dark:peer-checked:border-slate-200 peer-checked:before:content-['✓'] peer-checked:before:mr-1 peer-focus-visible:ring-2 peer-focus-visible:ring-blue-500 transition-colors\">")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 46, "<label data-tag-option data-tag=\"")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 					var templ_7745c5c3_Var16 string
-					templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(t)
+					templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.ResolveAttributeValue(t)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 129, Col: 551}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 266, Col: 45}
 					}
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var16)
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 49, "</span></label>")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 47, "\" class=\"flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800\"><input type=\"checkbox\" name=\"tag\" value=\"")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					var templ_7745c5c3_Var17 string
+					templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.ResolveAttributeValue(t)
+					if templ_7745c5c3_Err != nil {
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 267, Col: 54}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var17)
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 48, "\"")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					if filter.hasTag(t) {
+						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 49, " checked")
+						if templ_7745c5c3_Err != nil {
+							return templ_7745c5c3_Err
+						}
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 50, " class=\"rounded border-slate-300 dark:border-slate-700\"> <span>")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					var templ_7745c5c3_Var18 string
+					templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(t)
+					if templ_7745c5c3_Err != nil {
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 268, Col: 20}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 51, "</span></label>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 50, "</div></div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 52, "<div data-tag-empty hidden class=\"px-3 py-2 text-sm text-slate-500 dark:text-slate-400\">No matching tags</div></div><div class=\"p-2 border-t border-slate-200 dark:border-slate-700 flex justify-end\"><button type=\"button\" data-tag-clear class=\"text-xs text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100\">Clear all tags</button></div></div></details></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 51, "<div><label class=\"block text-xs text-slate-500 dark:text-slate-400 mb-1\" for=\"archived\">Archived</label> <select id=\"archived\" name=\"archived\" class=\"border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm\"><option value=\"\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 53, "<div><label class=\"block text-xs text-slate-500 dark:text-slate-400 mb-1\" for=\"archived\">Archived</label> <select id=\"archived\" name=\"archived\" class=\"border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm\"><option value=\"\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			if filter.Archived == "" || filter.Archived == "active" {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 52, " selected")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 53, ">active</option> <option value=\"archived\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			if filter.Archived == "archived" {
 				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 54, " selected")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 55, ">archived</option> <option value=\"any\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 55, ">active</option> <option value=\"archived\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			if filter.Archived == "any" {
+			if filter.Archived == "archived" {
 				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 56, " selected")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 57, ">any</option></select></div><button class=\"bg-slate-900 dark:bg-slate-200 dark:text-slate-900 text-white text-sm px-3 py-1.5 rounded\">Apply</button> ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 57, ">archived</option> <option value=\"any\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			if filter.Archived == "any" {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 58, " selected")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 59, ">any</option></select></div><button class=\"bg-slate-900 dark:bg-slate-200 dark:text-slate-900 text-white text-sm px-3 py-1.5 rounded\">Apply</button> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			if filter.Search != "" || filter.Status != "" || filter.SSL != "" || filter.Page != "" || len(filter.Tags) > 0 || (filter.Archived != "" && filter.Archived != "active") {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 58, "<a class=\"text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100\" href=\"/monitors\">Clear filters</a>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 60, "<a class=\"text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100\" href=\"/monitors\">Clear filters</a>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 59, "</form>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 61, "</div>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			if len(distinctTags) > 0 {
+				var templ_7745c5c3_Var19 = []any{"mt-3 flex flex-wrap gap-1.5", templ.KV("hidden", len(filter.Tags) == 0)}
+				templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var19...)
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 62, "<div data-tag-chips class=\"")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var20 string
+				templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.ResolveAttributeValue(templ.CSSClasses(templ_7745c5c3_Var19).String())
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 1, Col: 0}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var20)
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 63, "\">")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				for _, t := range filter.Tags {
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 64, "<span data-tag-chip-for=\"")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					var templ_7745c5c3_Var21 string
+					templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.ResolveAttributeValue(t)
+					if templ_7745c5c3_Err != nil {
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 296, Col: 33}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var21)
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 65, "\" class=\"inline-flex items-center gap-1 pl-2.5 pr-1 py-0.5 rounded-full border text-xs border-slate-900 dark:border-slate-200 bg-slate-900 dark:bg-slate-200 text-white dark:text-slate-900\"><span data-tag-chip-label>")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					var templ_7745c5c3_Var22 string
+					templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(t)
+					if templ_7745c5c3_Err != nil {
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 297, Col: 36}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 66, "</span> <button type=\"button\" data-tag-chip-remove=\"")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					var templ_7745c5c3_Var23 string
+					templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.ResolveAttributeValue(t)
+					if templ_7745c5c3_Err != nil {
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 298, Col: 53}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var23)
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 67, "\" aria-label=\"")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					var templ_7745c5c3_Var24 string
+					templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.ResolveAttributeValue("Remove " + t)
+					if templ_7745c5c3_Err != nil {
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 298, Col: 82}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var24)
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 68, "\" class=\"inline-flex items-center justify-center w-4 h-4 rounded-full hover:bg-slate-700 dark:hover:bg-slate-400 text-white dark:text-slate-900 leading-none\">×</button></span>")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 69, "</div><template data-tag-chip-template><span data-tag-chip-for=\"\" class=\"inline-flex items-center gap-1 pl-2.5 pr-1 py-0.5 rounded-full border text-xs border-slate-900 dark:border-slate-200 bg-slate-900 dark:bg-slate-200 text-white dark:text-slate-900\"><span data-tag-chip-label></span> <button type=\"button\" data-tag-chip-remove=\"\" aria-label=\"Remove tag\" class=\"inline-flex items-center justify-center w-4 h-4 rounded-full hover:bg-slate-700 dark:hover:bg-slate-400 text-white dark:text-slate-900 leading-none\">×</button></span></template>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 70, "</form>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = tagFilter().Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 71, " ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			if len(listing.Items) == 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 60, "<div class=\"bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-6 text-center text-sm text-slate-500 dark:text-slate-400\"><p>No monitors match your filters.</p><a class=\"text-blue-700 dark:text-blue-400 hover:underline\" href=\"/monitors\">Clear filters</a></div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 72, "<div class=\"bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-6 text-center text-sm text-slate-500 dark:text-slate-400\"><p>No monitors match your filters.</p><a class=\"text-blue-700 dark:text-blue-400 hover:underline\" href=\"/monitors\">Clear filters</a></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 61, "<div class=\"overflow-x-auto bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700\"><table class=\"w-full\"><thead><tr class=\"bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 73, "<div class=\"overflow-x-auto bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700\"><table class=\"w-full\"><thead><tr class=\"bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -544,7 +803,7 @@ func MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPag
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 62, "<th class=\"py-2 px-3\">Tags</th>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 74, "<th class=\"py-2 px-3\">Tags</th>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -564,7 +823,7 @@ func MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPag
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 63, "<th class=\"py-2 px-3\">Depends on</th>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 75, "<th class=\"py-2 px-3\">Depends on</th>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -572,7 +831,7 @@ func MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPag
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 64, "</tr></thead> <tbody>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 76, "</tr></thead> <tbody>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -582,7 +841,7 @@ func MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPag
 						return templ_7745c5c3_Err
 					}
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 65, "</tbody></table></div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 77, "</tbody></table></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
