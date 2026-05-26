@@ -208,6 +208,54 @@ serviceMonitor:
   scrapeTimeout: 10s
   labels: {}
 
+# Optional Grafana dashboard, shipped as a ConfigMap and discovered by
+# the kiwigrid k8s-sidecar (default in kube-prometheus-stack and the
+# Grafana community chart). Pairs with the ServiceMonitor above —
+# enable both if you want the metrics scraped AND a dashboard for them.
+#
+# The dashboard provides a hybrid operator/overview view:
+#   Row 1  at-a-glance stats (monitors down, failure rate, freshness,
+#          uptime, SSL sidebar)
+#   Row 2  per-monitor triage table — sort by 'Up' desc to surface
+#          anything down
+#   Row 3  outcome / latency / state-timeline drilldowns, filtered
+#          by the $monitor template variable
+#   Row 4  runtime internals (collapsed by default)
+#
+# Tweak `title` and `uid` per environment if you run several
+# toggle-monitor instances against the same Grafana — UIDs collide
+# silently and the second dashboard quietly overwrites the first.
+grafana:
+  dashboard:
+    enabled: false
+
+    # Sidecar discovery. Both key and value must match your Grafana
+    # install's sidecar config (kube-prometheus-stack defaults shown).
+    label: grafana_dashboard
+    labelValue: "1"
+    # Optional Grafana folder. Empty = root.
+    folder: ""
+
+    # Dashboard identity. Override per environment for multi-cluster.
+    title: "Toggle Monitor"
+    uid: toggle-monitor-overview
+    tags:
+      - toggle-monitor
+      - monitoring
+      - uptime
+
+    # Display defaults. `from` accepts any Grafana time expression
+    # (now-6h, now-24h, now-7d, …).
+    timeRange:
+      from: "now-6h"
+      to: "now"
+    refresh: "30s"
+
+    # Provisioned dashboards are immutable by default — UI edits drift
+    # from the source-of-truth in git. Flip to true if you want
+    # operators to be able to experiment without forking.
+    editable: false
+
 # ArgoCD sync hook: a one-shot Job that runs `toggle-monitor migrate`
 # before the new app pod rolls out. Uses ArgoCD's Sync phase with
 # sync-wave ordering (SA/ConfigMap at -2, this Job at -1, Deployment at 0)

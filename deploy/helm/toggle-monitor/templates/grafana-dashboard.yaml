@@ -1,0 +1,765 @@
+{{- /*
+  Grafana dashboard for toggle-monitor, distributed as a ConfigMap that
+  the kiwigrid k8s-sidecar (used by kube-prometheus-stack and the Grafana
+  community chart) picks up via the discovery label set in values.
+
+  Opt-in: set .Values.grafana.dashboard.enabled = true.
+
+  Layout (see also docs/operations.md):
+    Row 1 — at-a-glance stats (always expanded)
+    Row 2 — per-monitor triage table (always expanded)
+    Row 3 — outcome / latency / state-timeline drilldowns
+    Row 4 — runtime internals (collapsed by default)
+
+  Designed against the metrics emitted by internal/observability and
+  scraped by the chart's ServiceMonitor. PromQL uses the Grafana macros
+  $__rate_interval and $__range; Grafana template variables $datasource
+  and $monitor are defined in templating.list below.
+*/ -}}
+{{- if .Values.grafana.dashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "toggle-monitor.fullname" . }}-grafana-dashboard
+  labels:
+    {{- include "toggle-monitor.labels" . | nindent 4 }}
+    {{ .Values.grafana.dashboard.label }}: {{ .Values.grafana.dashboard.labelValue | quote }}
+  {{- with .Values.grafana.dashboard.folder }}
+  annotations:
+    grafana_folder: {{ . | quote }}
+  {{- end }}
+data:
+  toggle-monitor.json: |-
+    {
+      "annotations": { "list": [] },
+      "editable": {{ .Values.grafana.dashboard.editable }},
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "id": null,
+      "links": [],
+      "liveNow": false,
+      "schemaVersion": 39,
+      "style": "dark",
+      "tags": [
+        {{- range $i, $t := .Values.grafana.dashboard.tags -}}
+        {{- if $i }}, {{ end }}{{ $t | quote }}
+        {{- end -}}
+      ],
+      "templating": {
+        "list": [
+          {
+            "name": "datasource",
+            "label": "Datasource",
+            "type": "datasource",
+            "query": "prometheus",
+            "current": {},
+            "hide": 0,
+            "refresh": 1,
+            "skipUrlSync": false
+          },
+          {
+            "name": "monitor",
+            "label": "Monitor",
+            "type": "query",
+            "datasource": { "type": "prometheus", "uid": "${datasource}" },
+            "query": { "query": "label_values(toggle_monitor_active_incidents, monitor)", "refId": "monitor" },
+            "regex": "",
+            "sort": 1,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".*",
+            "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+            "hide": 0,
+            "refresh": 2,
+            "skipUrlSync": false
+          }
+        ]
+      },
+      "time": {
+        "from": {{ .Values.grafana.dashboard.timeRange.from | quote }},
+        "to":   {{ .Values.grafana.dashboard.timeRange.to   | quote }}
+      },
+      "timepicker": {
+        "refresh_intervals": ["10s","30s","1m","5m","15m"]
+      },
+      "refresh": {{ .Values.grafana.dashboard.refresh | quote }},
+      "timezone": "browser",
+      "title": {{ .Values.grafana.dashboard.title | quote }},
+      "uid": {{ .Values.grafana.dashboard.uid | quote }},
+      "weekStart": "",
+      "panels": [
+
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "Monitors down",
+          "description": "Count of monitors with an open uptime incident.",
+          "gridPos": { "h": 4, "w": 5, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "expr": "count(max by (monitor) (toggle_monitor_active_incidents{type=\"uptime\",monitor=~\"$monitor\"}) > 0) or vector(0)",
+              "instant": true,
+              "legendFormat": ""
+            }
+          ],
+          "options": {
+            "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "textMode": "auto"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red",   "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "Failure rate (5m)",
+          "description": "Share of non-paused probes that failed in the last 5 minutes, across the selected monitors.",
+          "gridPos": { "h": 4, "w": 5, "x": 5, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "expr": "sum(rate(toggle_monitor_checks_total{status=\"fail\",monitor=~\"$monitor\"}[5m])) / sum(rate(toggle_monitor_checks_total{status!=\"paused\",monitor=~\"$monitor\"}[5m]))",
+              "instant": true,
+              "legendFormat": ""
+            }
+          ],
+          "options": {
+            "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "textMode": "auto"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "decimals": 2,
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green",  "value": null },
+                  { "color": "yellow", "value": 0.0001 },
+                  { "color": "red",    "value": 0.05 }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Worker freshness",
+          "description": "Seconds since the worker last completed a probe (any monitor). Updates on every Tick — large values mean the scheduler has stalled.",
+          "gridPos": { "h": 4, "w": 4, "x": 10, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "expr": "time() - max(toggle_monitor_worker_last_tick_seconds)",
+              "instant": true,
+              "legendFormat": ""
+            }
+          ],
+          "options": {
+            "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "textMode": "auto"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green",  "value": null },
+                  { "color": "yellow", "value": 120 },
+                  { "color": "red",    "value": 600 }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Uptime (probe-weighted, $__range)",
+          "description": "Fraction of non-paused probes that succeeded over the dashboard's selected time range.",
+          "gridPos": { "h": 4, "w": 5, "x": 14, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "expr": "1 - (sum(increase(toggle_monitor_checks_total{status=\"fail\",monitor=~\"$monitor\"}[$__range])) / sum(increase(toggle_monitor_checks_total{status!=\"paused\",monitor=~\"$monitor\"}[$__range])))",
+              "instant": true,
+              "legendFormat": ""
+            }
+          ],
+          "options": {
+            "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "textMode": "auto"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "decimals": 4,
+              "min": 0,
+              "max": 1,
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red",    "value": null },
+                  { "color": "yellow", "value": 0.99 },
+                  { "color": "green",  "value": 0.999 }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+
+        {
+          "id": 5,
+          "type": "stat",
+          "title": "Monitors with SSL issue",
+          "description": "Count of monitors with an open SSL incident (calendar-driven; not page-worthy).",
+          "gridPos": { "h": 4, "w": 5, "x": 19, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "expr": "count(max by (monitor) (toggle_monitor_active_incidents{type=\"ssl\",monitor=~\"$monitor\"}) > 0) or vector(0)",
+              "instant": true,
+              "legendFormat": ""
+            }
+          ],
+          "options": {
+            "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "textMode": "auto"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green",  "value": null },
+                  { "color": "yellow", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+
+        {
+          "id": 10,
+          "type": "table",
+          "title": "Per-monitor triage",
+          "description": "One row per monitor. Sort by 'Up' descending to surface anything currently down. Click a row's monitor value to drill into it via the $monitor template variable.",
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 4 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "Up",
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "expr": "max by (monitor) (toggle_monitor_active_incidents{type=\"uptime\",monitor=~\"$monitor\"})",
+              "instant": true,
+              "format": "table",
+              "legendFormat": ""
+            },
+            {
+              "refId": "SSL",
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "expr": "max by (monitor) (toggle_monitor_active_incidents{type=\"ssl\",monitor=~\"$monitor\"})",
+              "instant": true,
+              "format": "table",
+              "legendFormat": ""
+            },
+            {
+              "refId": "Uptime",
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "expr": "1 - (sum by (monitor) (increase(toggle_monitor_checks_total{status=\"fail\",monitor=~\"$monitor\"}[$__range])) / sum by (monitor) (increase(toggle_monitor_checks_total{status!=\"paused\",monitor=~\"$monitor\"}[$__range])))",
+              "instant": true,
+              "format": "table",
+              "legendFormat": ""
+            },
+            {
+              "refId": "FailRate",
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "expr": "sum by (monitor) (rate(toggle_monitor_checks_total{status=\"fail\",monitor=~\"$monitor\"}[5m])) / sum by (monitor) (rate(toggle_monitor_checks_total{status!=\"paused\",monitor=~\"$monitor\"}[5m]))",
+              "instant": true,
+              "format": "table",
+              "legendFormat": ""
+            },
+            {
+              "refId": "P95",
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "expr": "histogram_quantile(0.95, sum by (monitor, le) (rate(toggle_monitor_check_duration_seconds_bucket{monitor=~\"$monitor\"}[5m])))",
+              "instant": true,
+              "format": "table",
+              "legendFormat": ""
+            }
+          ],
+          "transformations": [
+            { "id": "merge", "options": {} },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true,
+                  "__name__": true,
+                  "type": true, "type 1": true, "type 2": true,
+                  "job": true, "instance": true, "namespace": true, "pod": true, "container": true, "endpoint": true, "service": true
+                },
+                "indexByName": {
+                  "monitor": 0,
+                  "Value #Up": 1,
+                  "Value #SSL": 2,
+                  "Value #Uptime": 3,
+                  "Value #FailRate": 4,
+                  "Value #P95": 5
+                },
+                "renameByName": {
+                  "monitor": "Monitor",
+                  "Value #Up": "Up",
+                  "Value #SSL": "SSL",
+                  "Value #Uptime": "Uptime ($__range)",
+                  "Value #FailRate": "Failure rate (5m)",
+                  "Value #P95": "p95 latency (5m)"
+                }
+              }
+            }
+          ],
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": { "show": false, "reducer": ["sum"], "countRows": false, "fields": "" },
+            "sortBy": [{ "displayName": "Up", "desc": true }]
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": { "align": "auto", "filterable": true }
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "Up" },
+                "properties": [
+                  { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "basic" } },
+                  { "id": "custom.width", "value": 70 },
+                  { "id": "mappings", "value": [
+                    { "type": "value", "options": { "0": { "text": "up", "color": "green", "index": 0 }, "1": { "text": "down", "color": "red", "index": 1 } } }
+                  ] },
+                  { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }
+                ]
+              },
+              {
+                "matcher": { "id": "byName", "options": "SSL" },
+                "properties": [
+                  { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "basic" } },
+                  { "id": "custom.width", "value": 70 },
+                  { "id": "mappings", "value": [
+                    { "type": "value", "options": { "0": { "text": "ok", "color": "green", "index": 0 }, "1": { "text": "expiring", "color": "yellow", "index": 1 } } }
+                  ] },
+                  { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 } ] } }
+                ]
+              },
+              {
+                "matcher": { "id": "byName", "options": "Uptime ($__range)" },
+                "properties": [
+                  { "id": "unit", "value": "percentunit" },
+                  { "id": "decimals", "value": 4 },
+                  { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+                  { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 0.99 }, { "color": "green", "value": 0.999 } ] } }
+                ]
+              },
+              {
+                "matcher": { "id": "byName", "options": "Failure rate (5m)" },
+                "properties": [
+                  { "id": "unit", "value": "percentunit" },
+                  { "id": "decimals", "value": 2 },
+                  { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+                  { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 0.0001 }, { "color": "red", "value": 0.05 } ] } }
+                ]
+              },
+              {
+                "matcher": { "id": "byName", "options": "p95 latency (5m)" },
+                "properties": [
+                  { "id": "unit", "value": "s" },
+                  { "id": "decimals", "value": 3 }
+                ]
+              }
+            ]
+          }
+        },
+
+        {
+          "id": 20,
+          "type": "timeseries",
+          "title": "Check outcomes (rate by status)",
+          "description": "Stacked area of probe outcomes per second across the selected monitors. 'paused' is excluded — it's a scheduler state, not a health signal.",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 14 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "expr": "sum by (status) (rate(toggle_monitor_checks_total{monitor=~\"$monitor\",status!=\"paused\"}[$__rate_interval]))",
+              "legendFormat": {{ "{{status}}" | quote }}
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "cps",
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "fillOpacity": 30,
+                "stacking": { "mode": "normal", "group": "A" },
+                "showPoints": "never",
+                "lineWidth": 1
+              },
+              "color": { "mode": "palette-classic" }
+            },
+            "overrides": [
+              { "matcher": { "id": "byName", "options": "ok" },   "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] },
+              { "matcher": { "id": "byName", "options": "fail" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] }
+            ]
+          },
+          "options": {
+            "tooltip": { "mode": "multi", "sort": "desc" },
+            "legend": { "showLegend": true, "displayMode": "list", "placement": "bottom", "calcs": [] }
+          }
+        },
+
+        {
+          "id": 21,
+          "type": "timeseries",
+          "title": "Failure rate by monitor (top 10)",
+          "description": "Per-monitor failure ratio over the dashboard's rate interval, limited to the 10 worst at the current instant.",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "expr": "topk(10, sum by (monitor) (rate(toggle_monitor_checks_total{status=\"fail\",monitor=~\"$monitor\"}[$__rate_interval])) / sum by (monitor) (rate(toggle_monitor_checks_total{status!=\"paused\",monitor=~\"$monitor\"}[$__rate_interval])))",
+              "legendFormat": {{ "{{monitor}}" | quote }}
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "lineWidth": 1
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": { "mode": "multi", "sort": "desc" },
+            "legend": { "showLegend": true, "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] }
+          }
+        },
+
+        {
+          "id": 22,
+          "type": "timeseries",
+          "title": "Latency p50 / p95 / p99",
+          "description": "Aggregate probe latency across all selected monitors. For per-monitor latency see the Row 2 table.",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "p50",
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "expr": "histogram_quantile(0.5,  sum by (le) (rate(toggle_monitor_check_duration_seconds_bucket{monitor=~\"$monitor\"}[$__rate_interval])))",
+              "legendFormat": "p50"
+            },
+            {
+              "refId": "p95",
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(toggle_monitor_check_duration_seconds_bucket{monitor=~\"$monitor\"}[$__rate_interval])))",
+              "legendFormat": "p95"
+            },
+            {
+              "refId": "p99",
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(toggle_monitor_check_duration_seconds_bucket{monitor=~\"$monitor\"}[$__rate_interval])))",
+              "legendFormat": "p99"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "lineWidth": 1
+              },
+              "color": { "mode": "palette-classic" }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": { "mode": "multi", "sort": "desc" },
+            "legend": { "showLegend": true, "displayMode": "list", "placement": "bottom", "calcs": [] }
+          }
+        },
+
+        {
+          "id": 23,
+          "type": "state-timeline",
+          "title": "Uptime incidents — state timeline",
+          "description": "One lane per monitor; red means a uptime incident was open at that time.",
+          "gridPos": { "h": 6, "w": 24, "x": 0, "y": 30 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "expr": "max by (monitor) (toggle_monitor_active_incidents{type=\"uptime\",monitor=~\"$monitor\"})",
+              "legendFormat": {{ "{{monitor}}" | quote }}
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": { "lineWidth": 0, "fillOpacity": 80 },
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "up",   "color": "green", "index": 0 } } },
+                { "type": "value", "options": { "1": { "text": "down", "color": "red",   "index": 1 } } }
+              ],
+              "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] }
+            },
+            "overrides": []
+          },
+          "options": {
+            "mergeValues": true,
+            "showValue": "never",
+            "alignValue": "left",
+            "rowHeight": 0.9,
+            "legend": { "showLegend": false, "displayMode": "list", "placement": "bottom" },
+            "tooltip": { "mode": "single", "sort": "none" }
+          }
+        },
+
+        {
+          "id": 24,
+          "type": "state-timeline",
+          "title": "SSL incidents — state timeline",
+          "description": "One lane per monitor; yellow means an SSL incident (e.g. cert nearing expiry) was open at that time.",
+          "gridPos": { "h": 6, "w": 24, "x": 0, "y": 36 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "expr": "max by (monitor) (toggle_monitor_active_incidents{type=\"ssl\",monitor=~\"$monitor\"})",
+              "legendFormat": {{ "{{monitor}}" | quote }}
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": { "lineWidth": 0, "fillOpacity": 80 },
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "ok",       "color": "green",  "index": 0 } } },
+                { "type": "value", "options": { "1": { "text": "expiring", "color": "yellow", "index": 1 } } }
+              ],
+              "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 } ] }
+            },
+            "overrides": []
+          },
+          "options": {
+            "mergeValues": true,
+            "showValue": "never",
+            "alignValue": "left",
+            "rowHeight": 0.9,
+            "legend": { "showLegend": false, "displayMode": "list", "placement": "bottom" },
+            "tooltip": { "mode": "single", "sort": "none" }
+          }
+        },
+
+        {
+          "id": 30,
+          "type": "row",
+          "title": "Runtime internals",
+          "collapsed": true,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 42 },
+          "panels": [
+
+            {
+              "id": 31,
+              "type": "timeseries",
+              "title": "Worker freshness over time",
+              "description": "time() - worker_last_tick_seconds. Companion to the Row 1 stat — lets you spot retrospective stalls.",
+              "gridPos": { "h": 6, "w": 6, "x": 0, "y": 43 },
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "targets": [
+                {
+                  "refId": "A",
+                  "datasource": { "type": "prometheus", "uid": "${datasource}" },
+                  "expr": "time() - toggle_monitor_worker_last_tick_seconds",
+                  "legendFormat": "seconds since tick"
+                }
+              ],
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "s",
+                  "min": 0,
+                  "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+                },
+                "overrides": []
+              },
+              "options": {
+                "tooltip": { "mode": "single", "sort": "none" },
+                "legend": { "showLegend": false }
+              }
+            },
+
+            {
+              "id": 32,
+              "type": "timeseries",
+              "title": "Goroutines",
+              "description": "go_goroutines. Slow drift = leak; sudden spike = deadlock or scheduler runaway.",
+              "gridPos": { "h": 6, "w": 6, "x": 6, "y": 43 },
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "targets": [
+                {
+                  "refId": "A",
+                  "datasource": { "type": "prometheus", "uid": "${datasource}" },
+                  "expr": "go_goroutines{job=~\".*toggle-monitor.*\"} or on() go_goroutines",
+                  "legendFormat": "goroutines"
+                }
+              ],
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "min": 0,
+                  "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+                },
+                "overrides": []
+              },
+              "options": {
+                "tooltip": { "mode": "single", "sort": "none" },
+                "legend": { "showLegend": false }
+              }
+            },
+
+            {
+              "id": 33,
+              "type": "timeseries",
+              "title": "Memory (heap in-use + RSS)",
+              "description": "Heap and resident set together. Divergence between them is interesting; tracking each in isolation isn't.",
+              "gridPos": { "h": 6, "w": 6, "x": 12, "y": 43 },
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "targets": [
+                {
+                  "refId": "A",
+                  "datasource": { "type": "prometheus", "uid": "${datasource}" },
+                  "expr": "go_memstats_heap_inuse_bytes{job=~\".*toggle-monitor.*\"} or on() go_memstats_heap_inuse_bytes",
+                  "legendFormat": "heap in-use"
+                },
+                {
+                  "refId": "B",
+                  "datasource": { "type": "prometheus", "uid": "${datasource}" },
+                  "expr": "process_resident_memory_bytes{job=~\".*toggle-monitor.*\"} or on() process_resident_memory_bytes",
+                  "legendFormat": "process RSS"
+                }
+              ],
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "bytes",
+                  "min": 0,
+                  "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+                },
+                "overrides": []
+              },
+              "options": {
+                "tooltip": { "mode": "multi", "sort": "desc" },
+                "legend": { "showLegend": true, "displayMode": "list", "placement": "bottom" }
+              }
+            },
+
+            {
+              "id": 34,
+              "type": "timeseries",
+              "title": "CPU",
+              "description": "rate(process_cpu_seconds_total). One number for 'is the binary working hard?'",
+              "gridPos": { "h": 6, "w": 6, "x": 18, "y": 43 },
+              "datasource": { "type": "prometheus", "uid": "${datasource}" },
+              "targets": [
+                {
+                  "refId": "A",
+                  "datasource": { "type": "prometheus", "uid": "${datasource}" },
+                  "expr": "rate(process_cpu_seconds_total{job=~\".*toggle-monitor.*\"}[$__rate_interval]) or on() rate(process_cpu_seconds_total[$__rate_interval])",
+                  "legendFormat": "cpu (cores)"
+                }
+              ],
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "percentunit",
+                  "min": 0,
+                  "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+                },
+                "overrides": []
+              },
+              "options": {
+                "tooltip": { "mode": "single", "sort": "none" },
+                "legend": { "showLegend": false }
+              }
+            }
+
+          ]
+        }
+
+      ]
+    }
+{{- end }}
