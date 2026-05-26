@@ -21,7 +21,9 @@ func TestMetrics_exposesAllDocumentedSeries(t *testing.T) {
 	m.SetWorkerLastTick(1700000000)
 	m.SetActiveIncident("uptime", "api", true)
 	m.ConfigLoadTotal.WithLabelValues("success").Inc()
-	m.SlackPostTotal.WithLabelValues("success").Inc()
+	m.SlackPost("success", "ok")
+	m.SlackRetry("recovered", "dns")
+	m.SlackFreshParent("uptime")
 	m.IngressReconcileTotal.WithLabelValues("added").Inc()
 
 	rr := httptest.NewRecorder()
@@ -38,6 +40,8 @@ func TestMetrics_exposesAllDocumentedSeries(t *testing.T) {
 		"toggle_monitor_active_incidents",
 		"toggle_monitor_config_load_total",
 		"toggle_monitor_slack_post_total",
+		"toggle_monitor_slack_retry_total",
+		"toggle_monitor_slack_fresh_parent_total",
 		"toggle_monitor_ingress_reconcile_total",
 		"toggle_monitor_worker_last_tick_seconds",
 		"go_goroutines",             // Go runtime collector

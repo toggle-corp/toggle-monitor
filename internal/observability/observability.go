@@ -30,6 +30,8 @@ type Metrics struct {
 	ActiveIncidents       *prometheus.GaugeVec
 	ConfigLoadTotal       *prometheus.CounterVec
 	SlackPostTotal        *prometheus.CounterVec
+	SlackRetryTotal       *prometheus.CounterVec
+	SlackFreshParentTotal *prometheus.CounterVec
 	IngressReconcileTotal *prometheus.CounterVec
 	WorkerLastTickSeconds prometheus.Gauge
 
@@ -62,8 +64,21 @@ func New() *Metrics {
 		}, []string{"result"}),
 		SlackPostTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "toggle_monitor_slack_post_total",
-			Help: "Slack API call attempts (post/update), partitioned by outcome.",
-		}, []string{"result"}),
+			Help: "Slack notify operations, partitioned by result (success/fail) and reason " +
+				"(ok/transient/persistent/permanent_bug/cancelled).",
+		}, []string{"result", "reason"}),
+		SlackRetryTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "toggle_monitor_slack_retry_total",
+			Help: "Slack client retry outcomes (recovered = succeeded after at least one retry; " +
+				"exhausted = budget ran out). The code label is the slack error or transport " +
+				"label that triggered the retry.",
+		}, []string{"outcome", "code"}),
+		SlackFreshParentTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "toggle_monitor_slack_fresh_parent_total",
+			Help: "Fresh-parent fallbacks: a reminder fired but no parent thread ts was on " +
+				"file (initial Open delivery had failed), so the notifier posted a new " +
+				"parent. Partitioned by uptime/ssl.",
+		}, []string{"kind"}),
 		IngressReconcileTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "toggle_monitor_ingress_reconcile_total",
 			Help: "k8s ingress reconcile events, partitioned by outcome.",
@@ -80,6 +95,8 @@ func New() *Metrics {
 		m.ActiveIncidents,
 		m.ConfigLoadTotal,
 		m.SlackPostTotal,
+		m.SlackRetryTotal,
+		m.SlackFreshParentTotal,
 		m.IngressReconcileTotal,
 		m.WorkerLastTickSeconds,
 		collectors.NewGoCollector(),
@@ -129,4 +146,23 @@ func (m *Metrics) SetActiveIncident(typeLabel, monitor string, active bool) {
 		val = 1
 	}
 	m.ActiveIncidents.WithLabelValues(typeLabel, monitor).Set(val)
+}
+
+// SlackPost increments the per-Notify outcome counter. Implements the
+// slack.NotifierObserver interface (defined in internal/slack so the
+// notifier can stay observability-agnostic).
+func (m *Metrics) SlackPost(result, reason string) {
+	m.SlackPostTotal.WithLabelValues(result, reason).Inc()
+}
+
+// SlackRetry increments the per-retry outcome counter. Implements the
+// slack.Observer interface used by the client retry loop.
+func (m *Metrics) SlackRetry(outcome, code string) {
+	m.SlackRetryTotal.WithLabelValues(outcome, code).Inc()
+}
+
+// SlackFreshParent increments the fresh-parent fallback counter.
+// Implements the slack.NotifierObserver interface.
+func (m *Metrics) SlackFreshParent(kind string) {
+	m.SlackFreshParentTotal.WithLabelValues(kind).Inc()
 }

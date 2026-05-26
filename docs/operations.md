@@ -40,7 +40,9 @@ There is **no authentication** in v1. Restrict access via:
 | `toggle_monitor_check_duration_seconds` | histogram | `monitor` | Wall-clock duration of each probe per monitor. |
 | `toggle_monitor_active_incidents` | gauge | `type="uptime|ssl"`, `monitor` | `1` while an incident is open, `0` while resolved. |
 | `toggle_monitor_config_load_total` | counter | `result="success|fail"` | Registered; **not yet incremented in v0.1**. Tracked as a follow-up. |
-| `toggle_monitor_slack_post_total` | counter | `result="success|fail"` | Registered; **not yet incremented in v0.1**. Tracked as a follow-up. |
+| `toggle_monitor_slack_post_total` | counter | `result="success|fail"`, `reason="ok|transient|persistent|permanent_bug|unknown"` | Per-Notify outcome. Worst error class wins when a Notify makes more than one API call. `reason=transient` indicates retries exhausted (operator noise); `persistent` indicates auth/channel/scope (operator-actionable). |
+| `toggle_monitor_slack_retry_total` | counter | `outcome="recovered|exhausted"`, `code` (slack error code or `dns`/`dial`/`http_500`/…) | Per-retry-loop outcome from the slack client. `recovered` = retry saved the call; `exhausted` = budget ran out. |
+| `toggle_monitor_slack_fresh_parent_total` | counter | `kind="uptime|ssl"` | Fresh-parent fallbacks: a reminder fired with no parent thread ts on file (initial Open delivery had failed), so the notifier synthesized a new parent. Non-zero in a healthy cluster suggests the retry budget is too small. |
 | `toggle_monitor_ingress_reconcile_total` | counter | `result="added|skipped|removed"` | Registered; **not yet incremented in v0.1**. Tracked as a follow-up. |
 | `toggle_monitor_worker_last_tick_seconds` | gauge | — | Unix time of the most recent check completion (success or failure). Drives the heartbeat liveness criterion. |
 
@@ -58,6 +60,16 @@ sum(rate(toggle_monitor_checks_total{status="fail"}[5m])) by (monitor)
 
 # Worker liveness: alert if no tick in 6 min.
 time() - toggle_monitor_worker_last_tick_seconds > 360
+
+# Slack delivery health: persistent failures need an operator (auth /
+# channel / scope). Transient failures are usually noise the retry
+# loop didn't catch — only worth looking at if sustained.
+sum(rate(toggle_monitor_slack_post_total{reason="persistent"}[5m]))
+sum(rate(toggle_monitor_slack_post_total{reason="transient"}[15m]))
+
+# Retry-loop effectiveness. If `exhausted` ≫ `recovered`, the budget
+# is too small for your link's failure profile.
+sum by (outcome) (rate(toggle_monitor_slack_retry_total[15m]))
 ```
 
 ## Logs
@@ -238,28 +250,47 @@ chain still has a down node somewhere (a transitive `dependsOn`).
 
 ### Slack alerts not posting
 
-1. Check `toggle_monitor_slack_post_total{result="fail"}`. A
-   non-zero counter is the first clue.
-2. Check the WARN logs for `slack chat.postMessage failed:
-   <error>`. Common: `not_in_channel` (bot not added to the
-   channel), `channel_not_found` (wrong channel ID),
-   `invalid_auth` (token rotated/revoked).
-3. The homepage Slack mapping panel will flag bad userMapping
-   entries within 24h of revocation.
+1. **Distinguish noise from a real problem.** Check
+   `toggle_monitor_slack_post_total` partitioned by `reason`:
+   - `reason="persistent"` — operator-actionable. Auth / channel /
+     scope. **Fix in config or in Slack.**
+   - `reason="permanent_bug"` — we sent a malformed Block Kit
+     payload. **File a bug.** These also forward to Sentry.
+   - `reason="transient"` — the retry loop already gave up on a
+     transient (DNS, 5xx, 429). Usually network noise; only worth
+     digging into if sustained or correlated with `fresh_parent_total`.
+2. Check the logs:
+   - `level=ERROR msg="event sink: slack failure"` carries
+     `slack_code`, `slack_method`, `attempts`, `elapsed_ms`. The
+     `slack_code` (`invalid_auth`, `channel_not_found`,
+     `not_in_channel`, `missing_scope`, …) tells you what to fix.
+   - `level=WARN msg="event sink: transient slack failure"` is the
+     budget-exhausted case — same fields, no Sentry.
+3. The homepage Slack mapping panel flags bad userMapping entries
+   within 24h of revocation.
 
 ### Long-running Slack outage during a state transition
 
-The DB transition is committed; Slack delivery failed and was
-logged. On the next tick:
+The DB transition is committed; Slack delivery is retried (default
+10s budget) and, if still failing, logged at WARN. The notifier
+recovers later via the reminder cadence:
 
-- For an `Open` event, no parent ts is stored → reminders log a
-  warning ("no parent thread ref"). The next state change (resolve)
-  posts a fresh, threadless resolve message.
-- For a `Resolve` event, the parent edit fails silently; the next
-  open creates a fresh thread.
+- For a missed `Open`, the next `Reminder` tick posts a **fresh
+  Down parent** with the banner `⚠️ Initial notification delivery
+  failed. This alert is current.`, persists its ts, and subsequent
+  reminders thread onto it normally. This emits
+  `toggle_monitor_slack_fresh_parent_total{kind="uptime"}` (or
+  `kind="ssl"` for the SSL path).
+- For a missed `Resolve` with no parent on file, the standalone
+  resolve post is rendered with the same body as the parent edit
+  (status, downtime, details) — so operators still get the full
+  story even when both Open and Resolve missed delivery.
 
 This is intentional: the design favors "DB is the source of truth,
 Slack is best-effort" over blocking the worker on a Slack outage.
+The fresh-parent fallback ensures we don't go fully silent across a
+sustained outage; non-zero `fresh_parent_total` in a healthy cluster
+suggests the retry budget should be tuned up.
 
 ## Backups + retention
 

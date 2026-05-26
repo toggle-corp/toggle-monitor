@@ -34,6 +34,7 @@ type DownInput struct {
 	BodyMaxChars int    // inline body only when len(ResponseBody) <= this
 	DetailURL    string // empty omits the [View details] footer link
 	Note         string // small dim line rendered above the footer; "" omits
+	Banner       string // optional banner rendered at the very top of the body (used for late-notice fresh-parent fallback). "" omits.
 }
 
 // ResolveInput carries DownInput plus the resolved-at moment so the
@@ -136,6 +137,13 @@ func BuildResolveReply(in ResolveInput) []Block {
 // `<@U…>` form (which our ResolveMentions helper guarantees).
 func buildParentBlocks(in DownInput, extra []detailLine, footerPrefix string, footerTime time.Time) []Block {
 	var blocks []Block
+
+	// Optional late-notice banner sits at the very top so operators
+	// notice it before scanning the regular body. Used by the
+	// fresh-parent fallback when an initial Open failed to deliver.
+	if in.Banner != "" {
+		blocks = append(blocks, contextBlock(in.Banner))
+	}
 
 	// Body in a context block: smaller + dimmer than a section.
 	// Mentions sit at the very top, prefixed with "*CC:*" so the row

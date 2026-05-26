@@ -19,6 +19,7 @@ type SSLDownInput struct {
 	DaysRemaining int
 	DetailURL     string
 	DetectedAt    time.Time // when the expiring state was observed; zero omits the footer date
+	Banner        string    // optional top-of-body banner (used for fresh-parent fallback); "" omits
 }
 
 // BuildSSLParent renders the initial ⚠️ SSL parent. Amber stripe.
@@ -86,6 +87,10 @@ func BuildSSLResolveReply(in SSLResolveInput) []Block {
 // No header — that's a top-level block outside this attachment.
 func buildSSLParentBlocks(in SSLDownInput, extra []detailLine, footerPrefix string, footerTime time.Time) []Block {
 	var blocks []Block
+
+	if in.Banner != "" {
+		blocks = append(blocks, contextBlock(in.Banner))
+	}
 
 	var lines []string
 	if len(in.Mentions) > 0 {

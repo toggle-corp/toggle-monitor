@@ -17,6 +17,7 @@ import (
 	"github.com/toggle-corp/toggle-monitor/internal/alert"
 	"github.com/toggle-corp/toggle-monitor/internal/httpcheck"
 	tmsentry "github.com/toggle-corp/toggle-monitor/internal/sentry"
+	"github.com/toggle-corp/toggle-monitor/internal/slack"
 	"github.com/toggle-corp/toggle-monitor/internal/store"
 )
 
@@ -395,10 +396,10 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 	// still sees the uptime thread refs that ApplyCheck just cleared.
 	if event != nil && s.sink != nil && p.ChannelSlug != "" {
 		if err := s.sink(ctx, row, p.ChannelSlug, p.Mentions, event); err != nil {
-			s.log.Error("event sink", "monitor", p.Slug, "event", event.Type, "error", err)
-			// Don't propagate: the DB transition is committed; the
-			// Slack post can be retried on a later tick. Issue 16
-			// owns the full retry policy.
+			logSinkError(s.log, "event sink", p.Slug, string(event.Type), err)
+			// Don't propagate: the DB transition is committed; on a
+			// transient/exhausted failure the next reminder tick
+			// synthesizes a fresh parent via the notifier.
 		}
 	}
 
@@ -443,7 +444,7 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 
 	if sslEvent != nil && s.sslSink != nil && p.ChannelSlug != "" {
 		if err := s.sslSink(ctx, row, p.ChannelSlug, p.Mentions, sslEvent); err != nil {
-			s.log.Error("ssl sink", "monitor", p.Slug, "event", sslEvent.Type, "error", err)
+			logSinkError(s.log, "ssl sink", p.Slug, string(sslEvent.Type), err)
 		}
 	}
 	return nil
@@ -528,6 +529,40 @@ func (s *Scheduler) ClearMissingParent(parent string) {
 	s.missingMu.Lock()
 	defer s.missingMu.Unlock()
 	delete(s.missingParents, parent)
+}
+
+// logSinkError routes a Slack sink failure to WARN or ERROR depending
+// on its kind. Transient errors (DNS races, 5xx, 429 — eventually
+// exhausted by the client's retry loop) are operator-noise and stay
+// at WARN, off the Sentry path. Persistent (auth/channel/scope) and
+// permanent-bug (malformed payload) errors are operator-actionable
+// and route to ERROR → Sentry.
+//
+// Context cancellation surfaces as a clean cancel — neither WARN nor
+// ERROR; it just means we're shutting down.
+func logSinkError(log *slog.Logger, where, monitorSlug, eventType string, err error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	var se *slack.SlackError
+	if errors.As(err, &se) {
+		args := []any{
+			"monitor", monitorSlug,
+			"event", eventType,
+			"slack_method", se.Method,
+			"slack_code", se.Code,
+			"attempts", se.Attempts,
+			"elapsed_ms", se.Elapsed.Milliseconds(),
+			"error", err,
+		}
+		if se.Kind == slack.KindTransient {
+			log.Warn(where+": transient slack failure", args...)
+			return
+		}
+		log.Error(where+": slack failure", args...)
+		return
+	}
+	log.Error(where, "monitor", monitorSlug, "event", eventType, "error", err)
 }
 
 // sleep returns false if ctx was cancelled before the duration elapsed.

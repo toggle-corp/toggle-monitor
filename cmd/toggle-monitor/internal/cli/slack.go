@@ -208,7 +208,14 @@ func runSlackTestUptime(ctx context.Context, out io.Writer, in io.Reader, f slac
 	if len(f.Notify) > 0 {
 		_, _ = fmt.Fprintf(out, "  notify: %v → resolved: %v\n", f.Notify, mentions)
 	}
-	client := slack.NewClient(slack.WithHTTPClient(&http.Client{Timeout: 10 * time.Second}))
+	// 2s retry budget keeps the diagnostic CLI snappy: one transient
+	// hiccup gets a single retry within ~2s, then surfaces the error
+	// verbatim so operators see real config problems immediately
+	// rather than waiting through full production retries.
+	client := slack.NewClient(
+		slack.WithHTTPClient(&http.Client{Timeout: 10 * time.Second}),
+		slack.WithRetryBudget(2*time.Second),
+	)
 
 	openedAt := time.Now().UTC()
 	downIn := slack.DownInput{
@@ -305,7 +312,14 @@ func runSlackTestSSL(ctx context.Context, out io.Writer, in io.Reader, f slackTe
 	if len(f.Notify) > 0 {
 		_, _ = fmt.Fprintf(out, "  notify: %v → resolved: %v\n", f.Notify, mentions)
 	}
-	client := slack.NewClient(slack.WithHTTPClient(&http.Client{Timeout: 10 * time.Second}))
+	// 2s retry budget keeps the diagnostic CLI snappy: one transient
+	// hiccup gets a single retry within ~2s, then surfaces the error
+	// verbatim so operators see real config problems immediately
+	// rather than waiting through full production retries.
+	client := slack.NewClient(
+		slack.WithHTTPClient(&http.Client{Timeout: 10 * time.Second}),
+		slack.WithRetryBudget(2*time.Second),
+	)
 
 	expiresAt := time.Now().UTC().Add(7 * 24 * time.Hour)
 	sslIn := slack.SSLDownInput{

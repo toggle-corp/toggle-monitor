@@ -1,10 +1,5 @@
 // Package lifecycle orchestrates startup ordering and graceful
 // shutdown on SIGTERM (stop listener → cancel checks → flush DB).
-//
-// Issue 2 scope: the happy path of load-config → connect-DB →
-// check-schema-version → reconcile-monitors → run-scheduler+web.
-// The complete SIGTERM ordering (including the final heartbeat POST)
-// lands in Issue 16.
 package lifecycle
 
 import (
@@ -132,7 +127,11 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	if err != nil {
 		return err
 	}
-	slackOpts := []slack.Option{}
+	// metrics built early so the slack client + notifier can emit
+	// retry / post / fresh-parent counters from their first call.
+	metrics := observability.New()
+
+	slackOpts := []slack.Option{slack.WithObserver(metrics)}
 	if opts.SlackBaseURL != "" {
 		slackOpts = append(slackOpts, slack.WithBaseURL(opts.SlackBaseURL))
 	}
@@ -157,6 +156,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		DependentsNoteMax: opts.Config.Slack.DependentsNoteMax,
 		PublicBase:        opts.Config.PublicBaseURL,
 		Logger:            log,
+		Observer:          metrics,
 	})
 
 	// userMapping validator. v1 is single-workspace so picking any of
@@ -215,8 +215,6 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 			notifier.NotifyRemoved(ctx, m.SlackChannelSlug, view, "removed from config", "static config")
 		}
 	}
-
-	metrics := observability.New()
 
 	// Heartbeat source: pulls open-incidents from the store and the
 	// last-tick gauge from metrics.

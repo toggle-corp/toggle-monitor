@@ -2,6 +2,7 @@ package slack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -33,6 +34,19 @@ type ThreadStore interface {
 // when a parent monitor has many children.
 const DefaultDependentsNoteMax = 5
 
+// freshParentBanner is the late-notice banner rendered at the top of
+// the body when the notifier had to synthesize a parent because the
+// initial Open delivery failed.
+const freshParentBanner = "⚠️ Initial notification delivery failed. This alert is current."
+
+// NotifierObserver is the slim metrics seam used by the notifier. Each
+// Notify call increments SlackPost once (worst outcome wins). A
+// fresh-parent fallback additionally increments SlackFreshParent.
+type NotifierObserver interface {
+	SlackPost(result, reason string)
+	SlackFreshParent(kind string)
+}
+
 // Notifier turns alert events into Slack API calls.
 type Notifier struct {
 	client            *Client
@@ -42,6 +56,7 @@ type Notifier struct {
 	dependentsNoteMax int
 	publicBase        string
 	log               *slog.Logger
+	observer          NotifierObserver
 }
 
 // NotifierOptions configures a Notifier.
@@ -53,6 +68,10 @@ type NotifierOptions struct {
 	DependentsNoteMax int    // 0 → DefaultDependentsNoteMax
 	PublicBase        string // empty → omit [View details] buttons
 	Logger            *slog.Logger
+	// Observer receives slack_post_total + slack_fresh_parent_total
+	// increments. nil disables emission (tests that don't care can pass
+	// nil; production wires *observability.Metrics).
+	Observer NotifierObserver
 }
 
 // NewNotifier builds a Notifier from the resolved channel set.
@@ -73,7 +92,35 @@ func NewNotifier(opts NotifierOptions) *Notifier {
 		dependentsNoteMax: max,
 		publicBase:        opts.PublicBase,
 		log:               log,
+		observer:          opts.Observer,
 	}
+}
+
+// observePost emits the per-Notify outcome counter. err==nil → success.
+// err *SlackError → fail with the matching Kind.String() reason. Other
+// errors → fail with reason="unknown".
+func (n *Notifier) observePost(err error) {
+	if n.observer == nil {
+		return
+	}
+	if err == nil {
+		n.observer.SlackPost("success", "ok")
+		return
+	}
+	var se *SlackError
+	if errors.As(err, &se) {
+		n.observer.SlackPost("fail", se.Kind.String())
+		return
+	}
+	n.observer.SlackPost("fail", "unknown")
+}
+
+// observeFreshParent emits the fresh-parent counter. kind = "uptime" or "ssl".
+func (n *Notifier) observeFreshParent(kind string) {
+	if n.observer == nil {
+		return
+	}
+	n.observer.SlackFreshParent(kind)
 }
 
 // MonitorView is the slim shape the notifier needs about a monitor at
@@ -123,15 +170,24 @@ func (n *Notifier) Notify(ctx context.Context, channelSlug string, mentions []st
 		return fmt.Errorf("slack channel slug %q is not registered", channelSlug)
 	}
 
+	var err error
 	switch ev.Type {
 	case alert.EventOpen:
-		return n.notifyOpen(ctx, ch, mentions, m, ev)
+		err = n.notifyOpen(ctx, ch, mentions, m, ev)
 	case alert.EventReminder:
-		return n.notifyReminder(ctx, ch, m, ev)
+		err = n.notifyReminder(ctx, ch, mentions, m, ev)
 	case alert.EventResolve:
-		return n.notifyResolve(ctx, ch, mentions, m, ev)
+		err = n.notifyResolve(ctx, ch, mentions, m, ev)
+	default:
+		return nil
 	}
-	return nil
+	// Context cancellation is not a delivery failure; skip the metric
+	// so a SIGTERM doesn't show up as a "fail" in the dashboards.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	n.observePost(err)
+	return err
 }
 
 func (n *Notifier) notifyOpen(ctx context.Context, ch ChannelInfo, mentions []string, m MonitorView, ev *alert.Event) error {
@@ -161,18 +217,18 @@ func (n *Notifier) notifyOpen(ctx context.Context, ch ChannelInfo, mentions []st
 	if err := n.store.SetUptimeThread(ctx, m.Slug, res.Channel, res.TS); err != nil {
 		n.log.Warn("persist uptime thread ref", "monitor", m.Slug, "error", err)
 		// don't return: the Slack message went out; we just won't be
-		// able to update it later. Issue 11+ will refine this.
+		// able to update it later. The reminder fresh-parent fallback
+		// will synthesize a replacement on the next tick.
 	}
 	return nil
 }
 
-func (n *Notifier) notifyReminder(ctx context.Context, ch ChannelInfo, m MonitorView, ev *alert.Event) error {
+func (n *Notifier) notifyReminder(ctx context.Context, ch ChannelInfo, mentions []string, m MonitorView, ev *alert.Event) error {
 	if m.UptimeThreadTS == "" {
-		// No parent recorded — design says retry-then-fresh-parent.
-		// For Issue 3 we surface the gap in logs and skip; Issue 16
-		// owns the full retry policy.
-		n.log.Warn("reminder skipped: no parent thread ref", "monitor", m.Slug)
-		return nil
+		// No parent recorded — the initial Open delivery failed. Post
+		// a fresh Down parent with a late-notice banner, persist its
+		// ts, and let subsequent reminders thread onto it.
+		return n.postFreshUptimeParent(ctx, ch, mentions, m)
 	}
 	blocks := BuildReminderReply(ReminderInput{
 		DownDuration:  ev.At.Sub(m.OpenedAt),
@@ -187,19 +243,73 @@ func (n *Notifier) notifyReminder(ctx context.Context, ch ChannelInfo, m Monitor
 	return err
 }
 
+// postFreshUptimeParent synthesizes a Down parent when a reminder
+// fires but no parent ts is on file (because the original Open delivery
+// failed). Persists the new ts so subsequent reminders thread normally.
+func (n *Notifier) postFreshUptimeParent(ctx context.Context, ch ChannelInfo, mentions []string, m MonitorView) error {
+	in := DownInput{
+		FriendlyName: m.FriendlyName,
+		Tags:         m.Tags,
+		URL:          m.URL,
+		Mentions:     mentions,
+		StatusCode:   m.StatusCode,
+		StatusText:   m.StatusText,
+		FailureAt:    m.OpenedAt,
+		LastError:    m.LastError,
+		ResponseBody: m.ResponseBody,
+		BodyMaxChars: n.bodyMaxChars,
+		DetailURL:    n.detailURL(m.Slug),
+		Note:         n.dependentsNote(ctx, m.Slug, "⏸ Pauses dependents"),
+		Banner:       freshParentBanner,
+	}
+	msg := BuildDownParent(in)
+	res, err := n.client.PostMessage(ctx, ch.Token, PostMessageInput{
+		ChannelID:   ch.ID,
+		Blocks:      msg.Blocks,
+		Attachments: msg.Attachments,
+	})
+	if err != nil {
+		return err
+	}
+	n.observeFreshParent("uptime")
+	if err := n.store.SetUptimeThread(ctx, m.Slug, res.Channel, res.TS); err != nil {
+		// Best-effort: the message went out. Future reminders will
+		// re-synthesize on the next tick if persistence still fails.
+		n.log.Warn("persist fresh uptime thread ref", "monitor", m.Slug, "error", err)
+	}
+	return nil
+}
+
 func (n *Notifier) notifyResolve(ctx context.Context, ch ChannelInfo, mentions []string, m MonitorView, ev *alert.Event) error {
 	if m.UptimeThreadTS == "" {
-		// Without a parent ref we can't preserve the original message;
-		// fall back to a thread-less resolved post so operators still
-		// see the recovery (full retry policy lands in Issue 16).
+		// Without a parent ref we post a standalone resolve message
+		// that mirrors the resolve-edit body so operators still get
+		// status/downtime/details. Carries the banner so they know
+		// why the open went missing.
 		n.log.Warn("resolve thread ref missing: posting standalone resolve", "monitor", m.Slug)
+		resolveIn := ResolveInput{
+			DownInput: DownInput{
+				FriendlyName: m.FriendlyName,
+				Tags:         m.Tags,
+				URL:          m.URL,
+				Mentions:     mentions,
+				StatusCode:   m.StatusCode,
+				StatusText:   m.StatusText,
+				FailureAt:    m.OpenedAt,
+				LastError:    m.LastError,
+				ResponseBody: m.ResponseBody,
+				BodyMaxChars: n.bodyMaxChars,
+				DetailURL:    n.detailURL(m.Slug),
+				Banner:       freshParentBanner,
+			},
+			ResolveAt: ev.At,
+			Downtime:  ev.Downtime,
+		}
+		msg := BuildResolveEdit(resolveIn)
 		_, err := n.client.PostMessage(ctx, ch.Token, PostMessageInput{
-			ChannelID: ch.ID,
-			Blocks: BuildResolveReply(ResolveInput{
-				DownInput: DownInput{FriendlyName: m.FriendlyName},
-				ResolveAt: ev.At,
-				Downtime:  ev.Downtime,
-			}),
+			ChannelID:   ch.ID,
+			Blocks:      msg.Blocks,
+			Attachments: msg.Attachments,
 		})
 		return err
 	}
@@ -269,6 +379,27 @@ func (n *Notifier) dependentsNote(ctx context.Context, parentSlug, prefix string
 	return FormatDependentsNote(prefix, children, n.dependentsNoteMax)
 }
 
+// postFreshSSLParent synthesizes an SSL Down parent (banner + same body)
+// when a reminder fires with no parent ts on file. Symmetric with
+// postFreshUptimeParent.
+func (n *Notifier) postFreshSSLParent(ctx context.Context, ch ChannelInfo, in SSLDownInput, slug string) error {
+	in.Banner = freshParentBanner
+	msg := BuildSSLParent(in)
+	res, err := n.client.PostMessage(ctx, ch.Token, PostMessageInput{
+		ChannelID:   ch.ID,
+		Blocks:      msg.Blocks,
+		Attachments: msg.Attachments,
+	})
+	if err != nil {
+		return err
+	}
+	n.observeFreshParent("ssl")
+	if err := n.store.SetSSLThread(ctx, slug, res.Channel, res.TS); err != nil {
+		n.log.Warn("persist fresh ssl thread ref", "monitor", slug, "error", err)
+	}
+	return nil
+}
+
 // FormatDependentsNote renders the "<prefix>: `a`, `b`, …and N more"
 // line. Returns "" when slugs is empty. Exported so the slack-test
 // CLI can mirror the same truncation logic without duplicating it.
@@ -308,6 +439,15 @@ func (n *Notifier) NotifySSL(ctx context.Context, channelSlug string, mentions [
 	if !ok {
 		return fmt.Errorf("slack channel slug %q is not registered", channelSlug)
 	}
+	err := n.notifySSL(ctx, ch, mentions, m, ssl, ev)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	n.observePost(err)
+	return err
+}
+
+func (n *Notifier) notifySSL(ctx context.Context, ch ChannelInfo, mentions []string, m MonitorView, ssl SSLView, ev *alert.SSLEvent) error {
 	daysRem := int(ssl.ExpiresAt.Sub(ev.At).Hours() / 24)
 	in := SSLDownInput{
 		FriendlyName:  m.FriendlyName,
@@ -340,8 +480,9 @@ func (n *Notifier) NotifySSL(ctx context.Context, channelSlug string, mentions [
 
 	case alert.EventSSLReminder:
 		if m.SSLThreadTS == "" {
-			n.log.Warn("ssl reminder skipped: no parent ref", "monitor", m.Slug)
-			return nil
+			// Initial SSL Open never delivered — synthesize a parent
+			// (banner + same Down body) and persist the new ts.
+			return n.postFreshSSLParent(ctx, ch, in, m.Slug)
 		}
 		_, err := n.client.PostMessage(ctx, ch.Token, PostMessageInput{
 			ChannelID: ch.ID,
