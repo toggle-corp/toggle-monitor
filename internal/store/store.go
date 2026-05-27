@@ -39,13 +39,31 @@ const (
 	SourceKube   MonitorSource = "kube"
 )
 
+// MonitorKind is the probe protocol of a monitor. HTTP is the default
+// (and the only kind kube discovery produces); SMTP monitors come from
+// the static `smtpMonitors:` config block.
+type MonitorKind string
+
+const (
+	KindHTTP MonitorKind = "http"
+	KindSMTP MonitorKind = "smtp"
+)
+
 // MonitorSpec is the config-side projection of a monitor — the fields
 // the YAML (or future kube-discovery pipeline) owns. Runtime fields
 // (status, last_*) live separately and are owned by the worker.
 type MonitorSpec struct {
-	Slug             string
-	FriendlyName     string
-	URL              string
+	Slug         string
+	Kind         MonitorKind // "" defaults to KindHTTP at reconcile time
+	FriendlyName string
+	URL          string
+	// Host / Port / TLSMode are populated for SMTP monitors; empty/zero
+	// for HTTP. URL still carries the synthesized smtp://host:port for
+	// SMTP so every URL-keyed feature (rendering, /status hostRegex)
+	// keeps working.
+	Host             string
+	Port             int
+	TLSMode          string
 	Source           MonitorSource
 	DependsOn        []string
 	SlackChannelSlug string // remembered so removal can still address Slack
@@ -114,6 +132,20 @@ func (r *Repo) ReconcileMonitor(ctx context.Context, spec MonitorSpec) error {
 	if src == "" {
 		src = SourceStatic
 	}
+	kind := spec.Kind
+	if kind == "" {
+		kind = KindHTTP
+	}
+	var hostArg, tlsArg, portArg any
+	if spec.Host != "" {
+		hostArg = spec.Host
+	}
+	if spec.Port != 0 {
+		portArg = spec.Port
+	}
+	if spec.TLSMode != "" {
+		tlsArg = spec.TLSMode
+	}
 	deps := spec.DependsOn
 	if deps == nil {
 		deps = []string{}
@@ -127,11 +159,15 @@ func (r *Repo) ReconcileMonitor(ctx context.Context, spec MonitorSpec) error {
 		slackSlugArg = spec.SlackChannelSlug
 	}
 	_, err := r.pool.Exec(ctx, `
-		INSERT INTO monitors (slug, friendly_name, url, source, depends_on, slack_channel_slug, tags)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO monitors (slug, kind, friendly_name, url, host, port, tls_mode, source, depends_on, slack_channel_slug, tags)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (slug) DO UPDATE SET
+			kind               = EXCLUDED.kind,
 			friendly_name      = EXCLUDED.friendly_name,
 			url                = EXCLUDED.url,
+			host               = EXCLUDED.host,
+			port               = EXCLUDED.port,
+			tls_mode           = EXCLUDED.tls_mode,
 			source             = EXCLUDED.source,
 			depends_on         = EXCLUDED.depends_on,
 			slack_channel_slug = EXCLUDED.slack_channel_slug,
@@ -140,7 +176,7 @@ func (r *Repo) ReconcileMonitor(ctx context.Context, spec MonitorSpec) error {
 			archived_at        = NULL,
 			archive_reason     = NULL,
 			updated_at         = now()
-	`, spec.Slug, spec.FriendlyName, spec.URL, string(src), deps, slackSlugArg, tags)
+	`, spec.Slug, string(kind), spec.FriendlyName, spec.URL, hostArg, portArg, tlsArg, string(src), deps, slackSlugArg, tags)
 	if err != nil {
 		return fmt.Errorf("reconcile monitor %q: %w", spec.Slug, err)
 	}
@@ -975,7 +1011,7 @@ func (r *Repo) ListLatestAlerts(ctx context.Context, limit, offset int) (LatestA
 }
 
 const selectMonitor = `
-	SELECT slug, friendly_name, url, source, depends_on, slack_channel_slug, tags,
+	SELECT slug, kind, friendly_name, url, host, port, tls_mode, source, depends_on, slack_channel_slug, tags,
 	       status, opened_at, last_reminder_at, last_checked_at, last_status_code, last_error,
 	       archived, archived_at, archive_reason,
 	       uptime_thread_channel, uptime_thread_ts,
@@ -991,10 +1027,11 @@ type rowScanner interface {
 
 func scanMonitor(row rowScanner) (MonitorRow, error) {
 	var m MonitorRow
-	var src, status string
-	var sslStatus, slackSlug *string
+	var src, status, kind string
+	var sslStatus, slackSlug, tlsMode, host *string
+	var port *int
 	err := row.Scan(
-		&m.Slug, &m.FriendlyName, &m.URL, &src, &m.DependsOn, &slackSlug, &m.Tags,
+		&m.Slug, &kind, &m.FriendlyName, &m.URL, &host, &port, &tlsMode, &src, &m.DependsOn, &slackSlug, &m.Tags,
 		&status, &m.OpenedAt, &m.LastReminderAt, &m.LastCheckedAt, &m.LastStatusCode, &m.LastError,
 		&m.Archived, &m.ArchivedAt, &m.ArchiveReason,
 		&m.UptimeThreadChannel, &m.UptimeThreadTS,
@@ -1007,6 +1044,16 @@ func scanMonitor(row rowScanner) (MonitorRow, error) {
 			return MonitorRow{}, ErrNotFound
 		}
 		return MonitorRow{}, err
+	}
+	m.Kind = MonitorKind(kind)
+	if host != nil {
+		m.Host = *host
+	}
+	if port != nil {
+		m.Port = *port
+	}
+	if tlsMode != nil {
+		m.TLSMode = *tlsMode
 	}
 	m.Source = MonitorSource(src)
 	m.Status = alert.Status(status)

@@ -9,8 +9,8 @@ import (
 
 func TestApplySSL_httpOnlyMonitorIsSkipped(t *testing.T) {
 	next, ev := alert.ApplySSL(alert.SSLState{}, alert.SSLCheck{
-		At:      t0,
-		IsHTTPS: false,
+		At:         t0,
+		TLSBearing: false,
 	})
 	if next.Status != alert.SSLStatusSkipped {
 		t.Errorf("status: got %q, want %q", next.Status, alert.SSLStatusSkipped)
@@ -24,7 +24,7 @@ func TestApplySSL_healthyCertStaysOK(t *testing.T) {
 	next, ev := alert.ApplySSL(alert.SSLState{Status: alert.SSLStatusOK}, alert.SSLCheck{
 		At:                  t0,
 		ExpiresAt:           t0.Add(90 * 24 * time.Hour),
-		IsHTTPS:             true,
+		TLSBearing:          true,
 		AlertThreshold:      30 * 24 * time.Hour,
 		EscalationThreshold: 7 * 24 * time.Hour,
 		ReminderInterval:    3 * 24 * time.Hour,
@@ -41,7 +41,7 @@ func TestApplySSL_crossingAlertThreshold_emitsOpen(t *testing.T) {
 	next, ev := alert.ApplySSL(alert.SSLState{Status: alert.SSLStatusOK}, alert.SSLCheck{
 		At:                  t0,
 		ExpiresAt:           t0.Add(20 * 24 * time.Hour), // 20d remaining
-		IsHTTPS:             true,
+		TLSBearing:          true,
 		AlertThreshold:      30 * 24 * time.Hour,
 		EscalationThreshold: 7 * 24 * time.Hour,
 		ReminderInterval:    3 * 24 * time.Hour,
@@ -65,7 +65,7 @@ func TestApplySSL_reminderUsesEscalationCadenceUnderEscalationThreshold(t *testi
 	next, ev := alert.ApplySSL(prev, alert.SSLCheck{
 		At:                  t0.Add(25 * time.Hour),
 		ExpiresAt:           t0.Add(5 * 24 * time.Hour),
-		IsHTTPS:             true,
+		TLSBearing:          true,
 		AlertThreshold:      30 * 24 * time.Hour,
 		EscalationThreshold: 7 * 24 * time.Hour,
 		ReminderInterval:    3 * 24 * time.Hour,
@@ -87,7 +87,7 @@ func TestApplySSL_renewalResolves(t *testing.T) {
 	next, ev := alert.ApplySSL(prev, alert.SSLCheck{
 		At:                  t0.Add(time.Hour),
 		ExpiresAt:           t0.Add(90 * 24 * time.Hour),
-		IsHTTPS:             true,
+		TLSBearing:          true,
 		AlertThreshold:      30 * 24 * time.Hour,
 		EscalationThreshold: 7 * 24 * time.Hour,
 		ReminderInterval:    3 * 24 * time.Hour,

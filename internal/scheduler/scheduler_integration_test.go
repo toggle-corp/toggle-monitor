@@ -12,12 +12,48 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/toggle-corp/toggle-monitor/internal/alert"
-	"github.com/toggle-corp/toggle-monitor/internal/httpcheck"
 	"github.com/toggle-corp/toggle-monitor/internal/migrate"
+	"github.com/toggle-corp/toggle-monitor/internal/probe"
 	"github.com/toggle-corp/toggle-monitor/internal/scheduler"
 	"github.com/toggle-corp/toggle-monitor/internal/store"
 	"github.com/toggle-corp/toggle-monitor/internal/testpg"
 )
+
+// seqProber returns a programmable sequence of probe.Results, repeating
+// the last entry once exhausted. Counts calls. Safe for concurrent use.
+type seqProber struct {
+	mu      sync.Mutex
+	results []probe.Result
+	idx     int
+	calls   *atomic.Int32
+}
+
+func (p *seqProber) Probe(context.Context) probe.Result {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.calls != nil {
+		p.calls.Add(1)
+	}
+	i := p.idx
+	if i >= len(p.results) {
+		i = len(p.results) - 1
+	}
+	p.idx++
+	return p.results[i]
+}
+
+// constProber always returns the same result, optionally counting calls.
+type constProber struct {
+	res   probe.Result
+	calls *atomic.Int32
+}
+
+func (p constProber) Probe(context.Context) probe.Result {
+	if p.calls != nil {
+		p.calls.Add(1)
+	}
+	return p.res
+}
 
 func newRepo(t *testing.T) *store.Repo {
 	t.Helper()
@@ -52,18 +88,12 @@ func TestTick_endToEndUptimeLifecycle(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	// Programmable check: alternates fail / fail / ok based on the
-	// per-test call count.
-	results := []httpcheck.Result{
-		{StatusCode: 500, Error: "boom"},
-		{StatusCode: 500, Error: "boom"},
-		{StatusCode: 200},
-	}
-	var calls atomic.Int32
-	check := func(ctx context.Context, _ httpcheck.Config) httpcheck.Result {
-		i := calls.Add(1) - 1
-		return results[i]
-	}
+	// Programmable prober: fail / fail / ok across the three ticks.
+	prober := &seqProber{results: []probe.Result{
+		{Code: 500, Error: "boom"},
+		{Code: 500, Error: "boom"},
+		{Code: 200},
+	}}
 
 	// Inject deterministic clock advancing 1 minute per tick.
 	now := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
@@ -74,7 +104,6 @@ func TestTick_endToEndUptimeLifecycle(t *testing.T) {
 	}
 
 	s := scheduler.New(repo,
-		scheduler.WithCheck(check),
 		scheduler.WithNow(tickClock),
 	)
 
@@ -83,6 +112,7 @@ func TestTick_endToEndUptimeLifecycle(t *testing.T) {
 		AcceptedStatusCodes: []int{200},
 		Interval:            5 * time.Minute, Timeout: 2 * time.Second,
 		Retries: 0, RetryBackoff: time.Second,
+		Prober: prober,
 	}
 
 	for tick := 1; tick <= 3; tick++ {
@@ -145,13 +175,9 @@ func TestTick_dependsOn_pausesChildWhenParentDown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// CheckFunc that fails — but should not be invoked while paused.
+	// Prober that fails — but should not be invoked while paused.
 	var called atomic.Int32
-	check := func(ctx context.Context, _ httpcheck.Config) httpcheck.Result {
-		called.Add(1)
-		return httpcheck.Result{StatusCode: 500, Error: "would-fail"}
-	}
-	s := scheduler.New(repo, scheduler.WithCheck(check))
+	s := scheduler.New(repo)
 
 	plan := scheduler.Plan{
 		Slug: "child", URL: "x", HTTPMethod: "GET",
@@ -159,6 +185,7 @@ func TestTick_dependsOn_pausesChildWhenParentDown(t *testing.T) {
 		Interval:            5 * time.Minute, Timeout: time.Second,
 		Retries: 0, RetryBackoff: time.Second,
 		DependsOn: []string{"parent"},
+		Prober:    constProber{res: probe.Result{Code: 500, Error: "would-fail"}, calls: &called},
 	}
 	if err := s.Tick(ctx, plan); err != nil {
 		t.Fatalf("paused tick: %v", err)
@@ -244,16 +271,14 @@ func TestTick_dependsOn_resumeFromPaused_preservesOpenIncident(t *testing.T) {
 
 	// 3. Child's next tick: parent is down → child gets paused. The
 	//    gate must not lose the child's prior open incident.
-	failingCheck := func(ctx context.Context, _ httpcheck.Config) httpcheck.Result {
-		return httpcheck.Result{StatusCode: 500, Error: "still failing"}
-	}
-	s := scheduler.New(repo, scheduler.WithCheck(failingCheck))
+	s := scheduler.New(repo)
 	plan := scheduler.Plan{
 		Slug: "child", URL: "x", HTTPMethod: "GET",
 		AcceptedStatusCodes: []int{200},
 		Interval:            5 * time.Minute, Timeout: time.Second,
 		Retries: 0, RetryBackoff: time.Second,
 		DependsOn: []string{"parent"},
+		Prober:    constProber{res: probe.Result{Code: 500, Error: "still failing"}},
 	}
 	if err := s.Tick(ctx, plan); err != nil {
 		t.Fatalf("paused tick: %v", err)
@@ -342,16 +367,6 @@ func TestRunDynamic_addsAndRemovesMonitorsOnRefresh(t *testing.T) {
 		"alpha": {},
 		"beta":  {},
 	}
-	check := func(_ context.Context, cfg httpcheck.Config) httpcheck.Result {
-		// Map URL → slug; tests supply distinct URLs per plan.
-		switch cfg.URL {
-		case "http://alpha":
-			calls["alpha"].Add(1)
-		case "http://beta":
-			calls["beta"].Add(1)
-		}
-		return httpcheck.Result{StatusCode: 200}
-	}
 
 	mkPlan := func(slug, url string) scheduler.Plan {
 		return scheduler.Plan{
@@ -361,11 +376,12 @@ func TestRunDynamic_addsAndRemovesMonitorsOnRefresh(t *testing.T) {
 			Timeout:             50 * time.Millisecond,
 			Retries:             0,
 			RetryBackoff:        time.Second,
+			Prober:              constProber{res: probe.Result{Code: 200}, calls: calls[slug]},
 		}
 	}
 
 	src := &mutableSource{plans: []scheduler.Plan{mkPlan("alpha", "http://alpha")}}
-	s := scheduler.New(repo, scheduler.WithCheck(check))
+	s := scheduler.New(repo)
 	done := make(chan struct{})
 	go func() {
 		s.RunDynamic(ctx, src, 100*time.Millisecond)
@@ -424,22 +440,23 @@ func TestTick_inCycleRetriesSuppressTransientFailure(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	calls := []httpcheck.Result{
-		{StatusCode: 500, Error: "transient"},
-		{StatusCode: 200},
-	}
 	var idx atomic.Int32
-	check := func(ctx context.Context, _ httpcheck.Config) httpcheck.Result {
-		return calls[idx.Add(1)-1]
+	prober := &seqProber{
+		results: []probe.Result{
+			{Code: 500, Error: "transient"},
+			{Code: 200},
+		},
+		calls: &idx,
 	}
 
-	s := scheduler.New(repo, scheduler.WithCheck(check))
+	s := scheduler.New(repo)
 
 	plan := scheduler.Plan{
 		Slug: "api", URL: "x", HTTPMethod: "GET",
 		AcceptedStatusCodes: []int{200},
 		Interval:            5 * time.Minute, Timeout: time.Second,
 		Retries: 1, RetryBackoff: time.Millisecond,
+		Prober: prober,
 	}
 
 	if err := s.Tick(ctx, plan); err != nil {

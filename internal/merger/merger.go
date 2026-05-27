@@ -23,6 +23,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 
 	"github.com/toggle-corp/toggle-monitor/internal/config"
+	"github.com/toggle-corp/toggle-monitor/internal/httpcheck"
 	"github.com/toggle-corp/toggle-monitor/internal/proxypool"
 	"github.com/toggle-corp/toggle-monitor/internal/scheduler"
 	"github.com/toggle-corp/toggle-monitor/internal/slack"
@@ -202,6 +203,7 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 
 	if err := m.store.ReconcileMonitor(ctx, store.MonitorSpec{
 		Slug:             monSlug,
+		Kind:             store.KindHTTP,
 		FriendlyName:     friendly,
 		URL:              url,
 		Source:           store.SourceKube,
@@ -214,11 +216,22 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 
 	mentions := slack.ResolveMentions(resolved.Notify.Values, m.userMapping)
 	plan := scheduler.Plan{
-		Slug:                   monSlug,
-		FriendlyName:           friendly,
-		URL:                    url,
-		HTTPMethod:             resolved.HTTPMethod,
-		AcceptedStatusCodes:    append([]int(nil), resolved.AcceptedStatusCodes...),
+		Slug:                monSlug,
+		Kind:                "http",
+		FriendlyName:        friendly,
+		URL:                 url,
+		HTTPMethod:          resolved.HTTPMethod,
+		AcceptedStatusCodes: append([]int(nil), resolved.AcceptedStatusCodes...),
+		Prober: httpcheck.Config{
+			URL:                   url,
+			Method:                resolved.HTTPMethod,
+			AcceptedStatusCodes:   append([]int(nil), resolved.AcceptedStatusCodes...),
+			Timeout:               resolved.Timeout.AsDuration(),
+			FollowRedirects:       resolved.FollowRedirects,
+			TLSInsecureSkipVerify: resolved.TLSInsecureSkipVerify,
+			ProxyDialer:           m.proxies.Get(resolved.Proxy),
+			UserAgent:             m.userAgent,
+		},
 		Interval:               resolved.Interval.AsDuration(),
 		Timeout:                resolved.Timeout.AsDuration(),
 		Retries:                resolved.Retries,
@@ -232,7 +245,7 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 		ChannelSlug:            resolved.Slack,
 		Mentions:               mentions,
 		DependsOn:              append([]string(nil), resolved.DependsOn.Values...),
-		IsHTTPS:                scheme == "https",
+		TLSBearing:             scheme == "https",
 		SSLAlertThreshold:      resolved.SSLAlertThreshold.AsDuration(),
 		SSLEscalationThreshold: resolved.SSLEscalationThreshold.AsDuration(),
 		SSLReminderInterval:    resolved.SSLReminderInterval.AsDuration(),

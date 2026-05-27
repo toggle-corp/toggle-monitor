@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"golang.org/x/net/proxy"
+
+	"github.com/toggle-corp/toggle-monitor/internal/probe"
 )
 
 // Config describes a single check probe.
@@ -49,6 +51,27 @@ type TLSInfo struct {
 	Subject  string
 	Issuer   string
 	NotAfter time.Time
+}
+
+// Probe implements probe.Prober: it runs Check and adapts the
+// HTTP-specific Result into the neutral probe.Result the scheduler
+// consumes. Carrying the method on Config lets a Config value be stored
+// directly as a Plan's prober.
+func (cfg Config) Probe(ctx context.Context) probe.Result {
+	res := Check(ctx, cfg)
+	out := probe.Result{
+		Code:     res.StatusCode,
+		Error:    res.Error,
+		Duration: res.Duration,
+	}
+	if res.TLS != nil {
+		out.TLS = &probe.CertInfo{
+			Subject:  res.TLS.Subject,
+			Issuer:   res.TLS.Issuer,
+			NotAfter: res.TLS.NotAfter,
+		}
+	}
+	return out
 }
 
 // Check performs one HTTP probe according to cfg. The caller is

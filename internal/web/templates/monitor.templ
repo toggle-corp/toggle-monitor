@@ -254,6 +254,9 @@ templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []stri
 			} else {
 				@StatusBadge(string(m.Status))
 			}
+			if m.Kind == store.KindSMTP {
+				@KindBadge(string(m.Kind))
+			}
 			if cfg != nil {
 				<button
 					type="button"
@@ -276,6 +279,9 @@ templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []stri
 			<dl class={ templ.KV("opacity-60", m.Archived) }>
 				@kv("Slug", m.Slug)
 				@kvURL("URL", m.URL)
+				if m.Kind == store.KindSMTP {
+					@kv("TLS", m.TLSMode)
+				}
 				@kv("Source", string(m.Source))
 				if len(m.Tags) > 0 {
 					@kvTags("Tags", m.Tags)

@@ -36,19 +36,20 @@ var colorHexPattern = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 // Config is the typed, validated representation of the toggle-monitor
 // YAML config.
 type Config struct {
-	DisplayTimezone string       `yaml:"displayTimezone"`
-	PublicBaseURL   string       `yaml:"publicBaseURL,omitempty"`
-	DBBodyMaxChars  int          `yaml:"dbBodyMaxChars"`
-	Database        Database     `yaml:"database"`
-	UI              UI           `yaml:"ui"`
-	HTTPClient      HTTPClient   `yaml:"httpClient"`
-	Heartbeat       *Heartbeat   `yaml:"heartbeat,omitempty"` // optional; nil disables the deadman loop
-	Kube            *Kube        `yaml:"kube,omitempty"`      // optional; nil disables auto-discovery
-	Sentry          *Sentry      `yaml:"sentry,omitempty"`    // optional; nil disables Sentry forwarding
-	Slack           Slack        `yaml:"slack"`
-	Proxies         []Proxy      `yaml:"proxies,omitempty"`
-	Monitors        []Monitor    `yaml:"monitors"`
-	StatusPages     []StatusPage `yaml:"statusPages,omitempty"` // optional; empty → /status renders empty listing
+	DisplayTimezone string        `yaml:"displayTimezone"`
+	PublicBaseURL   string        `yaml:"publicBaseURL,omitempty"`
+	DBBodyMaxChars  int           `yaml:"dbBodyMaxChars"`
+	Database        Database      `yaml:"database"`
+	UI              UI            `yaml:"ui"`
+	HTTPClient      HTTPClient    `yaml:"httpClient"`
+	Heartbeat       *Heartbeat    `yaml:"heartbeat,omitempty"` // optional; nil disables the deadman loop
+	Kube            *Kube         `yaml:"kube,omitempty"`      // optional; nil disables auto-discovery
+	Sentry          *Sentry       `yaml:"sentry,omitempty"`    // optional; nil disables Sentry forwarding
+	Slack           Slack         `yaml:"slack"`
+	Proxies         []Proxy       `yaml:"proxies,omitempty"`
+	Monitors        []Monitor     `yaml:"monitors"`
+	SMTPMonitors    []SMTPMonitor `yaml:"smtpMonitors,omitempty"` // optional; static-only SMTP probes
+	StatusPages     []StatusPage  `yaml:"statusPages,omitempty"`  // optional; empty → /status renders empty listing
 }
 
 // Proxy is one outbound proxy that monitors can route their probes
@@ -567,6 +568,75 @@ type Monitor struct {
 	SSLReminderInterval    Duration `yaml:"sslReminderInterval,omitempty"`
 }
 
+// SMTP TLS mode constants — the allowed values of smtpMonitors[].tls.
+// Empty defaults to starttls.
+const (
+	SMTPTLSStartTLS = "starttls"
+	SMTPTLSImplicit = "implicit"
+	SMTPTLSNone     = "none"
+)
+
+// SMTPTLSModes is the canonical, declaration-ordered list of allowed
+// smtpMonitors[].tls values (the validator's error message reads from
+// it so the two can't drift).
+var SMTPTLSModes = []string{SMTPTLSStartTLS, SMTPTLSImplicit, SMTPTLSNone}
+
+// SMTPMonitor is one statically-declared SMTP probe. It reuses the HTTP
+// monitor's scheduling / alerting / routing fields verbatim and adds
+// SMTP-specifics (host/port/tls/ehloName). SMTP monitors are
+// static-only — kube discovery never produces them. See the SMTP
+// monitoring design.
+type SMTPMonitor struct {
+	Slug         string `yaml:"slug"`
+	FriendlyName string `yaml:"friendlyName"`
+	Host         string `yaml:"host"`
+	Port         int    `yaml:"port"`
+	// TLS is starttls (default) | implicit | none. starttls/implicit
+	// capture the cert for the SSL state machine; none skips SSL.
+	TLS      string `yaml:"tls,omitempty"`
+	EHLOName string `yaml:"ehloName,omitempty"` // default "toggle-monitor"
+
+	Interval     Duration `yaml:"interval"`
+	Timeout      Duration `yaml:"timeout"`
+	Retries      int      `yaml:"retries"`
+	RetryBackoff Duration `yaml:"retryBackoff"`
+	// TLSInsecureSkipVerify skips cert chain verification and forces SSL
+	// state to ssl-skipped (private-CA / self-signed relays).
+	TLSInsecureSkipVerify bool     `yaml:"tlsInsecureSkipVerify,omitempty"`
+	Proxy                 string   `yaml:"proxy,omitempty"`
+	ReminderInterval      Duration `yaml:"reminderInterval"`
+	Slack                 string   `yaml:"slack"`
+	Notify                []string `yaml:"notify,omitempty"`
+	DependsOn             []string `yaml:"dependsOn,omitempty"`
+	Tags                  []string `yaml:"tags,omitempty"`
+
+	// SSL thresholds — required when tls != none && !tlsInsecureSkipVerify,
+	// forbidden/ignored otherwise (parallels the HTTPS rule).
+	SSLAlertThreshold      Duration `yaml:"sslAlertThreshold,omitempty"`
+	SSLEscalationThreshold Duration `yaml:"sslEscalationThreshold,omitempty"`
+	SSLReminderInterval    Duration `yaml:"sslReminderInterval,omitempty"`
+}
+
+// TLSMode returns the effective TLS mode, defaulting empty to starttls.
+func (m SMTPMonitor) TLSMode() string {
+	if m.TLS == "" {
+		return SMTPTLSStartTLS
+	}
+	return m.TLS
+}
+
+// URL returns the synthesized smtp://host:port identity persisted in
+// the monitors.url column so URL-keyed features keep working.
+func (m SMTPMonitor) URL() string {
+	return fmt.Sprintf("smtp://%s:%d", m.Host, m.Port)
+}
+
+// TracksSSL reports whether this monitor's cert expiry feeds the SSL
+// state machine (TLS negotiated and not skip-verified).
+func (m SMTPMonitor) TracksSSL() bool {
+	return m.TLSMode() != SMTPTLSNone && !m.TLSInsecureSkipVerify
+}
+
 // Load parses and validates the YAML config. Returns a populated
 // Config on success, or a descriptive error on validation failure.
 //
@@ -840,12 +910,19 @@ func (c *checker) validate(cfg *Config) {
 		}
 	}
 
+	// SMTP monitors share the slug namespace, the dependsOn graph, and
+	// the scheduling/routing validators with HTTP monitors. Validated
+	// after the HTTP loop so seenMonitors carries the full HTTP slug set
+	// for cross-kind duplicate detection.
+	c.validateSMTPMonitors(cfg, seenMonitors, seenProxies, seenSlackChannels)
+
 	// Global dependsOn pass: every reference resolves to a known
-	// static monitor, and the graph has no cycles. Done after the
-	// per-monitor pass so we have the full slug set.
-	monitorByIdx := map[string]int{}
-	for i, m := range cfg.Monitors {
-		monitorByIdx[m.Slug] = i
+	// static monitor (HTTP or SMTP), and the graph has no cycles. Done
+	// after the per-monitor passes so we have the full slug set.
+	depNodes := collectDepNodes(cfg)
+	knownSlugs := map[string]struct{}{}
+	for _, n := range depNodes {
+		knownSlugs[n.slug] = struct{}{}
 	}
 	for i, m := range cfg.Monitors {
 		base := []any{"monitors", i}
@@ -853,13 +930,30 @@ func (c *checker) validate(cfg *Config) {
 			if dep == m.Slug {
 				continue // already reported above
 			}
-			if _, ok := monitorByIdx[dep]; !ok {
+			if _, ok := knownSlugs[dep]; !ok {
 				c.errf(append(base, "dependsOn", j), "unknown monitor slug %q (parents must be declared static monitors)", dep)
 			}
 		}
 	}
-	if cycle := detectDependsOnCycle(cfg.Monitors); cycle != "" {
+	for i, m := range cfg.SMTPMonitors {
+		base := []any{"smtpMonitors", i}
+		for j, dep := range m.DependsOn {
+			if dep == m.Slug {
+				continue // already reported above
+			}
+			if _, ok := knownSlugs[dep]; !ok {
+				c.errf(append(base, "dependsOn", j), "unknown monitor slug %q (parents must be declared static monitors)", dep)
+			}
+		}
+	}
+	if cycle := detectDependsOnCycle(depNodes); cycle != "" {
 		c.errf([]any{"monitors"}, "dependsOn graph contains a cycle: %s", cycle)
+	}
+	// monitorByIdx feeds the kube dependsOn resolver below: kube parents
+	// may reference any declared static monitor, HTTP or SMTP.
+	monitorByIdx := map[string]int{}
+	for i, n := range depNodes {
+		monitorByIdx[n.slug] = i
 	}
 
 	// Kube dependsOn resolution: every entry in a config.dependsOn
@@ -907,6 +1001,103 @@ func (c *checker) validate(cfg *Config) {
 				c.errf(append(sbase, "title"), "required")
 			}
 			c.validateSectionMatch(&sec.Match, append(sbase, "match"))
+		}
+	}
+}
+
+// validSMTPTLSModes is the allowed tls enum for smtpMonitors (empty
+// defaults to starttls at use time).
+var validSMTPTLSModes = map[string]struct{}{
+	SMTPTLSStartTLS: {}, SMTPTLSImplicit: {}, SMTPTLSNone: {},
+}
+
+// validateSMTPMonitors validates the smtpMonitors block. SMTP monitors
+// share the slug namespace (seenMonitors carries the HTTP slugs already)
+// and reuse the HTTP scheduling/routing validators; SMTP-specifics
+// (host/port/tls) and the TLS-conditional SSL-threshold rule are
+// enforced here. dependsOn cross-references + cycles are resolved in the
+// shared global pass in validate().
+func (c *checker) validateSMTPMonitors(cfg *Config, seenMonitors, seenProxies, seenSlackChannels map[string]struct{}) {
+	for i, m := range cfg.SMTPMonitors {
+		base := []any{"smtpMonitors", i}
+		if err := slug.Validate(m.Slug); err != nil {
+			c.errf(append(base, "slug"), "%v", err)
+		}
+		if strings.HasPrefix(m.Slug, slug.KubeSlugPrefix) {
+			c.errf(append(base, "slug"),
+				"monitor slug %q must not start with %q — that prefix is reserved for kube-discovered monitors",
+				m.Slug, slug.KubeSlugPrefix)
+		}
+		if _, dup := seenMonitors[m.Slug]; dup {
+			c.errf(append(base, "slug"), "duplicate slug %q", m.Slug)
+		}
+		seenMonitors[m.Slug] = struct{}{}
+
+		if strings.TrimSpace(m.Host) == "" {
+			c.errf(append(base, "host"), "required")
+		}
+		if m.Port < 1 || m.Port > 65535 {
+			c.errf(append(base, "port"), "must be in 1..65535, got %d", m.Port)
+		}
+		if m.TLS != "" {
+			if _, ok := validSMTPTLSModes[m.TLS]; !ok {
+				c.errf(append(base, "tls"), "%q is not one of %v", m.TLS, SMTPTLSModes)
+			}
+		}
+		for j, tag := range m.Tags {
+			if err := slug.ValidateTag(tag); err != nil {
+				c.errf(append(base, "tags", j), "%v", err)
+			}
+		}
+		if m.Proxy != "" {
+			if _, ok := seenProxies[m.Proxy]; !ok {
+				c.errf(append(base, "proxy"), "unknown proxy slug %q", m.Proxy)
+			}
+		}
+		if _, ok := seenSlackChannels[m.Slack]; !ok {
+			c.errf(append(base, "slack"), "unknown channel slug %q", m.Slack)
+		}
+		for j, n := range m.Notify {
+			if !c.isValidNotifyEntry(cfg.Slack.UserMapping, n) {
+				c.errf(append(base, "notify", j),
+					"%q must be a userMapping slug or raw Slack markup wrapped in <…>", n)
+			}
+		}
+		interval := m.Interval.AsDuration()
+		timeout := m.Timeout.AsDuration()
+		backoff := m.RetryBackoff.AsDuration()
+		if timeout >= interval {
+			c.errf(base, "timeout (%s) must be less than interval (%s)", timeout, interval)
+		}
+		retryWindow := time.Duration(m.Retries) * (timeout + backoff)
+		if retryWindow >= interval {
+			c.errf(base, "retries × (timeout + retryBackoff) = %s must be less than interval (%s)", retryWindow, interval)
+		}
+		for j, dep := range m.DependsOn {
+			if dep == m.Slug {
+				c.errf(append(base, "dependsOn", j), "monitor cannot depend on itself")
+			}
+		}
+
+		// SSL thresholds: required when TLS is negotiated and the cert is
+		// actually verified; forbidden/ignored otherwise (parallels the
+		// HTTPS rule). When required and present, alert > escalation > 0.
+		if m.TracksSSL() {
+			if m.SSLAlertThreshold.AsDuration() <= 0 {
+				c.errf(append(base, "sslAlertThreshold"), "required when tls is %q or %q", SMTPTLSStartTLS, SMTPTLSImplicit)
+			}
+			if m.SSLEscalationThreshold.AsDuration() <= 0 {
+				c.errf(append(base, "sslEscalationThreshold"), "required when tls is %q or %q", SMTPTLSStartTLS, SMTPTLSImplicit)
+			}
+			if m.SSLReminderInterval.AsDuration() <= 0 {
+				c.errf(append(base, "sslReminderInterval"), "required when tls is %q or %q", SMTPTLSStartTLS, SMTPTLSImplicit)
+			}
+			if m.SSLAlertThreshold.AsDuration() > 0 && m.SSLEscalationThreshold.AsDuration() > 0 &&
+				m.SSLAlertThreshold.AsDuration() <= m.SSLEscalationThreshold.AsDuration() {
+				c.errf(append(base, "sslAlertThreshold"),
+					"must be strictly greater than sslEscalationThreshold (%s)",
+					m.SSLEscalationThreshold.AsDuration())
+			}
 		}
 	}
 }
@@ -966,10 +1157,29 @@ func (c *checker) validateSectionMatch(m *SectionMatch, base []any) {
 	}
 }
 
+// depNode is one vertex in the combined (HTTP + SMTP) dependsOn graph.
+type depNode struct {
+	slug string
+	deps []string
+}
+
+// collectDepNodes gathers every static monitor (HTTP then SMTP) as a
+// dependsOn graph vertex, in declaration order.
+func collectDepNodes(cfg *Config) []depNode {
+	out := make([]depNode, 0, len(cfg.Monitors)+len(cfg.SMTPMonitors))
+	for _, m := range cfg.Monitors {
+		out = append(out, depNode{slug: m.Slug, deps: m.DependsOn})
+	}
+	for _, m := range cfg.SMTPMonitors {
+		out = append(out, depNode{slug: m.Slug, deps: m.DependsOn})
+	}
+	return out
+}
+
 // detectDependsOnCycle runs a DFS over the monitor dependency graph
 // and returns a human-readable description of the first cycle found,
 // or "" if the graph is acyclic.
-func detectDependsOnCycle(monitors []Monitor) string {
+func detectDependsOnCycle(nodes []depNode) string {
 	const (
 		white = 0
 		gray  = 1
@@ -977,9 +1187,9 @@ func detectDependsOnCycle(monitors []Monitor) string {
 	)
 	color := map[string]int{}
 	parents := map[string][]string{}
-	for _, m := range monitors {
-		color[m.Slug] = white
-		parents[m.Slug] = m.DependsOn
+	for _, n := range nodes {
+		color[n.slug] = white
+		parents[n.slug] = n.deps
 	}
 	var path []string
 	var dfs func(node string) string
@@ -1010,9 +1220,9 @@ func detectDependsOnCycle(monitors []Monitor) string {
 		color[node] = black
 		return ""
 	}
-	for _, m := range monitors {
-		if color[m.Slug] == white {
-			if c := dfs(m.Slug); c != "" {
+	for _, n := range nodes {
+		if color[n.slug] == white {
+			if c := dfs(n.slug); c != "" {
 				return c
 			}
 		}

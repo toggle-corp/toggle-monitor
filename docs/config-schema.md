@@ -531,6 +531,71 @@ monitors:
 
 ---
 
+## 5b. SMTP monitors
+
+`smtpMonitors:` declares SMTP service probes. They are **static-only**
+(kube auto-discovery never produces them) and confirm a server is
+answering and speaking SMTP, optionally negotiating TLS and tracking the
+certificate's expiry via the same SSL state machine HTTPS monitors use.
+They do **not** authenticate or send mail. See the SMTP monitoring
+design.
+
+SMTP monitors share the slug namespace, the `dependsOn` graph (an SMTP
+monitor may depend on an HTTP monitor and vice-versa), the status-page
+tag matching, and the alert/SSL/Slack/metrics machinery with HTTP
+monitors. They are stored in the same `monitors` table with `kind:
+smtp`; the `url` column holds a synthesized `smtp://host:port` identity.
+
+```yaml
+smtpMonitors:
+  - slug: mail-relay
+    friendlyName: Mail Relay
+    host: smtp.example.test
+    port: 2525
+    tls: starttls              # starttls (default) | implicit | none
+    ehloName: toggle-monitor   # optional; hostname sent in EHLO/HELO
+    interval: 5m
+    timeout: 10s
+    retries: 1
+    retryBackoff: 5s
+    reminderInterval: 3d
+    slack: ops-alerts
+    tags: [mail]
+    sslAlertThreshold: 14d
+    sslEscalationThreshold: 3d
+    sslReminderInterval: 24h
+```
+
+| Field | Type | Req | Validation | Notes |
+|---|---|---|---|---|
+| `smtpMonitors` | list | — | optional | |
+| `smtpMonitors[].slug` | string | ✓ | slug regex; unique across **all** monitors (HTTP + SMTP + kube namespace) | |
+| `smtpMonitors[].friendlyName` | string | ✓ | non-empty | |
+| `smtpMonitors[].host` | string | ✓ | non-empty | SMTP server hostname |
+| `smtpMonitors[].port` | int | ✓ | 1–65535 | e.g. 25 / 465 / 587 / 2525 |
+| `smtpMonitors[].tls` | enum | — | one of `starttls`/`implicit`/`none`; default `starttls` | `starttls`/`implicit` capture the cert; `none` skips SSL |
+| `smtpMonitors[].ehloName` | string | — | default `toggle-monitor` | Hostname sent in EHLO/HELO |
+| `smtpMonitors[].interval` | duration | ✓ | | |
+| `smtpMonitors[].timeout` | duration | ✓ | < interval; covers the whole conversation | |
+| `smtpMonitors[].retries` | int | ✓ | >= 0 | |
+| `smtpMonitors[].retryBackoff` | duration | ✓ | | |
+| `smtpMonitors[].tlsInsecureSkipVerify` | bool | — | default `false` | Skips cert verification; implies SSL state `ssl-skipped` |
+| `smtpMonitors[].proxy` | string | — | resolves to a `proxies[].slug` | Routes the TCP connect through that proxy (SOCKS5) |
+| `smtpMonitors[].reminderInterval` | duration | ✓ | | |
+| `smtpMonitors[].sslAlertThreshold` | duration | ✓ if `tls` is `starttls`/`implicit` and `tlsInsecureSkipVerify: false` | > `sslEscalationThreshold` | Conditionally required |
+| `smtpMonitors[].sslEscalationThreshold` | duration | ✓ (same condition) | > 0 | Conditionally required |
+| `smtpMonitors[].sslReminderInterval` | duration | ✓ (same condition) | > 0 | Conditionally required |
+| `smtpMonitors[].slack` | string | ✓ | resolves to a `slack.channels[].slug` | |
+| `smtpMonitors[].notify` | list[string] | — | each: a `slack.userMapping` slug OR `<...>` raw markup | |
+| `smtpMonitors[].tags` | list[string] | — | each: slug regex | |
+| `smtpMonitors[].dependsOn` | list[string] | — | each: resolves to a declared static monitor (HTTP or SMTP) | Shares the cycle-checked graph |
+
+**Cross-field validation:**
+- `timeout < interval` and `retries × (timeout + retryBackoff) < interval`.
+- The decisive reply code persisted on success is the EHLO `250`; transport/TLS failures persist code `0` with the reason in the error.
+
+---
+
 ## Env var interpolation in values
 
 Any YAML scalar value can contain `${VAR}` references (docker-compose style). Env vars are expanded **before** YAML deserialization, so the rest of the schema sees the resolved string.

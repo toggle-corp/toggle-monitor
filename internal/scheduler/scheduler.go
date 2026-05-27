@@ -15,7 +15,7 @@ import (
 	"golang.org/x/net/proxy"
 
 	"github.com/toggle-corp/toggle-monitor/internal/alert"
-	"github.com/toggle-corp/toggle-monitor/internal/httpcheck"
+	"github.com/toggle-corp/toggle-monitor/internal/probe"
 	tmsentry "github.com/toggle-corp/toggle-monitor/internal/sentry"
 	"github.com/toggle-corp/toggle-monitor/internal/slack"
 	"github.com/toggle-corp/toggle-monitor/internal/store"
@@ -27,24 +27,38 @@ import (
 // the scheduler operates on this flatter shape so it doesn't need to
 // import config.
 type Plan struct {
-	Slug                string
-	FriendlyName        string
-	URL                 string
-	HTTPMethod          string
+	Slug string
+	// Kind is the probe kind: "http" (default) or "smtp". Display +
+	// plan-equality only; the actual probe behaviour lives in Prober.
+	Kind         string
+	FriendlyName string
+	URL          string
+	HTTPMethod   string
+	// Host / Port / TLSMode describe an SMTP monitor; empty for HTTP.
+	// Carried for the detail UI; the probe itself reads them via Prober.
+	Host                string
+	Port                int
+	TLSMode             string
 	AcceptedStatusCodes []int
 	Interval            time.Duration
 	Timeout             time.Duration
 	Retries             int
 	RetryBackoff        time.Duration
 	FollowRedirects     bool
+	// Prober runs one probe tick and returns the neutral probe.Result.
+	// Resolved by the wiring layer (httpcheck.Config / smtpcheck.Config
+	// both satisfy probe.Prober). The scheduler is probe-agnostic: it
+	// never inspects Kind to decide how to probe, only Prober.
+	Prober probe.Prober
 	// TLSInsecureSkipVerify disables Go's TLS chain verification on
-	// the probe — for HTTPS endpoints with self-signed certs we
-	// intentionally trust. Implies SSL state is forced to skipped.
+	// the probe — for endpoints with self-signed certs we intentionally
+	// trust. Implies SSL state is forced to skipped.
 	TLSInsecureSkipVerify bool
 	// ProxyDialer routes the probe through an outbound proxy
 	// (currently SOCKS5). Resolved from the YAML `proxies:` block at
 	// startup, looked up by the lifecycle per monitor's proxy slug.
-	// nil → direct dial.
+	// nil → direct dial. Carried for plan-equality; the Prober already
+	// holds its own dialer.
 	ProxyDialer proxy.Dialer
 	// Proxy is the slug of the configured outbound proxy (or empty
 	// for direct dial). Carried alongside ProxyDialer so the UI can
@@ -62,16 +76,15 @@ type Plan struct {
 	DependsOn        []string // upstream static-monitor slugs; any of them down pauses this monitor
 
 	// SSL thresholds; SSL evaluation is skipped when all are zero
-	// (which is also the case for static HTTP monitors).
+	// (which is also the case for plaintext monitors).
 	SSLAlertThreshold      time.Duration
 	SSLEscalationThreshold time.Duration
 	SSLReminderInterval    time.Duration
-	IsHTTPS                bool
+	// TLSBearing marks a monitor whose probe presents a certificate we
+	// track for expiry (HTTPS, or SMTP with starttls/implicit). False →
+	// SSL state is ssl-skipped. Generalizes the former IsHTTPS flag.
+	TLSBearing bool
 }
-
-// CheckFunc is the seam used to run a probe; production wires
-// httpcheck.Check, tests wire a fake.
-type CheckFunc func(ctx context.Context, cfg httpcheck.Config) httpcheck.Result
 
 // EventSink is the seam the scheduler uses to dispatch alert events
 // (open / reminder / resolve). Production wires
@@ -95,7 +108,6 @@ type Metrics interface {
 // Scheduler drives the configured set of monitors.
 type Scheduler struct {
 	repo    *store.Repo
-	check   CheckFunc
 	sink    EventSink
 	sslSink SSLSink
 	metrics Metrics
@@ -121,9 +133,6 @@ type MissingParent struct {
 // clock or fake check function.
 type Option func(*Scheduler)
 
-// WithCheck overrides the probe function (defaults to httpcheck.Check).
-func WithCheck(c CheckFunc) Option { return func(s *Scheduler) { s.check = c } }
-
 // WithNow overrides the time source (defaults to time.Now).
 func WithNow(f func() time.Time) Option { return func(s *Scheduler) { s.now = f } }
 
@@ -144,10 +153,9 @@ func WithMetrics(m Metrics) Option { return func(s *Scheduler) { s.metrics = m }
 // New constructs a Scheduler with sensible defaults.
 func New(repo *store.Repo, opts ...Option) *Scheduler {
 	s := &Scheduler{
-		repo:  repo,
-		check: httpcheck.Check,
-		log:   slog.Default(),
-		now:   time.Now,
+		repo: repo,
+		log:  slog.Default(),
+		now:  time.Now,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -302,18 +310,7 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 		}
 	}
 
-	cfg := httpcheck.Config{
-		URL:                   p.URL,
-		Method:                p.HTTPMethod,
-		AcceptedStatusCodes:   p.AcceptedStatusCodes,
-		Timeout:               p.Timeout,
-		FollowRedirects:       p.FollowRedirects,
-		TLSInsecureSkipVerify: p.TLSInsecureSkipVerify,
-		ProxyDialer:           p.ProxyDialer,
-		UserAgent:             p.UserAgent,
-	}
-
-	var res httpcheck.Result
+	var res probe.Result
 	attempts := p.Retries + 1
 	tickStart := time.Now()
 	for attempt := 0; attempt < attempts; attempt++ {
@@ -322,7 +319,7 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 				return ctx.Err()
 			}
 		}
-		res = s.check(ctx, cfg)
+		res = p.Prober.Probe(ctx)
 		if ctx.Err() != nil {
 			// SIGTERM mid-check: do NOT record context cancellation as
 			// failure (per design — it's not signal about the
@@ -372,12 +369,12 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 	check := alert.Check{
 		Outcome:          outcome,
 		At:               now,
-		StatusCode:       res.StatusCode,
+		StatusCode:       res.Code,
 		Error:            res.Error,
 		ReminderInterval: p.ReminderInterval,
 	}
 	nextState, event := alert.Apply(row.State(), check)
-	if err := s.repo.ApplyCheck(ctx, p.Slug, nextState, now, res.StatusCode, res.Error, event); err != nil {
+	if err := s.repo.ApplyCheck(ctx, p.Slug, nextState, now, res.Code, res.Error, event); err != nil {
 		return err
 	}
 
@@ -404,16 +401,16 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 	}
 
 	// SSL state machine, driven independently from the uptime side.
-	// Static HTTP monitors get ssl-skipped; HTTPS monitors check
-	// against the configured thresholds when the probe captured cert
-	// info (it won't have if the probe transport-failed).
-	// tlsInsecureSkipVerify implies "don't track SSL expiry": present
-	// the SSL state machine with IsHTTPS=false so it routes to
-	// SSLStatusSkipped and emits no events.
-	isHTTPSForSSL := p.IsHTTPS && !p.TLSInsecureSkipVerify
+	// Plaintext monitors (HTTP, or SMTP tls:none) get ssl-skipped;
+	// TLS-bearing monitors check against the configured thresholds when
+	// the probe captured cert info (it won't have if the probe
+	// transport-failed). tlsInsecureSkipVerify implies "don't track SSL
+	// expiry": present the SSL state machine with TLSBearing=false so it
+	// routes to SSLStatusSkipped and emits no events.
+	tlsBearingForSSL := p.TLSBearing && !p.TLSInsecureSkipVerify
 	sslCheck := alert.SSLCheck{
 		At:                  now,
-		IsHTTPS:             isHTTPSForSSL,
+		TLSBearing:          tlsBearingForSSL,
 		AlertThreshold:      p.SSLAlertThreshold,
 		EscalationThreshold: p.SSLEscalationThreshold,
 		ReminderInterval:    p.SSLReminderInterval,

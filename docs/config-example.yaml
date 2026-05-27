@@ -216,6 +216,44 @@ monitors:
       - "<!here>"                                    # raw Slack markup passes through
     tags: [external, prod]
 
+# ── SMTP monitors ─────────────────────────────────────────────────────────────
+# Static-only SMTP probes: connect, read the banner, EHLO, optionally
+# negotiate TLS (capturing the cert for the SSL state machine), QUIT.
+# No auth, no mail sent. Share the slug namespace + dependsOn graph +
+# status pages with HTTP monitors.
+smtpMonitors:
+  - slug: mail-relay
+    friendlyName: Mail Relay
+    host: smtp.example.test
+    port: 2525
+    tls: starttls                                    # starttls (default) | implicit | none
+    interval: 5m
+    timeout: 10s
+    retries: 1
+    retryBackoff: 5s
+    reminderInterval: 3d
+    slack: ops-alerts
+    tags: [mail, prod]
+    sslAlertThreshold: 14d
+    sslEscalationThreshold: 3d
+    sslReminderInterval: 24h
+
+  - slug: mail-submission
+    friendlyName: Mail Submission (implicit TLS)
+    host: smtp.example.test
+    port: 465
+    tls: implicit
+    interval: 5m
+    timeout: 10s
+    retries: 1
+    retryBackoff: 5s
+    reminderInterval: 3d
+    slack: ops-alerts
+    tags: [mail, prod]
+    sslAlertThreshold: 14d
+    sslEscalationThreshold: 3d
+    sslReminderInterval: 24h
+
 # ── Status pages ──────────────────────────────────────────────────────────────
 # StatusPage is the sole collection entity since ADR-0003. Each entry
 # is served at /status/<slug>; /status itself renders an index of all

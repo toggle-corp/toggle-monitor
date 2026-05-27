@@ -10,15 +10,17 @@ type SSLStatus string
 const (
 	SSLStatusOK       SSLStatus = "ok"
 	SSLStatusExpiring SSLStatus = "ssl-expiring"
-	SSLStatusSkipped  SSLStatus = "ssl-skipped" // HTTP-only static monitors
+	SSLStatusSkipped  SSLStatus = "ssl-skipped" // plaintext monitors (HTTP, SMTP tls:none)
 )
 
 // SSLCheck is the per-tick input to the SSL state machine. ExpiresAt
-// is zero when there's no cert (e.g. plain-HTTP probe).
+// is zero when there's no cert (e.g. plaintext probe).
 type SSLCheck struct {
-	At                  time.Time
-	ExpiresAt           time.Time // cert NotAfter; zero → no cert observed this tick
-	IsHTTPS             bool      // false → ssl-skipped (static HTTP monitors only)
+	At        time.Time
+	ExpiresAt time.Time // cert NotAfter; zero → no cert observed this tick
+	// TLSBearing marks a probe that presents a certificate we track
+	// (HTTPS, or SMTP starttls/implicit). false → ssl-skipped.
+	TLSBearing          bool
 	AlertThreshold      time.Duration
 	EscalationThreshold time.Duration
 	ReminderInterval    time.Duration
@@ -47,7 +49,7 @@ const (
 
 // ApplySSL drives the SSL state machine. Behavior:
 //
-//   - !IsHTTPS                 → SSLStatusSkipped, no event.
+//   - !TLSBearing              → SSLStatusSkipped, no event.
 //   - ExpiresAt zero (cert missing) → no transition (caller's job to
 //     handle network-level failures via the uptime SM).
 //   - TTL <= AlertThreshold and status was OK   → SSLStatusExpiring + EventSSLOpen.
@@ -57,7 +59,7 @@ const (
 //   - TTL > AlertThreshold and status was Expiring → SSLStatusOK + EventSSLResolve
 //     (cert renewed).
 func ApplySSL(prev SSLState, c SSLCheck) (SSLState, *SSLEvent) {
-	if !c.IsHTTPS {
+	if !c.TLSBearing {
 		return SSLState{Status: SSLStatusSkipped}, nil
 	}
 	if c.ExpiresAt.IsZero() {

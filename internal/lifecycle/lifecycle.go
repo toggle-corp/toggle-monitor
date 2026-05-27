@@ -22,6 +22,7 @@ import (
 	"github.com/toggle-corp/toggle-monitor/internal/config"
 	"github.com/toggle-corp/toggle-monitor/internal/db"
 	"github.com/toggle-corp/toggle-monitor/internal/heartbeat"
+	"github.com/toggle-corp/toggle-monitor/internal/httpcheck"
 	"github.com/toggle-corp/toggle-monitor/internal/kube"
 	"github.com/toggle-corp/toggle-monitor/internal/merger"
 	"github.com/toggle-corp/toggle-monitor/internal/migrate"
@@ -31,6 +32,7 @@ import (
 	"github.com/toggle-corp/toggle-monitor/internal/secret"
 	tmsentry "github.com/toggle-corp/toggle-monitor/internal/sentry"
 	"github.com/toggle-corp/toggle-monitor/internal/slack"
+	"github.com/toggle-corp/toggle-monitor/internal/smtpcheck"
 	"github.com/toggle-corp/toggle-monitor/internal/store"
 	"github.com/toggle-corp/toggle-monitor/internal/web"
 	"github.com/toggle-corp/toggle-monitor/internal/web/templates"
@@ -181,13 +183,33 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	// soft-delete any prior static monitor that is no longer
 	// declared. Soft-delete fires the in-thread closeout + the
 	// non-threaded "monitor removed" warning via the notifier.
-	declared := make(map[string]struct{}, len(opts.Config.Monitors))
+	declared := make(map[string]struct{}, len(opts.Config.Monitors)+len(opts.Config.SMTPMonitors))
 	for _, m := range opts.Config.Monitors {
 		declared[m.Slug] = struct{}{}
 		spec := store.MonitorSpec{
 			Slug:             m.Slug,
+			Kind:             store.KindHTTP,
 			FriendlyName:     m.FriendlyName,
 			URL:              m.URL,
+			Source:           store.SourceStatic,
+			DependsOn:        m.DependsOn,
+			SlackChannelSlug: m.Slack,
+			Tags:             m.Tags,
+		}
+		if err := repo.ReconcileMonitor(ctx, spec); err != nil {
+			return fmt.Errorf("reconcile %q: %w", m.Slug, err)
+		}
+	}
+	for _, m := range opts.Config.SMTPMonitors {
+		declared[m.Slug] = struct{}{}
+		spec := store.MonitorSpec{
+			Slug:             m.Slug,
+			Kind:             store.KindSMTP,
+			FriendlyName:     m.FriendlyName,
+			URL:              m.URL(),
+			Host:             m.Host,
+			Port:             m.Port,
+			TLSMode:          m.TLSMode(),
 			Source:           store.SourceStatic,
 			DependsOn:        m.DependsOn,
 			SlackChannelSlug: m.Slack,
@@ -484,15 +506,26 @@ func compileSectionMatch(m config.SectionMatch) templates.StatusMatch {
 }
 
 func buildPlans(cfg config.Config, proxies *proxypool.Pool) []scheduler.Plan {
-	out := make([]scheduler.Plan, 0, len(cfg.Monitors))
+	out := make([]scheduler.Plan, 0, len(cfg.Monitors)+len(cfg.SMTPMonitors))
 	for _, m := range cfg.Monitors {
 		isHTTPS := strings.HasPrefix(m.URL, "https://")
 		out = append(out, scheduler.Plan{
-			Slug:                   m.Slug,
-			FriendlyName:           m.FriendlyName,
-			URL:                    m.URL,
-			HTTPMethod:             m.HTTPMethod,
-			AcceptedStatusCodes:    m.AcceptedStatusCodes,
+			Slug:                m.Slug,
+			Kind:                "http",
+			FriendlyName:        m.FriendlyName,
+			URL:                 m.URL,
+			HTTPMethod:          m.HTTPMethod,
+			AcceptedStatusCodes: m.AcceptedStatusCodes,
+			Prober: httpcheck.Config{
+				URL:                   m.URL,
+				Method:                m.HTTPMethod,
+				AcceptedStatusCodes:   m.AcceptedStatusCodes,
+				Timeout:               m.Timeout.AsDuration(),
+				FollowRedirects:       m.FollowRedirects,
+				TLSInsecureSkipVerify: m.TLSInsecureSkipVerify,
+				ProxyDialer:           proxies.Get(m.Proxy),
+				UserAgent:             cfg.HTTPClient.UserAgent,
+			},
 			Interval:               m.Interval.AsDuration(),
 			Timeout:                m.Timeout.AsDuration(),
 			Retries:                m.Retries,
@@ -506,7 +539,44 @@ func buildPlans(cfg config.Config, proxies *proxypool.Pool) []scheduler.Plan {
 			ChannelSlug:            m.Slack,
 			Mentions:               slack.ResolveMentions(m.Notify, cfg.Slack.UserMapping),
 			DependsOn:              m.DependsOn,
-			IsHTTPS:                isHTTPS,
+			TLSBearing:             isHTTPS,
+			SSLAlertThreshold:      m.SSLAlertThreshold.AsDuration(),
+			SSLEscalationThreshold: m.SSLEscalationThreshold.AsDuration(),
+			SSLReminderInterval:    m.SSLReminderInterval.AsDuration(),
+		})
+	}
+	for _, m := range cfg.SMTPMonitors {
+		tlsMode := m.TLSMode()
+		tlsBearing := tlsMode != smtpcheck.TLSNone
+		out = append(out, scheduler.Plan{
+			Slug:         m.Slug,
+			Kind:         "smtp",
+			FriendlyName: m.FriendlyName,
+			URL:          m.URL(),
+			Host:         m.Host,
+			Port:         m.Port,
+			TLSMode:      tlsMode,
+			Prober: smtpcheck.Config{
+				Host:               m.Host,
+				Port:               m.Port,
+				TLSMode:            tlsMode,
+				EHLOName:           m.EHLOName,
+				Timeout:            m.Timeout.AsDuration(),
+				InsecureSkipVerify: m.TLSInsecureSkipVerify,
+				ProxyDialer:        proxies.Get(m.Proxy),
+			},
+			Interval:               m.Interval.AsDuration(),
+			Timeout:                m.Timeout.AsDuration(),
+			Retries:                m.Retries,
+			RetryBackoff:           m.RetryBackoff.AsDuration(),
+			TLSInsecureSkipVerify:  m.TLSInsecureSkipVerify,
+			ProxyDialer:            proxies.Get(m.Proxy),
+			Proxy:                  m.Proxy,
+			ReminderInterval:       m.ReminderInterval.AsDuration(),
+			ChannelSlug:            m.Slack,
+			Mentions:               slack.ResolveMentions(m.Notify, cfg.Slack.UserMapping),
+			DependsOn:              m.DependsOn,
+			TLSBearing:             tlsBearing,
 			SSLAlertThreshold:      m.SSLAlertThreshold.AsDuration(),
 			SSLEscalationThreshold: m.SSLEscalationThreshold.AsDuration(),
 			SSLReminderInterval:    m.SSLReminderInterval.AsDuration(),
@@ -561,7 +631,7 @@ func (c *combinedPlanSource) ConfigFor(slug string) (templates.MonitorConfig, bo
 			ReminderInterval:       p.ReminderInterval,
 			SlackChannelSlug:       p.ChannelSlug,
 			Mentions:               displayMentions(p.Mentions, c.idToSlug),
-			IsHTTPS:                p.IsHTTPS,
+			IsHTTPS:                p.TLSBearing,
 			SSLAlertThreshold:      p.SSLAlertThreshold,
 			SSLEscalationThreshold: p.SSLEscalationThreshold,
 			SSLReminderInterval:    p.SSLReminderInterval,
