@@ -74,6 +74,12 @@ type Plan struct {
 	ChannelSlug      string   // slack destination slug; empty disables Slack output
 	Mentions         []string // pre-resolved raw Slack markup (parent-only)
 	DependsOn        []string // upstream static-monitor slugs; any of them down pauses this monitor
+	// Critical opts the monitor OUT of alert coalescing: its uptime
+	// events post an immediate, individually-paged per-monitor message
+	// (the legacy EventSink path) instead of joining the per-channel
+	// digest. dependsOn pause still wins — a paused critical monitor
+	// stays silent. Default false → the monitor coalesces.
+	Critical bool
 
 	// SSL thresholds; SSL evaluation is skipped when all are zero
 	// (which is also the case for plaintext monitors).
@@ -96,6 +102,25 @@ type EventSink func(ctx context.Context, m store.MonitorRow, channelSlug string,
 // SSLSink is the analogous seam for SSL events.
 type SSLSink func(ctx context.Context, m store.MonitorRow, channelSlug string, mentions []string, event *alert.SSLEvent) error
 
+// GroupMember is the display data a monitor contributes to the digest
+// when its uptime event is routed into the coalescing layer.
+type GroupMember struct {
+	Slug         string
+	FriendlyName string
+	Mentions     []string
+}
+
+// GroupSink is the seam the scheduler uses to stage non-critical uptime
+// transitions into the alert-coalescing layer (internal/coalesce). Down
+// stages a failure, Up a recovery, Pause a dependsOn push-propagation.
+// Reminders are NOT forwarded — the coalescing evaluator owns per-group
+// reminders. nil disables coalescing (events fall back to EventSink).
+type GroupSink interface {
+	Down(ctx context.Context, channel string, m GroupMember, at time.Time)
+	Up(ctx context.Context, channel, slug string, at time.Time)
+	Pause(ctx context.Context, channel, slug string, at time.Time)
+}
+
 // Metrics is the slim seam the scheduler uses to emit Prometheus
 // data points. Production wires observability.Metrics; tests pass
 // nil to disable.
@@ -107,12 +132,13 @@ type Metrics interface {
 
 // Scheduler drives the configured set of monitors.
 type Scheduler struct {
-	repo    *store.Repo
-	sink    EventSink
-	sslSink SSLSink
-	metrics Metrics
-	log     *slog.Logger
-	now     func() time.Time
+	repo      *store.Repo
+	sink      EventSink
+	sslSink   SSLSink
+	groupSink GroupSink
+	metrics   Metrics
+	log       *slog.Logger
+	now       func() time.Time
 
 	// missingParents tracks dependsOn references that didn't resolve
 	// to a known monitor at lookup time. Surfaced on /issues so the
@@ -145,6 +171,11 @@ func WithEventSink(sink EventSink) Option { return func(s *Scheduler) { s.sink =
 
 // WithSSLSink wires the Slack notifier for SSL events. Defaults to nil.
 func WithSSLSink(sink SSLSink) Option { return func(s *Scheduler) { s.sslSink = sink } }
+
+// WithGroupSink wires the alert-coalescing layer. When set, non-critical
+// uptime opens/resolves route into it (digest) instead of the
+// per-monitor EventSink. Defaults to nil (coalescing disabled).
+func WithGroupSink(sink GroupSink) Option { return func(s *Scheduler) { s.groupSink = sink } }
 
 // WithMetrics wires the Prometheus metrics sink. Defaults to a no-op
 // (tests that don't care about metrics need no setup).
@@ -306,6 +337,13 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 			if s.metrics != nil {
 				s.metrics.ObserveCheck(p.Slug, "paused", 0)
 			}
+			// dependsOn push-propagation: pull this child out of its
+			// channel digest (no-op if it isn't a member). Pause beats
+			// critical — even a critical monitor stays silent while its
+			// parent is down, so this fires regardless of p.Critical.
+			if s.groupSink != nil && p.ChannelSlug != "" {
+				s.groupSink.Pause(ctx, p.ChannelSlug, p.Slug, s.now())
+			}
 			return s.repo.MarkTemporaryPaused(ctx, p.Slug)
 		}
 	}
@@ -388,15 +426,32 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 		}
 	}
 
-	// Dispatch to the event sink AFTER the DB transaction has
-	// committed. We pass the *pre*-update row so the resolve handler
-	// still sees the uptime thread refs that ApplyCheck just cleared.
-	if event != nil && s.sink != nil && p.ChannelSlug != "" {
-		if err := s.sink(ctx, row, p.ChannelSlug, p.Mentions, event); err != nil {
-			logSinkError(s.log, "event sink", p.Slug, string(event.Type), err)
-			// Don't propagate: the DB transition is committed; on a
-			// transient/exhausted failure the next reminder tick
-			// synthesizes a fresh parent via the notifier.
+	// Dispatch the uptime event AFTER the DB transaction has committed.
+	// Routing:
+	//   - critical monitors (or coalescing disabled) → per-monitor
+	//     EventSink, the immediate individually-paged message. We pass
+	//     the *pre*-update row so the resolve handler still sees the
+	//     uptime thread refs that ApplyCheck just cleared.
+	//   - everything else → the coalescing GroupSink. Open stages a
+	//     Down, Resolve an Up; reminders are owned by the group
+	//     evaluator, so EventReminder is not forwarded here.
+	if event != nil && p.ChannelSlug != "" {
+		switch {
+		case s.groupSink != nil && !p.Critical:
+			switch event.Type {
+			case alert.EventOpen:
+				s.groupSink.Down(ctx, p.ChannelSlug,
+					GroupMember{Slug: p.Slug, FriendlyName: p.FriendlyName, Mentions: p.Mentions}, now)
+			case alert.EventResolve:
+				s.groupSink.Up(ctx, p.ChannelSlug, p.Slug, now)
+			}
+		case s.sink != nil:
+			if err := s.sink(ctx, row, p.ChannelSlug, p.Mentions, event); err != nil {
+				logSinkError(s.log, "event sink", p.Slug, string(event.Type), err)
+				// Don't propagate: the DB transition is committed; on a
+				// transient/exhausted failure the next reminder tick
+				// synthesizes a fresh parent via the notifier.
+			}
 		}
 	}
 

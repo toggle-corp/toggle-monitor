@@ -19,8 +19,10 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 
 	"github.com/toggle-corp/toggle-monitor/internal/alert"
+	"github.com/toggle-corp/toggle-monitor/internal/coalesce"
 	"github.com/toggle-corp/toggle-monitor/internal/config"
 	"github.com/toggle-corp/toggle-monitor/internal/db"
+	"github.com/toggle-corp/toggle-monitor/internal/group"
 	"github.com/toggle-corp/toggle-monitor/internal/heartbeat"
 	"github.com/toggle-corp/toggle-monitor/internal/httpcheck"
 	"github.com/toggle-corp/toggle-monitor/internal/kube"
@@ -147,13 +149,17 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		return fmt.Errorf("slack workspace check: %w", err)
 	}
 
+	// Shared channel-slug → ChannelInfo resolver, used by both the
+	// per-monitor notifier and the coalescing digest poster.
+	channelLookup := func(slug string) (slack.ChannelInfo, bool) {
+		info, ok := channelByMonitor[slug]
+		return info, ok
+	}
+
 	notifier := slack.NewNotifier(slack.NotifierOptions{
-		Client: slackClient,
-		Store:  repo,
-		Channels: func(slug string) (slack.ChannelInfo, bool) {
-			info, ok := channelByMonitor[slug]
-			return info, ok
-		},
+		Client:            slackClient,
+		Store:             repo,
+		Channels:          channelLookup,
 		BodyMaxChars:      opts.Config.Slack.BodyMaxChars,
 		DependentsNoteMax: opts.Config.Slack.DependentsNoteMax,
 		PublicBase:        opts.Config.PublicBaseURL,
@@ -300,10 +306,30 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		materializer = merger.New(repo, opts.Config, proxies)
 	}
 
+	// Alert coalescing: non-critical uptime opens/resolves route into a
+	// living per-channel digest instead of one Slack message per
+	// monitor. The manager owns the in-memory groups + persistence; a
+	// central evaluator goroutine (below) drives them on wall-clock
+	// time. Reattach any open groups from a prior process so deltas edit
+	// the existing digest instead of re-storming.
+	// Intervals are left at zero here → the group package fills the
+	// documented defaults (30s / 5m / 30m). Config knobs are wired in a
+	// follow-up slice.
+	groupMgr := coalesce.New(coalesce.Options{
+		Store:  repo,
+		Poster: &digestPoster{client: slackClient, channels: channelLookup},
+		Config: group.Config{},
+		Logger: log,
+	})
+	if err := groupMgr.Reattach(ctx); err != nil {
+		log.Warn("reattach incident groups", "error", err)
+	}
+
 	sched := scheduler.New(repo,
 		scheduler.WithLogger(log),
 		scheduler.WithEventSink(buildSink(notifier)),
 		scheduler.WithSSLSink(buildSSLSink(notifier)),
+		scheduler.WithGroupSink(groupSinkAdapter{m: groupMgr}),
 		scheduler.WithMetrics(metrics),
 	)
 	srv.SetMissingParentReader(&missingParentAdapter{s: sched})
@@ -351,6 +377,18 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	go func() {
 		defer wg.Done()
 		sched.RunDynamic(ctx, planSource, refresh)
+	}()
+
+	// Central coalescing evaluator: advances every live group on
+	// wall-clock time (independent of per-monitor ticks) and dispatches
+	// the resulting digest posts/edits/replies. A short cadence keeps
+	// group_wait (30s) and recovery rendering responsive without busy
+	// work — each tick is an in-memory pass plus one DB upsert per
+	// active group.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		groupMgr.RunEvaluator(ctx, 5*time.Second)
 	}()
 
 	// Hourly workspace re-check.
