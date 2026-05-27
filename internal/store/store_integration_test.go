@@ -39,7 +39,7 @@ func TestReconcileMonitor_insertsAndIsIdempotent(t *testing.T) {
 		Slug:         "bastion",
 		FriendlyName: "Bastion",
 		URL:          "http://bastion/health",
-		Tags: []string{"gateways"},
+		Tags:         []string{"gateways"},
 		Source:       store.SourceStatic,
 	}
 
@@ -74,7 +74,7 @@ func TestReconcileMonitor_preservesRuntimeStateOnConfigChange(t *testing.T) {
 		Slug:         "api",
 		FriendlyName: "API v1",
 		URL:          "http://api/health",
-		Tags: []string{"production-apis"},
+		Tags:         []string{"production-apis"},
 		Source:       store.SourceStatic,
 	}
 	if err := repo.ReconcileMonitor(ctx, spec); err != nil {
@@ -118,7 +118,7 @@ func TestApplyCheck_fullUptimeLifecycle(t *testing.T) {
 		Slug:         "api",
 		FriendlyName: "API",
 		URL:          "http://api/health",
-		Tags: []string{"production-apis"},
+		Tags:         []string{"production-apis"},
 		Source:       store.SourceStatic,
 	}
 	if err := repo.ReconcileMonitor(ctx, spec); err != nil {
@@ -166,7 +166,7 @@ func TestApplyCheck_fullUptimeLifecycle(t *testing.T) {
 	if events[0].Type != alert.EventResolve {
 		t.Errorf("events[0].Type: got %q, want resolve", events[0].Type)
 	}
-	if events[0].DowntimeSeconds == nil || *events[0].DowntimeSeconds != int64((15 * time.Minute).Seconds()) {
+	if events[0].DowntimeSeconds == nil || *events[0].DowntimeSeconds != int64((15*time.Minute).Seconds()) {
 		t.Errorf("downtime: got %v, want %d", events[0].DowntimeSeconds, int64((15 * time.Minute).Seconds()))
 	}
 	if events[1].Type != alert.EventOpen {
@@ -446,5 +446,63 @@ func TestDistinctTags_sortedAcrossAllMonitors(t *testing.T) {
 		if tags[i] != want[i] {
 			t.Errorf("DistinctTags[%d]: got %q, want %q", i, tags[i], want[i])
 		}
+	}
+}
+
+// TestUpsertDiscoverySnapshot_vacatedSlug pins the transition-detection
+// contract that drives kube monitor teardown: when a tuple's
+// monitor_slug goes from a real slug to gone (added → kube-invalid /
+// kube-ignored while the tuple stays observed), the upsert returns the
+// slug it just vacated so the watcher can route it through the removal
+// sink. No transition → empty string.
+func TestUpsertDiscoverySnapshot_vacatedSlug(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+
+	slug := "acme-api-example-test"
+	added := store.DiscoverySnapshotRow{
+		Namespace: "acme", IngressName: "api", Host: "api.example.test",
+		Status: "added", MonitorSlug: &slug,
+	}
+
+	// Brand-new tuple — nothing vacated.
+	vacated, err := repo.UpsertDiscoverySnapshot(ctx, added)
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if vacated != "" {
+		t.Errorf("new tuple should vacate nothing, got %q", vacated)
+	}
+
+	// Re-upsert unchanged — still nothing vacated.
+	vacated, err = repo.UpsertDiscoverySnapshot(ctx, added)
+	if err != nil {
+		t.Fatalf("idempotent upsert: %v", err)
+	}
+	if vacated != "" {
+		t.Errorf("unchanged slug should vacate nothing, got %q", vacated)
+	}
+
+	// Flip to kube-invalid, slug cleared, SAME tuple — vacates the old slug.
+	reason := "kube-invalid: wildcard host not probeable"
+	invalid := store.DiscoverySnapshotRow{
+		Namespace: "acme", IngressName: "api", Host: "api.example.test",
+		Status: "kube-invalid", Reason: &reason, MonitorSlug: nil,
+	}
+	vacated, err = repo.UpsertDiscoverySnapshot(ctx, invalid)
+	if err != nil {
+		t.Fatalf("invalidating upsert: %v", err)
+	}
+	if vacated != slug {
+		t.Errorf("added→invalid transition should vacate %q, got %q", slug, vacated)
+	}
+
+	// Already invalid → no further teardown signal.
+	vacated, err = repo.UpsertDiscoverySnapshot(ctx, invalid)
+	if err != nil {
+		t.Fatalf("repeat invalid upsert: %v", err)
+	}
+	if vacated != "" {
+		t.Errorf("already-vacated tuple should vacate nothing, got %q", vacated)
 	}
 }

@@ -144,6 +144,21 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 		Host:        host,
 	}
 
+	// Wildcard guard — runs BEFORE the cascade walk. A wildcard ingress
+	// host (k8s only permits `*` as the leftmost label, e.g.
+	// `*.foo.example.test`) is not a resolvable name: probing
+	// https://*.foo/ yields a perpetual "no such host". Such a host is
+	// structurally unprobeable regardless of which match rules it would
+	// hit, so it must short-circuit to kube-invalid before any ignore
+	// or override rule can reclassify it. ContainsRune is a deliberate
+	// superset of the `*.`-prefix form — cheap, and robust to fake
+	// listers and the no-materializer fallback path.
+	if strings.ContainsRune(host, '*') {
+		reason := "kube-invalid: wildcard host not probeable"
+		base.Status, base.Reason = "kube-invalid", &reason
+		return base, nil
+	}
+
 	stack, chain := m.walk(ing, host)
 	chainStr := chain.String()
 	// The root rule always matches (validator enforces an empty

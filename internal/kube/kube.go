@@ -31,17 +31,28 @@ import (
 // argument is the (ns, name, host) tuples the watcher actually
 // upserted this pass; anything else in the table is treated as
 // "no longer in the cluster" and pruned.
+// UpsertDiscoverySnapshot returns the monitor slug the upserted tuple
+// just vacated (non-empty only when an observed tuple's monitor_slug
+// changed away from a previously-materialized value — i.e. a host went
+// added → kube-invalid/kube-ignored without the ingress disappearing).
+// The watcher routes that slug through the RemovalSink so the orphaned
+// monitor + its open incident are torn down even though the observed-set
+// prune never fires for a still-present tuple.
 type SnapshotStore interface {
-	UpsertDiscoverySnapshot(ctx context.Context, row store.DiscoverySnapshotRow) error
+	UpsertDiscoverySnapshot(ctx context.Context, row store.DiscoverySnapshotRow) (vacatedSlug string, err error)
 	PruneDiscoverySnapshotExcept(ctx context.Context, observed []store.DiscoverySnapshotKey) (int64, []string, error)
 }
 
 // RemovalSink is the seam the watcher calls when a kube-discovered
-// monitor's ingress disappears from the cluster. Production wires
-// lifecycle.kubeRemovalSink (which soft-deletes the monitor + posts
-// the closeout + warning via the Slack notifier).
+// monitor should be torn down — either because its ingress disappeared
+// from the cluster, or because its host stopped materializing (added →
+// kube-invalid/kube-ignored). Production wires lifecycle.kubeRemovalSink
+// (which soft-deletes the monitor + posts the closeout + warning via the
+// Slack notifier). The reason is surfaced to the operator in the Slack
+// warning, so it must describe what actually happened — "kube ingress
+// removed" vs "host no longer probeable" — rather than be hardcoded.
 type RemovalSink interface {
-	OnKubeMonitorRemoved(ctx context.Context, monitorSlug string)
+	OnKubeMonitorRemoved(ctx context.Context, monitorSlug, reason string)
 }
 
 // IngressLister abstracts the informer's lister so tests can provide a
@@ -213,12 +224,26 @@ func (w *Watcher) Reconcile(ctx context.Context) error {
 			})
 			row, err := w.snapshotRowFor(ctx, ing, host)
 			if err != nil {
+				// Transient materialize failure: skip the upsert entirely
+				// so this pass can't vacate a slug. The tuple was already
+				// recorded above, so the prune won't soft-delete it either
+				// — a healthy monitor must survive an apiserver hiccup.
 				w.log.Warn("materialize ingress host", "ns", ing.Namespace, "name", ing.Name, "host", host, "error", err)
 				continue
 			}
-			if err := w.store.UpsertDiscoverySnapshot(ctx, row); err != nil {
+			vacated, err := w.store.UpsertDiscoverySnapshot(ctx, row)
+			if err != nil {
 				w.log.Warn("upsert discovery snapshot", "ns", ing.Namespace, "name", ing.Name, "host", host, "error", err)
 				continue
+			}
+			// The tuple is still observed, so the prune below won't catch
+			// this transition. Route the vacated slug to teardown here.
+			if vacated != "" && w.onRemoval != nil {
+				reason := "kube host no longer materialized"
+				if row.Reason != nil && *row.Reason != "" {
+					reason = "kube host no longer materialized: " + *row.Reason
+				}
+				w.onRemoval.OnKubeMonitorRemoved(ctx, vacated, reason)
 			}
 			if row.MonitorSlug != nil && *row.MonitorSlug != "" {
 				observedSlugs[*row.MonitorSlug] = struct{}{}
@@ -246,7 +271,7 @@ func (w *Watcher) Reconcile(ctx context.Context) error {
 	}
 	if w.onRemoval != nil {
 		for _, slug := range prunedMonitors {
-			w.onRemoval.OnKubeMonitorRemoved(ctx, slug)
+			w.onRemoval.OnKubeMonitorRemoved(ctx, slug, "kube ingress removed")
 		}
 	}
 	if p, ok := w.materialize.(Pruner); ok {

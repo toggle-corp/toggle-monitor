@@ -783,7 +783,7 @@ type kubeRemovalSink struct {
 	log      *slog.Logger
 }
 
-func (k *kubeRemovalSink) OnKubeMonitorRemoved(ctx context.Context, monitorSlug string) {
+func (k *kubeRemovalSink) OnKubeMonitorRemoved(ctx context.Context, monitorSlug, reason string) {
 	row, err := k.repo.GetMonitor(ctx, monitorSlug)
 	if err != nil {
 		// May already be archived from a prior pass, or never made it
@@ -796,13 +796,13 @@ func (k *kubeRemovalSink) OnKubeMonitorRemoved(ctx context.Context, monitorSlug 
 		return
 	}
 	view := monitorViewFromRow(row)
-	if err := k.repo.SoftDeleteMonitor(ctx, monitorSlug, "kube ingress removed"); err != nil {
+	if err := k.repo.SoftDeleteMonitor(ctx, monitorSlug, reason); err != nil {
 		k.log.Warn("kube removal: soft-delete", "slug", monitorSlug, "error", err)
 		return
 	}
-	k.log.Info("kube monitor removed (soft-deleted)", "slug", monitorSlug, "was_status", row.Status)
+	k.log.Info("kube monitor removed (soft-deleted)", "slug", monitorSlug, "was_status", row.Status, "reason", reason)
 	if row.SlackChannelSlug != "" {
-		k.notifier.NotifyRemoved(ctx, row.SlackChannelSlug, view, "kube ingress removed", "k8s ingress")
+		k.notifier.NotifyRemoved(ctx, row.SlackChannelSlug, view, reason, "k8s ingress")
 	}
 }
 

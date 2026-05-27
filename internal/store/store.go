@@ -429,23 +429,59 @@ type DiscoverySnapshotRow struct {
 	LastSeenAt  time.Time
 }
 
-// UpsertDiscoverySnapshot writes (or refreshes) one snapshot row.
-// Called per-ingress by the reconcile pass.
-func (r *Repo) UpsertDiscoverySnapshot(ctx context.Context, row DiscoverySnapshotRow) error {
-	_, err := r.pool.Exec(ctx, `
-		INSERT INTO discovery_snapshot
-			(namespace, ingress_name, host, status, reason, monitor_slug, last_seen_at)
-		VALUES ($1, $2, $3, $4, $5, $6, now())
-		ON CONFLICT (namespace, ingress_name, host) DO UPDATE SET
-			status        = EXCLUDED.status,
-			reason        = EXCLUDED.reason,
-			monitor_slug  = EXCLUDED.monitor_slug,
-			last_seen_at  = now()
-	`, row.Namespace, row.IngressName, row.Host, row.Status, row.Reason, row.MonitorSlug)
-	if err != nil {
-		return fmt.Errorf("upsert snapshot %s/%s/%s: %w", row.Namespace, row.IngressName, row.Host, err)
+// UpsertDiscoverySnapshot writes (or refreshes) one snapshot row and
+// reports any monitor slug the tuple just vacated. Called per-ingress
+// by the reconcile pass.
+//
+// The returned vacatedSlug is non-empty exactly when this upsert
+// changed the tuple's monitor_slug away from a previously-materialized
+// value — i.e. the host transitioned added → kube-invalid/kube-ignored
+// (slug cleared) while the (ns, name, host) tuple itself stayed in the
+// cluster. The watcher routes that slug through the same removal sink a
+// vanished ingress uses, so the orphaned monitor + its open incident
+// get torn down. This detection is tuple-keyed on purpose: a transient
+// materialize error skips the upsert entirely, so it can never emit a
+// false teardown signal for a healthy monitor.
+//
+// The `prev` CTE reads the pre-update monitor_slug; because every CTE
+// in the statement sees the same snapshot, it observes the OLD value
+// even though `up` overwrites it in the same statement.
+func (r *Repo) UpsertDiscoverySnapshot(ctx context.Context, row DiscoverySnapshotRow) (vacatedSlug string, err error) {
+	q := `
+		WITH prev AS (
+			SELECT monitor_slug AS old_slug
+			FROM discovery_snapshot
+			WHERE namespace = $1 AND ingress_name = $2 AND host = $3
+		),
+		up AS (
+			INSERT INTO discovery_snapshot
+				(namespace, ingress_name, host, status, reason, monitor_slug, last_seen_at)
+			VALUES ($1, $2, $3, $4, $5, $6, now())
+			ON CONFLICT (namespace, ingress_name, host) DO UPDATE SET
+				status        = EXCLUDED.status,
+				reason        = EXCLUDED.reason,
+				monitor_slug  = EXCLUDED.monitor_slug,
+				last_seen_at  = now()
+			RETURNING monitor_slug AS new_slug
+		)
+		SELECT prev.old_slug
+		FROM prev, up
+		WHERE prev.old_slug IS NOT NULL
+		  AND prev.old_slug <> ''
+		  AND prev.old_slug IS DISTINCT FROM up.new_slug
+	`
+	var vacated string
+	scanErr := r.pool.QueryRow(ctx, q,
+		row.Namespace, row.IngressName, row.Host, row.Status, row.Reason, row.MonitorSlug,
+	).Scan(&vacated)
+	if scanErr != nil {
+		if errors.Is(scanErr, pgx.ErrNoRows) {
+			// No prior row, or the slug is unchanged — nothing vacated.
+			return "", nil
+		}
+		return "", fmt.Errorf("upsert snapshot %s/%s/%s: %w", row.Namespace, row.IngressName, row.Host, scanErr)
 	}
-	return nil
+	return vacated, nil
 }
 
 // DiscoverySnapshotKey is the natural-key triple that identifies a
