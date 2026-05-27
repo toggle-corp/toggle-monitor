@@ -16,3 +16,6 @@ deploy/local/config.yaml
 # air autoreload working dir (lives at the repo root, populated inside
 # the dev container too).
 .air-tmp/
+
+.env
+secrets/
