@@ -387,6 +387,23 @@ type Slack struct {
 	DependentsNoteMax int               `yaml:"dependentsNoteMax,omitempty"` // 0 → DefaultDependentsNoteMax
 	Channels          []SlackChannel    `yaml:"channels"`
 	UserMapping       map[string]string `yaml:"userMapping,omitempty"` // slug → U... | S...
+	Coalesce          Coalesce          `yaml:"coalesce,omitempty"`
+}
+
+// Coalesce tunes alert coalescing — the per-channel digest that
+// collapses an outage storm into one living message. Zero values fall
+// back to the documented defaults (30s / 5m / 30m) in the group layer.
+type Coalesce struct {
+	// GroupWait is how long the first failure in a channel is held to
+	// collect the initial burst before the digest is posted once.
+	GroupWait Duration `yaml:"groupWait,omitempty"`
+	// GroupInterval is the heartbeat at which accrued joins/recoveries/
+	// flaps are flushed as one digest edit + threaded reply. Also the
+	// resolve-debounce window (a recovery must hold this long before it
+	// renders, which dampens flap chatter).
+	GroupInterval Duration `yaml:"groupInterval,omitempty"`
+	// RepeatInterval is the cadence of the still-down reminder.
+	RepeatInterval Duration `yaml:"repeatInterval,omitempty"`
 }
 
 // SlackChannel is one Slack destination.
@@ -560,6 +577,11 @@ type Monitor struct {
 	Notify                []string `yaml:"notify,omitempty"`    // raw <...> Slack markup or userMapping slug
 	DependsOn             []string `yaml:"dependsOn,omitempty"` // upstream static-monitor slugs that gate this one
 	Tags                  []string `yaml:"tags,omitempty"`      // slug-segmented labels (a/b allowed); consumed by statusPages[].sections[].match tag leaves
+	// Critical opts the monitor out of alert coalescing: its uptime
+	// alerts post immediately as individually-paged per-monitor
+	// messages instead of joining the per-channel digest. dependsOn
+	// pause still wins. Default false → coalesced.
+	Critical bool `yaml:"critical,omitempty"`
 
 	// SSL thresholds — required when URL is HTTPS, allowed but
 	// ignored for HTTP URLs (so anchored defaults can be shared).
@@ -609,6 +631,7 @@ type SMTPMonitor struct {
 	Notify                []string `yaml:"notify,omitempty"`
 	DependsOn             []string `yaml:"dependsOn,omitempty"`
 	Tags                  []string `yaml:"tags,omitempty"`
+	Critical              bool     `yaml:"critical,omitempty"` // opt out of coalescing; see Monitor.Critical
 
 	// SSL thresholds — required when tls != none && !tlsInsecureSkipVerify,
 	// forbidden/ignored otherwise (parallels the HTTPS rule).

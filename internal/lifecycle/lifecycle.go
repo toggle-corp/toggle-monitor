@@ -312,15 +312,23 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	// central evaluator goroutine (below) drives them on wall-clock
 	// time. Reattach any open groups from a prior process so deltas edit
 	// the existing digest instead of re-storming.
-	// Intervals are left at zero here → the group package fills the
-	// documented defaults (30s / 5m / 30m). Config knobs are wired in a
-	// follow-up slice.
+	// Zero intervals → the group package fills the documented defaults
+	// (30s / 5m / 30m).
 	groupMgr := coalesce.New(coalesce.Options{
 		Store:  repo,
 		Poster: &digestPoster{client: slackClient, channels: channelLookup},
-		Config: group.Config{},
+		Config: group.Config{
+			GroupWait:      opts.Config.Slack.Coalesce.GroupWait.AsDuration(),
+			GroupInterval:  opts.Config.Slack.Coalesce.GroupInterval.AsDuration(),
+			RepeatInterval: opts.Config.Slack.Coalesce.RepeatInterval.AsDuration(),
+		},
 		Logger: log,
 	})
+	if w := config.DependsOnIntervalWarnings(opts.Config); len(w) > 0 {
+		for _, line := range w {
+			log.Warn("dependsOn parent slower than child", "detail", line)
+		}
+	}
 	if err := groupMgr.Reattach(ctx); err != nil {
 		log.Warn("reattach incident groups", "error", err)
 	}
@@ -577,6 +585,7 @@ func buildPlans(cfg config.Config, proxies *proxypool.Pool) []scheduler.Plan {
 			ChannelSlug:            m.Slack,
 			Mentions:               slack.ResolveMentions(m.Notify, cfg.Slack.UserMapping),
 			DependsOn:              m.DependsOn,
+			Critical:               m.Critical,
 			TLSBearing:             isHTTPS,
 			SSLAlertThreshold:      m.SSLAlertThreshold.AsDuration(),
 			SSLEscalationThreshold: m.SSLEscalationThreshold.AsDuration(),
@@ -614,6 +623,7 @@ func buildPlans(cfg config.Config, proxies *proxypool.Pool) []scheduler.Plan {
 			ChannelSlug:            m.Slack,
 			Mentions:               slack.ResolveMentions(m.Notify, cfg.Slack.UserMapping),
 			DependsOn:              m.DependsOn,
+			Critical:               m.Critical,
 			TLSBearing:             tlsBearing,
 			SSLAlertThreshold:      m.SSLAlertThreshold.AsDuration(),
 			SSLEscalationThreshold: m.SSLEscalationThreshold.AsDuration(),

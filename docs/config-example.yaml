@@ -160,6 +160,15 @@ slack:
   userMapping:
     alice: U01ABCDEF12                              # @alice
     ops-team: S02ABCDEF34                           # @ops-team (subteam)
+  # Alert coalescing: when many monitors in a channel fail together
+  # (e.g. a shared dependency outage), their alerts collapse into ONE
+  # living per-channel digest message that edits in place as services
+  # recover — instead of one Slack message per monitor. All optional;
+  # omitted values use the defaults shown.
+  coalesce:
+    groupWait: 30s                                  # collect the initial burst before posting the digest once
+    groupInterval: 5m                               # heartbeat: batch joins/recoveries/flaps into one edit + reply; also the flap-dampening window
+    repeatInterval: 30m                             # cadence of the "still down" reminder
 
 # ── Anchor host (ignored by validator) ────────────────────────────────────────
 x-monitor-defaults: &staticDefaults
@@ -189,7 +198,8 @@ monitors:
     slug: bastion-proxy
     friendlyName: Bastion Proxy
     url: https://bastion.internal.example.com/health
-    interval: 1m
+    interval: 1m                                    # shared parents get a SHORT interval so push-propagation pauses dependents fast
+    critical: true                                  # opt out of coalescing — the gateway itself pages immediately (pause still wins if ITS parent is down)
     notify: [ops-team]
     tags: [gateway, critical]
 

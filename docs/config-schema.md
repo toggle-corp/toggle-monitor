@@ -129,6 +129,10 @@ slack:
   userMapping:                                   # optional
     alice: U0123ABC
     ops-team: S0456DEF                           # S-prefix = subteam (emits `<!subteam^...>` markup)
+  coalesce:                                      # optional; alert coalescing tunables
+    groupWait: 30s
+    groupInterval: 5m
+    repeatInterval: 30m
 ```
 
 | Field | Type | Req | Validation | Notes |
@@ -141,6 +145,11 @@ slack:
 | `slack.channels[].tokenEnv` | string | ✓ | env var name regex; env var set and non-empty at startup | |
 | `slack.userMapping` | map | — | optional | Without it, only raw `<!here>`/`<!channel>`/`<@U…>` markup is accepted in `notify:` |
 | `slack.userMapping[<slug>]` | string | ✓ when present | key: slug regex; value: `^[US][A-Z0-9]{8,}$` | |
+| `slack.coalesce.groupWait` | duration | — | default `30s` | Hold the first failure in a channel this long to collect the initial burst before posting the digest once |
+| `slack.coalesce.groupInterval` | duration | — | default `5m` | Heartbeat: batch joins/recoveries/flaps into one digest edit + threaded reply. Also the resolve-debounce/flap-dampening window |
+| `slack.coalesce.repeatInterval` | duration | — | default `30m` | Cadence of the per-group "still down" reminder |
+
+**Alert coalescing.** When multiple monitors sharing a channel go down within one window, their alerts collapse into a single living per-channel **digest** message (a scoreboard that edits in place as services recover) instead of one Slack message per monitor. `monitors[].critical: true` opts a monitor out — it pages immediately as an individual message. A `dependsOn` pause always wins over `critical` (a paused monitor stays silent). Give shared `dependsOn` parents a **short interval**; the startup logs a WARN for any parent whose interval is slower than a child's.
 
 **Validation behavior:**
 - At startup the app calls Slack's `auth.test` for every distinct token (resolved from `tokenEnv` values). **All tokens must resolve to the same `team_id` (workspace).** Different workspaces → refuse to start. (Single-workspace only in v1.)
@@ -522,7 +531,8 @@ monitors:
 | `monitors[].slack` | string | ✓ | resolves to a `slack.channels[].slug` | |
 | `monitors[].notify` | list[string] | — | each entry: a `slack.userMapping` slug OR `<...>` raw markup | |
 | `monitors[].tags` | list[string] | — | each: slug regex | |
-| `monitors[].dependsOn` | list[string] | — | each: resolves to a **static** `monitors[].slug` | Validator detects cycles |
+| `monitors[].dependsOn` | list[string] | — | each: resolves to a **static** `monitors[].slug` | Validator detects cycles. Startup logs a WARN if a parent's interval is slower than this monitor's (widens the dependsOn race) |
+| `monitors[].critical` | bool | — | default `false` | Opt out of alert coalescing: page immediately as an individual message instead of joining the per-channel digest. A `dependsOn` pause still wins (paused → silent) |
 
 **Cross-field validation:**
 - `retries × (timeout + retryBackoff) < interval`.
