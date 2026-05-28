@@ -313,17 +313,20 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	// time. Reattach any open groups from a prior process so deltas edit
 	// the existing digest instead of re-storming.
 	// Effective* accessors collapse the deprecated groupWait alias into
-	// pendingWait and fill defaults at the config layer; the group
-	// package's own withDefaults becomes a no-op for non-zero inputs.
+	// pendingWait and fill defaults at the config layer. PendingWait
+	// is the dispatcher's wait window (ADR-0004); the legacy
+	// group.Config.GroupWait is set to 0 because the dispatcher's
+	// pre-warmed promotion bypasses the group's own wait via Group.Open.
 	groupMgr := coalesce.New(coalesce.Options{
 		Store:  repo,
 		Poster: &digestPoster{client: slackClient, channels: channelLookup},
 		Config: group.Config{
-			GroupWait:      opts.Config.Slack.Coalesce.EffectivePendingWait(),
 			GroupInterval:  opts.Config.Slack.Coalesce.EffectiveGroupInterval(),
 			RepeatInterval: opts.Config.Slack.Coalesce.EffectiveRepeatInterval(),
 		},
-		Logger: log,
+		PendingWait:    opts.Config.Slack.Coalesce.EffectivePendingWait(),
+		BurstThreshold: opts.Config.Slack.Coalesce.EffectiveBurstThreshold(),
+		Logger:         log,
 	})
 	if w := config.DependsOnIntervalWarnings(opts.Config); len(w) > 0 {
 		for _, line := range w {
@@ -341,6 +344,16 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	// without a later setter.
 	planSource := &combinedPlanSource{}
 	pushPropagation := makePushPropagation(repo, groupMgr, planSource, log)
+	// The on-demand probe captures groupMgr too (so it can Route the
+	// parent's failure back through the dispatcher), creating the
+	// usual chicken-and-egg around constructor injection. Set
+	// post-construction; safe before the evaluator goroutine starts.
+	groupMgr.SetOnDemandParentProbe(makeOnDemandParentProbe(
+		repo, groupMgr, planSource, pushPropagation,
+		opts.Config.Slack.Coalesce.EffectiveOnDemandProbeTimeout(),
+		time.Now,
+		log,
+	))
 
 	sched := scheduler.New(repo,
 		scheduler.WithLogger(log),

@@ -116,6 +116,112 @@ type planProvider interface {
 	CurrentPlans() []scheduler.Plan
 }
 
+// makeOnDemandParentProbe builds the hot-parent probe hook the
+// dispatcher invokes at pendingWait expiry (ADR-0004 Q11a). For each
+// candidate parent: fire one bounded probe through the parent's
+// configured Prober; if down, drive alert.Apply + persist its
+// EventOpen, fire push-propagation so the pool's children drain, and
+// route the parent's failure through the dispatcher for its own
+// channel (so the parent ends up named in some Slack artifact rather
+// than silently failing).
+//
+// Lifecycle owns construction so the callback can capture the same
+// repo / planSource / push closure used elsewhere. Errors are logged
+// (best-effort) — a probe failure must never crash the evaluator
+// goroutine.
+func makeOnDemandParentProbe(
+	repo *store.Repo,
+	mgr *coalesce.Manager,
+	plans planProvider,
+	push scheduler.PushPropagation,
+	timeout time.Duration,
+	now func() time.Time,
+	log *slog.Logger,
+) coalesce.OnDemandParentProbe {
+	return func(ctx context.Context, parentSlug string) {
+		var pl scheduler.Plan
+		var found bool
+		for _, p := range plans.CurrentPlans() {
+			if p.Slug == parentSlug {
+				pl = p
+				found = true
+				break
+			}
+		}
+		if !found || pl.Prober == nil {
+			return
+		}
+
+		probeCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		res := pl.Prober.Probe(probeCtx)
+		if probeCtx.Err() != nil || res.Error == "" {
+			return // up, or probe timed out inconclusively
+		}
+
+		row, err := repo.GetMonitor(ctx, parentSlug)
+		if err != nil {
+			log.Warn("on-demand probe: get monitor", "parent", parentSlug, "error", err)
+			return
+		}
+		// Mirror scheduler.Tick's resume-from-paused logic so a parent
+		// that was temporary-paused (because IT had a dependsOn parent
+		// down) gets the right prev-status.
+		prev := row.State()
+		if row.Status == alert.StatusTemporaryPaused {
+			if row.OpenedAt != nil {
+				prev.Status = alert.StatusDown
+			} else {
+				prev.Status = alert.StatusUp
+			}
+		}
+
+		at := now()
+		check := alert.Check{
+			Outcome:          alert.OutcomeFail,
+			At:               at,
+			StatusCode:       res.Code,
+			Error:            res.Error,
+			ReminderInterval: pl.ReminderInterval,
+		}
+		next, event := alert.Apply(prev, check)
+
+		if event != nil && event.Type == alert.EventOpen {
+			if err := repo.ApplyCheck(ctx, parentSlug, next, at, res.Code, res.Error, event); err != nil {
+				log.Warn("on-demand probe: apply check", "parent", parentSlug, "error", err)
+				return
+			}
+			// Push-propagation drains the children from the dispatcher's pool.
+			if push != nil {
+				push(ctx, parentSlug, at)
+			}
+			// Route the parent's EventOpen through its own channel so the
+			// parent shows up in Slack (critical → caller's separate
+			// EventSink path; non-critical → dispatcher).
+			if !pl.Critical && pl.ChannelSlug != "" {
+				mgr.Route(ctx, pl.ChannelSlug, coalesce.Entry{
+					Member: coalesce.MemberInfo{
+						Slug:         pl.Slug,
+						FriendlyName: pl.FriendlyName,
+						Mentions:     pl.Mentions,
+					},
+					Row:      row,
+					Event:    event,
+					Mentions: pl.Mentions,
+				})
+			}
+			return
+		}
+
+		// Parent already known-down (no fresh EventOpen). Push-propagation
+		// may not have fired from its own tick yet — fire it now so the
+		// children get drained.
+		if push != nil {
+			push(ctx, parentSlug, at)
+		}
+	}
+}
+
 // makePushPropagation builds the parent-EventOpen → reverse-deps hook
 // described in ADR-0004. The closure rebuilds the depindex from a
 // fresh CurrentPlans snapshot on each invocation: kube discovery can

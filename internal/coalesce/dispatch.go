@@ -21,6 +21,7 @@ package coalesce
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"github.com/toggle-corp/toggle-monitor/internal/alert"
@@ -211,14 +212,36 @@ func (m *Manager) flushSink(ctx context.Context, channel string, e Entry) {
 }
 
 // expirePending processes a pool whose pendingWait has elapsed. It
-// decides individual-flush vs group-promote, emits the appropriate
-// side-effects, and returns the channel to a steady-state mode. Caller
-// holds m.mu.
-//
-// The on-demand parent-probe pass (ADR-0004) runs BEFORE this function
-// to redact children of confirmed-down parents; this function only
-// sees the pool after redaction.
+// runs the on-demand parent-probe pass (which may drain children via
+// push-propagation), then decides individual-flush vs group-promote,
+// emits the side-effects, and returns the channel to a steady-state
+// mode. Caller holds m.mu; this method releases and re-acquires it
+// around the probe pass (the probe callback drives alert.Apply +
+// push-propagation, which re-enters Manager methods on m.mu).
 func (m *Manager) expirePending(ctx context.Context, channel string, cs *channelState, now time.Time) {
+	// 1. On-demand parent-probe pass. Run before the flush decision so
+	//    push-propagation has a chance to redact children that share a
+	//    failing parent. Skipped when no probe is wired or no parent is
+	//    shared by ≥2 pool entries.
+	if m.parentProbe != nil {
+		hot := hotParents(cs.pending)
+		if len(hot) > 0 {
+			m.mu.Unlock()
+			for _, parent := range hot {
+				m.parentProbe(ctx, parent)
+			}
+			m.mu.Lock()
+			// cs may have transitioned during the unlocked window
+			// (children paused-out via push-propagation; parent's own
+			// EventOpen routed via Route). Re-read mode and bail out
+			// if we're no longer in pending — the channel may have
+			// promoted, retired, or been wiped while we were probing.
+			if cs.mode != modePending {
+				return
+			}
+		}
+	}
+
 	pool := cs.pending
 	// Pool emptied during pending (recoveries + pauses drained it): no
 	// output. Treat the same as the pre-post group-discard semantic.
@@ -274,6 +297,40 @@ func (m *Manager) expirePending(ctx context.Context, channel string, cs *channel
 		m.flushSink(ctx, channel, e)
 	}
 	m.mu.Lock()
+}
+
+// hotParents identifies dependsOn targets shared by ≥2 entries in the
+// pool that are not themselves in the pool. These are the candidates
+// the on-demand probe should investigate at pendingWait expiry — a
+// confirmed-down parent collapses the children's narrative into the
+// parent's incident.
+//
+// Returns slugs sorted for deterministic probe ordering (useful in
+// tests and logs). A parent that is itself in the pool is skipped
+// because its own scheduler tick already fired its EventOpen, which
+// runs push-propagation through the scheduler before pendingWait
+// expires (so its children are already drained from this pool).
+func hotParents(pool map[string]*pendingEntry) []string {
+	if len(pool) < 2 {
+		return nil
+	}
+	counts := map[string]int{}
+	for _, pe := range pool {
+		for _, parent := range pe.entry.Row.DependsOn {
+			if _, alreadyInPool := pool[parent]; alreadyInPool {
+				continue
+			}
+			counts[parent]++
+		}
+	}
+	var hot []string
+	for parent, n := range counts {
+		if n >= 2 {
+			hot = append(hot, parent)
+		}
+	}
+	sort.Strings(hot)
+	return hot
 }
 
 // retireGroupChannel collapses a channel back to individual-mode when

@@ -58,6 +58,18 @@ type liveGroup struct {
 	info map[string]MemberInfo
 }
 
+// OnDemandParentProbe is the hook the dispatcher invokes at
+// pendingWait expiry for each "hot" parent — a dependsOn target shared
+// by ≥2 pool entries that isn't itself in the pool. The hook is
+// expected to (1) fire a bounded probe of the parent, (2) if down,
+// drive alert.Apply + persist the EventOpen, and (3) fire
+// push-propagation so the parent's children are drained from this
+// pool before the flush-vs-promote decision.
+//
+// nil disables the on-demand probe pass; pool flushes proceed on the
+// raw pool contents.
+type OnDemandParentProbe func(ctx context.Context, parentSlug string)
+
 // Manager owns the live groups, the per-channel dispatcher state, and
 // the central evaluator. Under ADR-0004 the dispatcher decides
 // individual-vs-group routing per channel; the legacy "always coalesce"
@@ -66,6 +78,7 @@ type Manager struct {
 	store          GroupStore
 	poster         Poster
 	sink           Sink // per-monitor individual notifier; see dispatch.go
+	parentProbe    OnDemandParentProbe
 	cfg            group.Config
 	pendingWait    time.Duration
 	burstThreshold int
@@ -73,20 +86,21 @@ type Manager struct {
 	now            func() time.Time
 
 	mu       sync.Mutex
-	groups   map[string]*liveGroup  // open per-channel digests
+	groups   map[string]*liveGroup    // open per-channel digests
 	channels map[string]*channelState // dispatcher state per channel
 }
 
 // Options configures a Manager.
 type Options struct {
-	Store          GroupStore
-	Poster         Poster
-	Sink           Sink         // per-monitor individual notifier
-	Config         group.Config // group state-machine intervals
-	PendingWait    time.Duration // dispatcher pending window; <=0 → 30s
-	BurstThreshold int           // promote at-or-above this pool size; 0 disables group-mode
-	Logger         *slog.Logger
-	Now            func() time.Time
+	Store               GroupStore
+	Poster              Poster
+	Sink                Sink                // per-monitor individual notifier
+	OnDemandParentProbe OnDemandParentProbe // hot-parent probe at pendingWait expiry
+	Config              group.Config        // group state-machine intervals
+	PendingWait         time.Duration       // dispatcher pending window; <=0 → 30s
+	BurstThreshold      int                 // promote at-or-above this pool size; 0 disables group-mode
+	Logger              *slog.Logger
+	Now                 func() time.Time
 }
 
 // defaultPendingWait mirrors config.DefaultPendingWait. Duplicating
@@ -112,6 +126,7 @@ func New(opts Options) *Manager {
 		store:          opts.Store,
 		poster:         opts.Poster,
 		sink:           opts.Sink,
+		parentProbe:    opts.OnDemandParentProbe,
 		cfg:            opts.Config,
 		pendingWait:    pw,
 		burstThreshold: opts.BurstThreshold,
@@ -120,6 +135,16 @@ func New(opts Options) *Manager {
 		groups:         map[string]*liveGroup{},
 		channels:       map[string]*channelState{},
 	}
+}
+
+// SetOnDemandParentProbe wires the on-demand parent-probe hook
+// post-construction. Used by lifecycle when the hook captures the
+// Manager itself (the probe needs to Route the parent's failure back
+// through this same dispatcher), creating a chicken-and-egg around
+// New(). Safe to call once at startup before the evaluator goroutine
+// starts; concurrent calls are not supported.
+func (m *Manager) SetOnDemandParentProbe(p OnDemandParentProbe) {
+	m.parentProbe = p
 }
 
 // Down is a transitional compatibility shim: a synthesized EventOpen

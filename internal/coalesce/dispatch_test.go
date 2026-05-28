@@ -319,6 +319,153 @@ func TestDispatch_allRecoverBeforePendingExpiry_silent(t *testing.T) {
 	}
 }
 
+// downEntryWithDeps is like downEntry but also stamps the row's
+// DependsOn list — required for the on-demand probe pass to identify
+// shared parents in the pool.
+func downEntryWithDeps(slug string, at time.Time, deps ...string) Entry {
+	return Entry{
+		Member: MemberInfo{Slug: slug, FriendlyName: slug},
+		Row: store.MonitorRow{
+			MonitorSpec: store.MonitorSpec{Slug: slug, DependsOn: deps},
+		},
+		Event: &alert.Event{Type: alert.EventOpen, At: at},
+	}
+}
+
+// newProbeManager wires a dispatcher with a fake parent-probe
+// callback. The probe callback receives the parent slug and is
+// expected (in production) to drive alert.Apply + push-propagation;
+// here we just let the test set up the side effects it expects.
+func newProbeManager(t *testing.T, clock *time.Time, threshold int, probe func(ctx context.Context, parentSlug string)) (*Manager, *fakeStore, *fakePoster, *fakeSink) {
+	t.Helper()
+	fs := newFakeStore()
+	fp := &fakePoster{}
+	sink := &fakeSink{}
+	m := New(Options{
+		Store:                fs,
+		Poster:               fp,
+		Sink:                 sink.Notify,
+		Config:               group.Config{GroupInterval: 5 * time.Minute, RepeatInterval: 30 * time.Minute},
+		PendingWait:          30 * time.Second,
+		BurstThreshold:       threshold,
+		OnDemandParentProbe:  probe,
+		Now:                  func() time.Time { return *clock },
+	})
+	return m, fs, fp, sink
+}
+
+// TestDispatch_onDemandProbe_parentDown_drainsPool exercises the
+// canonical bastion case: 5 children whose dependsOn list shares one
+// parent. At pendingWait expiry, the dispatcher fires one on-demand
+// probe of the shared parent. The fake probe simulates "parent down"
+// by calling m.Pause for each child (the production hook does this
+// via the scheduler push-propagation closure). The redacted pool is
+// empty → no group, no individual flushes for children.
+func TestDispatch_onDemandProbe_parentDown_drainsPool(t *testing.T) {
+	clock := base
+	var m *Manager
+	probe := func(ctx context.Context, parent string) {
+		// Simulate push-propagation: pause every child that depends
+		// on this parent. In production the scheduler's push hook
+		// does this; here we just touch the channel by name.
+		for _, child := range []string{"a", "b", "c", "d", "e"} {
+			m.Pause(ctx, "ops", child, *(new(time.Time)))
+		}
+	}
+	var fs *fakeStore
+	var fp *fakePoster
+	var sink *fakeSink
+	m, fs, fp, sink = newProbeManager(t, &clock, 5, probe)
+	ctx := context.Background()
+
+	for _, slug := range []string{"a", "b", "c", "d", "e"} {
+		m.Route(ctx, "ops", downEntryWithDeps(slug, clock, "bastion"))
+	}
+
+	clock = base.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+
+	if got := len(sink.calls); got != 0 {
+		t.Fatalf("on-demand drain should suppress child individual flushes, got %d", got)
+	}
+	if fp.posts != 0 {
+		t.Fatalf("on-demand drain should suppress group promotion, got %d posts", fp.posts)
+	}
+	if open, _ := fs.ListOpenIncidentGroups(ctx); len(open) != 0 {
+		t.Fatalf("on-demand drain should suppress group creation, got %d", len(open))
+	}
+}
+
+// TestDispatch_onDemandProbe_parentUp_poolUnaffected: 5 children, the
+// hot parent's probe returns "up" (fake does nothing). The pool stays
+// at 5 → promotes to group as normal. Verifies the probe path doesn't
+// drain the pool unconditionally.
+func TestDispatch_onDemandProbe_parentUp_poolUnaffected(t *testing.T) {
+	clock := base
+	probe := func(_ context.Context, _ string) { /* parent up: no-op */ }
+	m, _, fp, _ := newProbeManager(t, &clock, 5, probe)
+	ctx := context.Background()
+
+	for _, slug := range []string{"a", "b", "c", "d", "e"} {
+		m.Route(ctx, "ops", downEntryWithDeps(slug, clock, "bastion"))
+	}
+
+	clock = base.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+	if fp.posts != 1 {
+		t.Fatalf("parent-up case should still promote to group, got %d posts", fp.posts)
+	}
+}
+
+// TestDispatch_onDemandProbe_noSharedParents_skipped: 5 children with
+// distinct dependsOn parents → no hot parent → probe should NOT fire.
+func TestDispatch_onDemandProbe_noSharedParents_skipped(t *testing.T) {
+	clock := base
+	var probeCalls int
+	probe := func(_ context.Context, _ string) { probeCalls++ }
+	m, _, fp, _ := newProbeManager(t, &clock, 5, probe)
+	ctx := context.Background()
+
+	// Each child depends on its own distinct parent.
+	for i, slug := range []string{"a", "b", "c", "d", "e"} {
+		m.Route(ctx, "ops", downEntryWithDeps(slug, clock, "parent-"+string(rune('a'+i))))
+	}
+
+	clock = base.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+	if probeCalls != 0 {
+		t.Fatalf("no shared parents → probe should not fire, got %d calls", probeCalls)
+	}
+	if fp.posts != 1 {
+		t.Fatalf("pool should promote normally, got %d posts", fp.posts)
+	}
+}
+
+// TestDispatch_onDemandProbe_parentInPool_skipped: the shared parent
+// is itself in the pool (its tick fired during the burst window).
+// Push-propagation already ran from the scheduler when the parent's
+// EventOpen landed, so we don't re-probe.
+func TestDispatch_onDemandProbe_parentInPool_skipped(t *testing.T) {
+	clock := base
+	var probeCalls int
+	probe := func(_ context.Context, _ string) { probeCalls++ }
+	m, _, _, _ := newProbeManager(t, &clock, 5, probe)
+	ctx := context.Background()
+
+	// Bastion + 4 children share "bastion" as a dependsOn target.
+	// Bastion is itself in the pool (its tick fired during the burst).
+	m.Route(ctx, "ops", downEntryWithDeps("bastion", clock))
+	for _, slug := range []string{"a", "b", "c", "d"} {
+		m.Route(ctx, "ops", downEntryWithDeps(slug, clock, "bastion"))
+	}
+
+	clock = base.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+	if probeCalls != 0 {
+		t.Fatalf("parent already in pool → no on-demand probe; got %d calls", probeCalls)
+	}
+}
+
 // TestDispatch_individualMode_resolveAfterFlush: a monitor that
 // fired an individual EventOpen and later recovers must fire an
 // individual EventResolve through the same sink.
