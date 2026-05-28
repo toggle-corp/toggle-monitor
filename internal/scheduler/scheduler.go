@@ -111,15 +111,35 @@ type GroupMember struct {
 }
 
 // GroupSink is the seam the scheduler uses to stage non-critical uptime
-// transitions into the alert-coalescing layer (internal/coalesce). Down
-// stages a failure, Up a recovery, Pause a dependsOn push-propagation.
-// Reminders are NOT forwarded — the coalescing evaluator owns per-group
-// reminders. nil disables coalescing (events fall back to EventSink).
+// transitions into the alert-coalescing layer (internal/coalesce). Under
+// ADR-0004 the primary entrypoint is Route, which lets the dispatcher
+// decide individual-vs-group routing per channel. Down/Up are retained
+// as deprecated shims while wiring catches up; Pause is the
+// push-propagation hook (parent failed → child rolled into parent's
+// narrative). Reminders are NOT forwarded for non-critical monitors —
+// the dispatcher and group evaluator own those.
 type GroupSink interface {
 	Down(ctx context.Context, channel string, m GroupMember, at time.Time)
 	Up(ctx context.Context, channel, slug string, at time.Time)
 	Pause(ctx context.Context, channel, slug string, at time.Time)
+	// Route hands the dispatcher a full event payload. The dispatcher
+	// branches on event.Type and channel mode (individual / pending /
+	// group). Row + mentions are required so a sub-threshold flush can
+	// call the per-monitor notifier with the same payload it would
+	// have received in the legacy direct-EventSink path.
+	Route(ctx context.Context, channel string, m GroupMember, row store.MonitorRow, mentions []string, event *alert.Event)
 }
+
+// PushPropagation is the hook the scheduler invokes after a parent
+// monitor's tick emits EventOpen (ADR-0004). The hook is expected to
+// look up the parent's reverse-dependsOn list, persist each child as
+// temporary-paused, and call GroupSink.Pause for each child's channel —
+// so the parent's failure pages once and the children silently roll
+// into its narrative instead of each generating their own alert.
+//
+// nil disables push-propagation (the scheduler's existing per-child
+// pull-gate at Tick still applies, just on the slower cadence).
+type PushPropagation func(ctx context.Context, parentSlug string, at time.Time)
 
 // Metrics is the slim seam the scheduler uses to emit Prometheus
 // data points. Production wires observability.Metrics; tests pass
@@ -132,13 +152,14 @@ type Metrics interface {
 
 // Scheduler drives the configured set of monitors.
 type Scheduler struct {
-	repo      *store.Repo
-	sink      EventSink
-	sslSink   SSLSink
-	groupSink GroupSink
-	metrics   Metrics
-	log       *slog.Logger
-	now       func() time.Time
+	repo       *store.Repo
+	sink       EventSink
+	sslSink    SSLSink
+	groupSink  GroupSink
+	pushPropag PushPropagation
+	metrics    Metrics
+	log        *slog.Logger
+	now        func() time.Time
 
 	// missingParents tracks dependsOn references that didn't resolve
 	// to a known monitor at lookup time. Surfaced on /issues so the
@@ -176,6 +197,14 @@ func WithSSLSink(sink SSLSink) Option { return func(s *Scheduler) { s.sslSink = 
 // uptime opens/resolves route into it (digest) instead of the
 // per-monitor EventSink. Defaults to nil (coalescing disabled).
 func WithGroupSink(sink GroupSink) Option { return func(s *Scheduler) { s.groupSink = sink } }
+
+// WithPushPropagation wires the parent-EventOpen → reverse-deps hook
+// described in ADR-0004. nil disables push-propagation; the per-child
+// pull-gate at the start of Tick still pauses children on their own
+// next tick.
+func WithPushPropagation(p PushPropagation) Option {
+	return func(s *Scheduler) { s.pushPropag = p }
+}
 
 // WithMetrics wires the Prometheus metrics sink. Defaults to a no-op
 // (tests that don't care about metrics need no setup).
@@ -427,32 +456,48 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 	}
 
 	// Dispatch the uptime event AFTER the DB transaction has committed.
-	// Routing:
-	//   - critical monitors (or coalescing disabled) → per-monitor
-	//     EventSink, the immediate individually-paged message. We pass
-	//     the *pre*-update row so the resolve handler still sees the
-	//     uptime thread refs that ApplyCheck just cleared.
-	//   - everything else → the coalescing GroupSink. Open stages a
-	//     Down, Resolve an Up; reminders are owned by the group
-	//     evaluator, so EventReminder is not forwarded here.
+	// Routing (ADR-0004):
+	//   - critical monitors → per-monitor EventSink, the immediate
+	//     individually-paged message. We pass the *pre*-update row so
+	//     the resolve handler still sees the uptime thread refs that
+	//     ApplyCheck just cleared.
+	//   - everything else → the dispatcher's Route, which decides
+	//     individual-vs-group per channel (pending pool with burst
+	//     threshold). Reminders for non-critical monitors are forwarded
+	//     too; the dispatcher silently drops them in pending/group mode
+	//     and flushes through the per-monitor sink in individual mode.
 	if event != nil && p.ChannelSlug != "" {
 		switch {
-		case s.groupSink != nil && !p.Critical:
-			switch event.Type {
-			case alert.EventOpen:
-				s.groupSink.Down(ctx, p.ChannelSlug,
-					GroupMember{Slug: p.Slug, FriendlyName: p.FriendlyName, Mentions: p.Mentions}, now)
-			case alert.EventResolve:
-				s.groupSink.Up(ctx, p.ChannelSlug, p.Slug, now)
+		case p.Critical:
+			if s.sink != nil {
+				if err := s.sink(ctx, row, p.ChannelSlug, p.Mentions, event); err != nil {
+					logSinkError(s.log, "event sink", p.Slug, string(event.Type), err)
+					// Don't propagate: the DB transition is committed;
+					// on a transient/exhausted failure the next
+					// reminder tick synthesizes a fresh parent via the
+					// notifier.
+				}
 			}
+		case s.groupSink != nil:
+			s.groupSink.Route(ctx, p.ChannelSlug,
+				GroupMember{Slug: p.Slug, FriendlyName: p.FriendlyName, Mentions: p.Mentions},
+				row, p.Mentions, event)
 		case s.sink != nil:
+			// No dispatcher wired (e.g., unit tests) — fall back to the
+			// per-monitor sink for non-critical events too.
 			if err := s.sink(ctx, row, p.ChannelSlug, p.Mentions, event); err != nil {
 				logSinkError(s.log, "event sink", p.Slug, string(event.Type), err)
-				// Don't propagate: the DB transition is committed; on a
-				// transient/exhausted failure the next reminder tick
-				// synthesizes a fresh parent via the notifier.
 			}
 		}
+	}
+
+	// Push-propagation: a parent's freshly-opened incident immediately
+	// pauses every child that depends on it, before each child's next
+	// tick gets a chance to fire its own alert. The hook is provided
+	// by lifecycle, which holds the reverse-dependsOn index and the
+	// per-monitor channel map.
+	if event != nil && event.Type == alert.EventOpen && s.pushPropag != nil {
+		s.pushPropag(ctx, p.Slug, now)
 	}
 
 	// SSL state machine, driven independently from the uptime side.

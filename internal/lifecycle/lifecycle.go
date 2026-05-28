@@ -334,11 +334,20 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		log.Warn("reattach incident groups", "error", err)
 	}
 
+	// planSource is constructed empty here so the push-propagation
+	// closure below can capture the pointer; the static / materializer
+	// fields are filled in once the plans are built. This ordering lets
+	// us pass scheduler.WithPushPropagation at scheduler construction
+	// without a later setter.
+	planSource := &combinedPlanSource{}
+	pushPropagation := makePushPropagation(repo, groupMgr, planSource, log)
+
 	sched := scheduler.New(repo,
 		scheduler.WithLogger(log),
 		scheduler.WithEventSink(buildSink(notifier)),
 		scheduler.WithSSLSink(buildSSLSink(notifier)),
 		scheduler.WithGroupSink(groupSinkAdapter{m: groupMgr}),
+		scheduler.WithPushPropagation(pushPropagation),
 		scheduler.WithMetrics(metrics),
 	)
 	srv.SetMissingParentReader(&missingParentAdapter{s: sched})
@@ -352,11 +361,9 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 			idToSlug[id] = slug
 		}
 	}
-	planSource := &combinedPlanSource{
-		static:       staticPlans,
-		materializer: materializer,
-		idToSlug:     idToSlug,
-	}
+	planSource.static = staticPlans
+	planSource.materializer = materializer
+	planSource.idToSlug = idToSlug
 	srv.SetConfigLookup(planSource)
 
 	var wg sync.WaitGroup

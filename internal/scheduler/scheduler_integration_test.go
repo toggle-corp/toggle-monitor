@@ -482,3 +482,88 @@ func TestTick_inCycleRetriesSuppressTransientFailure(t *testing.T) {
 		t.Errorf("status: got %q, want up", row.Status)
 	}
 }
+
+// TestTick_dependsOn_pushPropagation_onParentOpen verifies the real
+// push-propagation introduced in ADR-0004: when a parent's tick emits
+// EventOpen, the scheduler synchronously calls the configured
+// push-propagation hook with the parent's slug. The hook in production
+// (wired by lifecycle) walks the reverse-dependsOn index and
+// MarkTemporaryPaused's every child + Pauses the dispatcher.
+//
+// Test substitutes a fake hook that records its invocations; the
+// reverse-deps walk itself is covered by depindex tests.
+func TestTick_dependsOn_pushPropagation_onParentOpen(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+
+	if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
+		Slug: "parent", FriendlyName: "Parent", URL: "http://x", Source: store.SourceStatic,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		hookMu     sync.Mutex
+		hookCalled []string
+	)
+	hook := func(_ context.Context, parentSlug string, _ time.Time) {
+		hookMu.Lock()
+		defer hookMu.Unlock()
+		hookCalled = append(hookCalled, parentSlug)
+	}
+
+	s := scheduler.New(repo, scheduler.WithPushPropagation(hook))
+
+	plan := scheduler.Plan{
+		Slug: "parent", URL: "http://x", HTTPMethod: "GET",
+		AcceptedStatusCodes: []int{200},
+		Interval:            5 * time.Minute, Timeout: time.Second,
+		Prober: constProber{res: probe.Result{Code: 500, Error: "boom"}},
+	}
+	if err := s.Tick(ctx, plan); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	hookMu.Lock()
+	defer hookMu.Unlock()
+	if len(hookCalled) != 1 || hookCalled[0] != "parent" {
+		t.Fatalf("push-propagation hook want [parent], got %v", hookCalled)
+	}
+}
+
+// TestTick_dependsOn_pushPropagation_notFiredOnReminder verifies that
+// the hook fires only on EventOpen, not on subsequent reminder events
+// (children are already paused by the first call).
+func TestTick_dependsOn_pushPropagation_notFiredOnReminder(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+
+	if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
+		Slug: "parent", FriendlyName: "Parent", URL: "http://x", Source: store.SourceStatic,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var hookCalls atomic.Int32
+	hook := func(_ context.Context, _ string, _ time.Time) { hookCalls.Add(1) }
+
+	s := scheduler.New(repo, scheduler.WithPushPropagation(hook))
+
+	plan := scheduler.Plan{
+		Slug: "parent", URL: "http://x", HTTPMethod: "GET",
+		AcceptedStatusCodes: []int{200},
+		Interval:            5 * time.Minute, Timeout: time.Second,
+		ReminderInterval:    time.Nanosecond, // ensures the second tick emits a reminder
+		Prober:              constProber{res: probe.Result{Code: 500, Error: "boom"}},
+	}
+	if err := s.Tick(ctx, plan); err != nil {
+		t.Fatalf("first tick: %v", err)
+	}
+	// Second tick — also failing, reminder interval elapsed → EventReminder.
+	if err := s.Tick(ctx, plan); err != nil {
+		t.Fatalf("second tick: %v", err)
+	}
+	if got := hookCalls.Load(); got != 1 {
+		t.Fatalf("push-propagation should fire only on EventOpen; got %d calls", got)
+	}
+}

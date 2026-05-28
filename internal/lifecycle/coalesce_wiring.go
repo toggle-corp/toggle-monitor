@@ -3,11 +3,15 @@ package lifecycle
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
+	"github.com/toggle-corp/toggle-monitor/internal/alert"
 	"github.com/toggle-corp/toggle-monitor/internal/coalesce"
+	"github.com/toggle-corp/toggle-monitor/internal/depindex"
 	"github.com/toggle-corp/toggle-monitor/internal/scheduler"
 	"github.com/toggle-corp/toggle-monitor/internal/slack"
+	"github.com/toggle-corp/toggle-monitor/internal/store"
 )
 
 // digestPoster adapts *slack.Client to coalesce.Poster. It resolves each
@@ -78,4 +82,71 @@ func (a groupSinkAdapter) Up(ctx context.Context, channel, slug string, at time.
 
 func (a groupSinkAdapter) Pause(ctx context.Context, channel, slug string, at time.Time) {
 	a.m.Pause(ctx, channel, slug, at)
+}
+
+// Route is the ADR-0004 primary entrypoint: it translates the
+// scheduler's per-event payload into a coalesce.Entry, which the
+// dispatcher branches on. Row + mentions flow through so the
+// dispatcher's individual-mode flush can call the per-monitor
+// notifier with the same payload the legacy EventSink path used.
+func (a groupSinkAdapter) Route(ctx context.Context, channel string, gm scheduler.GroupMember, row store.MonitorRow, mentions []string, event *alert.Event) {
+	a.m.Route(ctx, channel, coalesce.Entry{
+		Member: coalesce.MemberInfo{
+			Slug:         gm.Slug,
+			FriendlyName: gm.FriendlyName,
+			Mentions:     gm.Mentions,
+		},
+		Row:      row,
+		Event:    event,
+		Mentions: mentions,
+	})
+}
+
+// dispatchPauser is the subset of *coalesce.Manager that
+// push-propagation needs — kept narrow so makePushPropagation is
+// trivially testable with a fake.
+type dispatchPauser interface {
+	Pause(ctx context.Context, channel, slug string, at time.Time)
+}
+
+// planProvider is the subset of *combinedPlanSource that
+// push-propagation needs (a snapshot of currently-active plans for
+// the reverse-dependsOn walk and channel lookup).
+type planProvider interface {
+	CurrentPlans() []scheduler.Plan
+}
+
+// makePushPropagation builds the parent-EventOpen → reverse-deps hook
+// described in ADR-0004. The closure rebuilds the depindex from a
+// fresh CurrentPlans snapshot on each invocation: kube discovery can
+// add/remove monitors at any time, and push-propagation is rare enough
+// that an O(N·D) rebuild per call is cheaper than maintaining a live
+// inverted index in sync with discovery.
+//
+// For each child of the parent: MarkTemporaryPaused in the store
+// (best-effort — a store error is logged but the loop continues so a
+// single bad row doesn't strand the whole burst), then call
+// dispatcher.Pause on the child's channel to drain the pending pool
+// (or render the child as paused in an already-open digest).
+func makePushPropagation(repo *store.Repo, disp dispatchPauser, plans planProvider, log *slog.Logger) scheduler.PushPropagation {
+	return func(ctx context.Context, parentSlug string, at time.Time) {
+		current := plans.CurrentPlans()
+		specs := make([]depindex.Spec, len(current))
+		channelOf := make(map[string]string, len(current))
+		for i, p := range current {
+			specs[i] = depindex.Spec{Slug: p.Slug, DependsOn: p.DependsOn}
+			channelOf[p.Slug] = p.ChannelSlug
+		}
+		idx := depindex.Build(specs)
+		for _, child := range idx.Children(parentSlug) {
+			if err := repo.MarkTemporaryPaused(ctx, child); err != nil {
+				log.Warn("push-propagation: mark paused",
+					"parent", parentSlug, "child", child, "error", err)
+				continue
+			}
+			if channel := channelOf[child]; channel != "" {
+				disp.Pause(ctx, channel, child, at)
+			}
+		}
+	}
 }
