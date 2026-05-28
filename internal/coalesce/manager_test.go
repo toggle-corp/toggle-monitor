@@ -83,15 +83,21 @@ func (p *fakePoster) Reply(context.Context, string, string, []slack.Block) error
 
 // --- helpers ---------------------------------------------------------
 
+// newManager wires a Manager that promotes any 2-monitor burst into a
+// group, so the original "always-coalesce" behavior under test reads
+// the same way in the ADR-0004 world. PendingWait stays at 30s
+// (the dispatcher's wait, not the group's legacy GroupWait).
 func newManager(t *testing.T, clock *time.Time) (*Manager, *fakeStore, *fakePoster) {
 	t.Helper()
 	fs := newFakeStore()
 	fp := &fakePoster{}
 	m := New(Options{
-		Store:  fs,
-		Poster: fp,
-		Config: group.Config{GroupWait: 30 * time.Second, GroupInterval: 5 * time.Minute, RepeatInterval: 30 * time.Minute},
-		Now:    func() time.Time { return *clock },
+		Store:          fs,
+		Poster:         fp,
+		Config:         group.Config{GroupInterval: 5 * time.Minute, RepeatInterval: 30 * time.Minute},
+		PendingWait:    30 * time.Second,
+		BurstThreshold: 2,
+		Now:            func() time.Time { return *clock },
 	})
 	return m, fs, fp
 }
@@ -128,11 +134,14 @@ func TestManagerClosesAfterRecovery(t *testing.T) {
 	m, fs, fp := newManager(t, &clock)
 	ctx := context.Background()
 
+	// Burst of 2 = threshold; promotes to group at pendingWait expiry.
 	m.Down(ctx, "ops", MemberInfo{Slug: "a", FriendlyName: "API"}, base)
+	m.Down(ctx, "ops", MemberInfo{Slug: "b", FriendlyName: "DB"}, base)
 	clock = base.Add(31 * time.Second)
-	m.evaluateAll(ctx) // post digest
+	m.evaluateAll(ctx) // promote + post digest
 
 	m.Up(ctx, "ops", "a", base.Add(1*time.Minute))
+	m.Up(ctx, "ops", "b", base.Add(1*time.Minute))
 
 	// Before debounce ends (1m + 5m = 6m): stays open.
 	clock = base.Add(3 * time.Minute)

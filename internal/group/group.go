@@ -149,6 +149,24 @@ func New(channel string, now time.Time, cfg Config) *Group {
 // since cfg is not itself persisted — it comes from current config).
 func (g *Group) SetConfig(cfg Config) { g.cfg = cfg.withDefaults() }
 
+// Open transitions a freshly-constructed Group into Posted state and
+// returns the initial ActionPostDigest. It bypasses the legacy
+// groupWait check used by Evaluate's !Posted branch — the burst
+// dispatcher (ADR-0004) already did the waiting in its pending pool
+// before MarkDown'ing every member here, so the digest posts
+// immediately. No-op (returns zero Action) if already posted or
+// closed.
+func (g *Group) Open(now time.Time) Action {
+	if g.Posted || g.Closed {
+		return Action{}
+	}
+	g.Posted = true
+	g.LastFlushAt = now
+	g.LastReminderAt = now
+	g.commitRender()
+	return Action{Kind: ActionPostDigest}
+}
+
 // MarkDown records that `slug` is failing. A new slug joins the group;
 // an existing recovered/recovering member transitions back to down (a
 // flap). A no-op if the member is already down.

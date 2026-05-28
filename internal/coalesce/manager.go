@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/toggle-corp/toggle-monitor/internal/alert"
 	"github.com/toggle-corp/toggle-monitor/internal/group"
 	"github.com/toggle-corp/toggle-monitor/internal/slack"
 	"github.com/toggle-corp/toggle-monitor/internal/store"
@@ -57,26 +58,41 @@ type liveGroup struct {
 	info map[string]MemberInfo
 }
 
-// Manager owns the live groups and the central evaluator.
+// Manager owns the live groups, the per-channel dispatcher state, and
+// the central evaluator. Under ADR-0004 the dispatcher decides
+// individual-vs-group routing per channel; the legacy "always coalesce"
+// path is replaced by the pending-pool decision.
 type Manager struct {
-	store  GroupStore
-	poster Poster
-	cfg    group.Config
-	log    *slog.Logger
-	now    func() time.Time
+	store          GroupStore
+	poster         Poster
+	sink           Sink // per-monitor individual notifier; see dispatch.go
+	cfg            group.Config
+	pendingWait    time.Duration
+	burstThreshold int
+	log            *slog.Logger
+	now            func() time.Time
 
-	mu     sync.Mutex
-	groups map[string]*liveGroup // keyed by channel slug
+	mu       sync.Mutex
+	groups   map[string]*liveGroup  // open per-channel digests
+	channels map[string]*channelState // dispatcher state per channel
 }
 
 // Options configures a Manager.
 type Options struct {
-	Store  GroupStore
-	Poster Poster
-	Config group.Config
-	Logger *slog.Logger
-	Now    func() time.Time
+	Store          GroupStore
+	Poster         Poster
+	Sink           Sink         // per-monitor individual notifier
+	Config         group.Config // group state-machine intervals
+	PendingWait    time.Duration // dispatcher pending window; <=0 → 30s
+	BurstThreshold int           // promote at-or-above this pool size; 0 disables group-mode
+	Logger         *slog.Logger
+	Now            func() time.Time
 }
+
+// defaultPendingWait mirrors config.DefaultPendingWait. Duplicating
+// the constant keeps internal/coalesce from importing internal/config
+// just for a default.
+const defaultPendingWait = 30 * time.Second
 
 // New builds a Manager.
 func New(opts Options) *Manager {
@@ -88,51 +104,92 @@ func New(opts Options) *Manager {
 	if now == nil {
 		now = time.Now
 	}
+	pw := opts.PendingWait
+	if pw <= 0 {
+		pw = defaultPendingWait
+	}
 	return &Manager{
-		store:  opts.Store,
-		poster: opts.Poster,
-		cfg:    opts.Config,
-		log:    log,
-		now:    now,
-		groups: map[string]*liveGroup{},
+		store:          opts.Store,
+		poster:         opts.Poster,
+		sink:           opts.Sink,
+		cfg:            opts.Config,
+		pendingWait:    pw,
+		burstThreshold: opts.BurstThreshold,
+		log:            log,
+		now:            now,
+		groups:         map[string]*liveGroup{},
+		channels:       map[string]*channelState{},
 	}
 }
 
-// Down stages a monitor failure into its channel's group, creating (or
-// reloading) the group if needed.
+// Down is a transitional compatibility shim: a synthesized EventOpen
+// routed through the new dispatcher (ADR-0004). The scheduler will be
+// updated in a follow-up commit to call Route directly with a full
+// Entry (carrying Row + alert.Event); until then, lifecycle's
+// groupSinkAdapter.Down lands here and the Sink path stays unused.
+//
+// Deprecated: use Route with an EventOpen Entry.
 func (m *Manager) Down(ctx context.Context, channel string, info MemberInfo, at time.Time) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	lg := m.ensureGroup(ctx, channel, at)
-	if lg == nil {
-		return
-	}
-	lg.info[info.Slug] = info
-	lg.g.MarkDown(info.Slug, at)
+	m.Route(ctx, channel, Entry{
+		Member: info,
+		Event:  &alert.Event{Type: alert.EventOpen, At: at},
+	})
 }
 
-// Up stages a monitor recovery. No-op if the channel has no open group.
+// Up stages a monitor recovery. Routes by channel mode:
+//   - group: MarkUp on the live group.
+//   - pending: retract from the pool (a failure that recovered before
+//     it ever flushed).
+//   - individual: no-op (recoveries for individually-notified monitors
+//     flow through Route with EventResolve, not this method).
 func (m *Manager) Up(ctx context.Context, channel, slug string, at time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if lg := m.groups[channel]; lg != nil {
-		lg.g.MarkUp(slug, at)
+	cs := m.channelStateFor(channel)
+	switch cs.mode {
+	case modeGroup:
+		if lg := m.groups[channel]; lg != nil {
+			lg.g.MarkUp(slug, at)
+		}
+	case modePending:
+		delete(cs.pending, slug)
+		if len(cs.pending) == 0 {
+			cs.mode = modeIndividual
+			cs.pending = nil
+			cs.pendingDue = time.Time{}
+		}
 	}
 }
 
-// Pause stages a dependsOn push-propagation pause (the monitor's parent
-// went down, so its failure is rolled into the parent's incident).
+// Pause stages a dependsOn push-propagation pause: a parent's incident
+// just opened, so each of its children's failures rolls into the
+// parent's narrative. Routes by channel mode:
+//   - group: MarkPaused — render as paused in the digest.
+//   - pending: drop from the pool — the child never got individually
+//     notified and won't (parent's failure is the page).
+//   - individual: silent (per ADR-0004 Q11b).
 func (m *Manager) Pause(ctx context.Context, channel, slug string, at time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if lg := m.groups[channel]; lg != nil {
-		lg.g.MarkPaused(slug, at)
+	cs := m.channelStateFor(channel)
+	switch cs.mode {
+	case modeGroup:
+		if lg := m.groups[channel]; lg != nil {
+			lg.g.MarkPaused(slug, at)
+		}
+	case modePending:
+		delete(cs.pending, slug)
+		if len(cs.pending) == 0 {
+			cs.mode = modeIndividual
+			cs.pending = nil
+			cs.pendingDue = time.Time{}
+		}
 	}
 }
 
-// ensureGroup returns the live group for a channel, loading a persisted
-// open group or creating a new one. Caller holds m.mu.
-func (m *Manager) ensureGroup(ctx context.Context, channel string, at time.Time) *liveGroup {
+// ensureGroupLocked returns the live group for a channel, loading a
+// persisted open group or creating a new one. Caller holds m.mu.
+func (m *Manager) ensureGroupLocked(ctx context.Context, channel string, at time.Time) *liveGroup {
 	if lg := m.groups[channel]; lg != nil {
 		return lg
 	}
@@ -190,9 +247,32 @@ func (m *Manager) RunEvaluator(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// evaluateAll runs one evaluation pass over every live group.
+// evaluateAll runs one evaluation pass over every live group AND every
+// channel whose pending pool may have expired. The pending pass runs
+// first because expirePending can promote a pool to a brand-new group
+// that this same tick should then advance.
 func (m *Manager) evaluateAll(ctx context.Context) {
 	now := m.now()
+
+	// 1. Pending-pool expiry pass.
+	m.mu.Lock()
+	pendingChannels := make([]string, 0, len(m.channels))
+	for ch, cs := range m.channels {
+		if cs.mode == modePending && !now.Before(cs.pendingDue) {
+			pendingChannels = append(pendingChannels, ch)
+		}
+	}
+	sort.Strings(pendingChannels)
+	for _, ch := range pendingChannels {
+		cs := m.channels[ch]
+		if cs == nil || cs.mode != modePending {
+			continue
+		}
+		m.expirePending(ctx, ch, cs, now)
+	}
+	m.mu.Unlock()
+
+	// 2. Group evaluator pass.
 	m.mu.Lock()
 	channels := make([]string, 0, len(m.groups))
 	for ch := range m.groups {
@@ -215,6 +295,9 @@ func (m *Manager) evaluateAll(ctx context.Context) {
 		}
 		if retire {
 			delete(m.groups, ch)
+			// Group retired: collapse the channel back to individual
+			// mode so the next failure starts a fresh pending window.
+			m.retireGroupChannel(ch)
 		}
 		m.mu.Unlock()
 	}
