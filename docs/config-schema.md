@@ -129,10 +129,13 @@ slack:
   userMapping:                                   # optional
     alice: U0123ABC
     ops-team: S0456DEF                           # S-prefix = subteam (emits `<!subteam^...>` markup)
-  coalesce:                                      # optional; alert coalescing tunables
-    groupWait: 30s
-    groupInterval: 5m
-    repeatInterval: 30m
+  coalesce:                                      # optional; burst-dispatcher tunables (ADR-0004)
+    pendingWait: 30s                              # dispatcher wait window before deciding individual vs group
+    burstThreshold: 5                             # pool size that promotes a burst to a digest; 0 disables groups
+    groupInterval: 5m                             # digest heartbeat
+    repeatInterval: 10m                           # still-down reminder cadence (group-mode only)
+    groupMention: channel                         # broadcast on group open/reminder: channel | here | none
+    onDemandProbeTimeout: 5s                      # per-probe budget for the hot-parent probe pass
 ```
 
 | Field | Type | Req | Validation | Notes |
@@ -145,11 +148,23 @@ slack:
 | `slack.channels[].tokenEnv` | string | ✓ | env var name regex; env var set and non-empty at startup | |
 | `slack.userMapping` | map | — | optional | Without it, only raw `<!here>`/`<!channel>`/`<@U…>` markup is accepted in `notify:` |
 | `slack.userMapping[<slug>]` | string | ✓ when present | key: slug regex; value: `^[US][A-Z0-9]{8,}$` | |
-| `slack.coalesce.groupWait` | duration | — | default `30s` | Hold the first failure in a channel this long to collect the initial burst before posting the digest once |
-| `slack.coalesce.groupInterval` | duration | — | default `5m` | Heartbeat: batch joins/recoveries/flaps into one digest edit + threaded reply. Also the resolve-debounce/flap-dampening window |
-| `slack.coalesce.repeatInterval` | duration | — | default `30m` | Cadence of the per-group "still down" reminder |
+| `slack.coalesce.pendingWait` | duration | — | default `30s` | Burst dispatcher's pool wait window. At expiry, pool size vs `burstThreshold` decides individual flush vs group promotion. See [ADR-0004](adr/0004-burst-dispatch-supersedes-always-coalesce.md) |
+| `slack.coalesce.groupWait` | duration | — | deprecated alias for `pendingWait` | Accepted for one release; setting both is a validation error |
+| `slack.coalesce.burstThreshold` | int | — | default `5`; `0` disables group-mode; `1` is rejected (pathological); `>= 2` otherwise | Pool size at expiry that promotes the pool to a digest |
+| `slack.coalesce.groupInterval` | duration | — | default `5m` | Digest heartbeat: batch joins/recoveries/flaps into one edit + threaded reply per interval. Also the resolve-debounce/flap-dampening window |
+| `slack.coalesce.repeatInterval` | duration | — | default `10m` | Cadence of the per-group "still down" reminder (group-mode only; individual-mode uses each monitor's `reminderInterval`) |
+| `slack.coalesce.groupMention` | string | — | one of `channel`, `here`, `none`; default `channel` | Broadcast marker injected at group open + each reminder. Edits never re-mention regardless |
+| `slack.coalesce.onDemandProbeTimeout` | duration | — | default `5s` | Per-probe budget for the hot-parent probe pass at pendingWait expiry |
 
-**Alert coalescing.** When multiple monitors sharing a channel go down within one window, their alerts collapse into a single living per-channel **digest** message (a scoreboard that edits in place as services recover) instead of one Slack message per monitor. `monitors[].critical: true` opts a monitor out — it pages immediately as an individual message. A `dependsOn` pause always wins over `critical` (a paused monitor stays silent). Give shared `dependsOn` parents a **short interval**; the startup logs a WARN for any parent whose interval is slower than a child's.
+**Burst dispatcher (ADR-0004).** Per channel, the dispatcher walks three modes:
+
+1. **individual** — every failure posts immediately as a per-monitor message; recoveries fire individual resolves. The 90% case.
+2. **pending** — first failure starts a `pendingWait` timer; further failures join the pool. At expiry, if the pool is `< burstThreshold` it flushes as N individual messages; if `>= burstThreshold` it promotes to **group**.
+3. **group** — a single living digest with `@channel` (or configured marker) on open and on each `repeatInterval` reminder. Subsequent failures on the same channel join the digest directly. Heartbeat (`groupInterval`) edits batch joins/recoveries. When the last member recovers, the channel returns to individual.
+
+At pendingWait expiry the dispatcher also fires one bounded probe (within `onDemandProbeTimeout`) of any dependsOn parent referenced by ≥2 pool entries that isn't already in the pool. If the parent probes down, push-propagation drains its children from the pool — leaving the parent as the named root cause instead of a digest of symptoms.
+
+`monitors[].critical: true` opts a monitor out of the dispatcher entirely — it pages immediately as an individual message regardless of channel mode. A `dependsOn` pause still wins over `critical` (a paused monitor stays silent). Give shared `dependsOn` parents a **short interval**; the startup logs a WARN for any parent whose interval is slower than a child's.
 
 **Validation behavior:**
 - At startup the app calls Slack's `auth.test` for every distinct token (resolved from `tokenEnv` values). **All tokens must resolve to the same `team_id` (workspace).** Different workspaces → refuse to start. (Single-workspace only in v1.)

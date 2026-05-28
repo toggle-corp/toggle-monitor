@@ -160,15 +160,18 @@ slack:
   userMapping:
     alice: U01ABCDEF12                              # @alice
     ops-team: S02ABCDEF34                           # @ops-team (subteam)
-  # Alert coalescing: when many monitors in a channel fail together
-  # (e.g. a shared dependency outage), their alerts collapse into ONE
-  # living per-channel digest message that edits in place as services
-  # recover — instead of one Slack message per monitor. All optional;
-  # omitted values use the defaults shown.
+  # Burst dispatcher (ADR-0004): every channel walks individual →
+  # pending → group. Routine failures post immediately as per-monitor
+  # messages; only a real burst (≥ burstThreshold failures inside
+  # pendingWait) collapses into one digest with @channel. Omit any
+  # field to take its default.
   coalesce:
-    groupWait: 30s                                  # collect the initial burst before posting the digest once
-    groupInterval: 5m                               # heartbeat: batch joins/recoveries/flaps into one edit + reply; also the flap-dampening window
-    repeatInterval: 30m                             # cadence of the "still down" reminder
+    pendingWait: 30s                                # pool wait before deciding individual vs group
+    burstThreshold: 5                               # pool size that promotes to a digest; 0 disables groups
+    groupInterval: 5m                               # digest heartbeat (also resolve-debounce window)
+    repeatInterval: 10m                             # group-mode still-down reminder cadence
+    groupMention: channel                           # @channel on group open + reminder (channel | here | none)
+    onDemandProbeTimeout: 5s                        # hot-parent probe budget at pendingWait expiry
 
 # ── Anchor host (ignored by validator) ────────────────────────────────────────
 x-monitor-defaults: &staticDefaults
