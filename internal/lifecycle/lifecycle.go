@@ -312,15 +312,16 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	// central evaluator goroutine (below) drives them on wall-clock
 	// time. Reattach any open groups from a prior process so deltas edit
 	// the existing digest instead of re-storming.
-	// Zero intervals → the group package fills the documented defaults
-	// (30s / 5m / 30m).
+	// Effective* accessors collapse the deprecated groupWait alias into
+	// pendingWait and fill defaults at the config layer; the group
+	// package's own withDefaults becomes a no-op for non-zero inputs.
 	groupMgr := coalesce.New(coalesce.Options{
 		Store:  repo,
 		Poster: &digestPoster{client: slackClient, channels: channelLookup},
 		Config: group.Config{
-			GroupWait:      opts.Config.Slack.Coalesce.GroupWait.AsDuration(),
-			GroupInterval:  opts.Config.Slack.Coalesce.GroupInterval.AsDuration(),
-			RepeatInterval: opts.Config.Slack.Coalesce.RepeatInterval.AsDuration(),
+			GroupWait:      opts.Config.Slack.Coalesce.EffectivePendingWait(),
+			GroupInterval:  opts.Config.Slack.Coalesce.EffectiveGroupInterval(),
+			RepeatInterval: opts.Config.Slack.Coalesce.EffectiveRepeatInterval(),
 		},
 		Logger: log,
 	})

@@ -3,6 +3,7 @@ package config_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/toggle-corp/toggle-monitor/internal/config"
 )
@@ -1762,5 +1763,139 @@ func TestLoad_errorsCarryLineAndColumn(t *testing.T) {
 	}
 	if !strings.Contains(msg, "line ") {
 		t.Errorf("expected error prefix to include line, got: %s", msg)
+	}
+}
+
+// ── slack.coalesce: burst-dispatch knobs (ADR-0004) ──────────────────────────
+//
+// The 2026-05-27 design (always-coalesce digest) is superseded: per-channel
+// dispatch is now three-state (individual / pending / group), with the pool
+// promoting to a group only when ≥ burstThreshold failures land within the
+// pendingWait window. groupWait is accepted as a deprecated alias for one
+// release.
+
+// withCoalesce splices a `coalesce:` sub-block into validMinimal under
+// the `slack:` key. `body` is the field listing without a trailing
+// newline; multi-line bodies join with "\n    " to preserve indentation.
+func withCoalesce(body string) []byte {
+	insert := "  coalesce:\n    " + body + "\n"
+	return []byte(strings.Replace(validMinimal,
+		"  channels:",
+		insert+"  channels:", 1))
+}
+
+func TestLoad_coalesce_pendingWaitParses(t *testing.T) {
+	cfg, err := config.Load(withCoalesce("pendingWait: 45s"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Slack.Coalesce.PendingWait.AsDuration(); got != 45*time.Second {
+		t.Errorf("PendingWait: got %s, want 45s", got)
+	}
+}
+
+func TestLoad_coalesce_groupWaitAliasStillAccepted(t *testing.T) {
+	cfg, err := config.Load(withCoalesce("groupWait: 45s"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// EffectivePendingWait collapses the alias.
+	if got := cfg.Slack.Coalesce.EffectivePendingWait(); got != 45*time.Second {
+		t.Errorf("EffectivePendingWait via groupWait alias: got %s, want 45s", got)
+	}
+}
+
+func TestLoad_coalesce_rejectsBothPendingWaitAndGroupWait(t *testing.T) {
+	_, err := config.Load(withCoalesce("pendingWait: 45s\n    groupWait: 30s"))
+	if err == nil {
+		t.Fatal("expected error when both pendingWait and groupWait set")
+	}
+	if !strings.Contains(err.Error(), "pendingWait") || !strings.Contains(err.Error(), "groupWait") {
+		t.Errorf("error should name both fields, got: %v", err)
+	}
+}
+
+func TestLoad_coalesce_burstThresholdParses(t *testing.T) {
+	cfg, err := config.Load(withCoalesce("burstThreshold: 7"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Slack.Coalesce.BurstThreshold == nil {
+		t.Fatal("BurstThreshold: nil, want pointer to 7")
+	}
+	if *cfg.Slack.Coalesce.BurstThreshold != 7 {
+		t.Errorf("BurstThreshold: got %d, want 7", *cfg.Slack.Coalesce.BurstThreshold)
+	}
+}
+
+func TestLoad_coalesce_burstThresholdZeroDisables(t *testing.T) {
+	cfg, err := config.Load(withCoalesce("burstThreshold: 0"))
+	if err != nil {
+		t.Fatalf("burstThreshold: 0 must parse cleanly (disables group-mode): %v", err)
+	}
+	if cfg.Slack.Coalesce.BurstThreshold == nil || *cfg.Slack.Coalesce.BurstThreshold != 0 {
+		t.Errorf("BurstThreshold: want *0, got %v", cfg.Slack.Coalesce.BurstThreshold)
+	}
+}
+
+func TestLoad_coalesce_rejectsBurstThresholdOne(t *testing.T) {
+	_, err := config.Load(withCoalesce("burstThreshold: 1"))
+	if err == nil {
+		t.Fatal("expected error for burstThreshold: 1 (pathological — trips on any single failure)")
+	}
+	if !strings.Contains(err.Error(), "burstThreshold") {
+		t.Errorf("error should name burstThreshold, got: %v", err)
+	}
+}
+
+func TestLoad_coalesce_groupMentionAcceptsKnownValues(t *testing.T) {
+	for _, v := range []string{"channel", "here", "none"} {
+		cfg, err := config.Load(withCoalesce("groupMention: " + v))
+		if err != nil {
+			t.Errorf("groupMention: %s: unexpected error: %v", v, err)
+			continue
+		}
+		if cfg.Slack.Coalesce.GroupMention != v {
+			t.Errorf("groupMention %s: got %q", v, cfg.Slack.Coalesce.GroupMention)
+		}
+	}
+}
+
+func TestLoad_coalesce_rejectsUnknownGroupMention(t *testing.T) {
+	_, err := config.Load(withCoalesce("groupMention: everyone"))
+	if err == nil {
+		t.Fatal("expected error for unknown groupMention")
+	}
+	if !strings.Contains(err.Error(), "groupMention") {
+		t.Errorf("error should name groupMention, got: %v", err)
+	}
+}
+
+func TestLoad_coalesce_onDemandProbeTimeoutParses(t *testing.T) {
+	cfg, err := config.Load(withCoalesce("onDemandProbeTimeout: 3s"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Slack.Coalesce.OnDemandProbeTimeout.AsDuration(); got != 3*time.Second {
+		t.Errorf("OnDemandProbeTimeout: got %s, want 3s", got)
+	}
+}
+
+func TestLoad_coalesce_defaultsWhenOmitted(t *testing.T) {
+	cfg, err := config.Load([]byte(validMinimal))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Slack.Coalesce.EffectivePendingWait(); got != 30*time.Second {
+		t.Errorf("EffectivePendingWait default: got %s, want 30s", got)
+	}
+	if got := cfg.Slack.Coalesce.EffectiveBurstThreshold(); got != 5 {
+		t.Errorf("EffectiveBurstThreshold default: got %d, want 5", got)
+	}
+	if got := cfg.Slack.Coalesce.EffectiveGroupMention(); got != "channel" {
+		t.Errorf("EffectiveGroupMention default: got %q, want channel", got)
+	}
+	if got := cfg.Slack.Coalesce.EffectiveOnDemandProbeTimeout(); got != 5*time.Second {
+		t.Errorf("EffectiveOnDemandProbeTimeout default: got %s, want 5s", got)
 	}
 }

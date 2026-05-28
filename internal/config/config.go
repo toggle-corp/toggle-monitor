@@ -390,20 +390,128 @@ type Slack struct {
 	Coalesce          Coalesce          `yaml:"coalesce,omitempty"`
 }
 
-// Coalesce tunes alert coalescing — the per-channel digest that
-// collapses an outage storm into one living message. Zero values fall
-// back to the documented defaults (30s / 5m / 30m) in the group layer.
+// Coalesce tunes the per-channel burst dispatcher (ADR-0004). The
+// dispatcher runs each channel through three modes: individual (post
+// every failure immediately), pending (a wait window pools failures
+// before deciding), and group (a living digest message).
+//
+// PendingWait is the wait window before the dispatcher decides whether
+// a pool of failures becomes N individual messages (count <
+// BurstThreshold) or one group digest (count ≥ BurstThreshold). At
+// expiry, the dispatcher also fires an on-demand probe of any
+// dependsOn parent referenced by ≥2 pool entries, with
+// OnDemandProbeTimeout as its budget; if the parent probes down, real
+// push-propagation drains the children from the pool, leaving the
+// parent as the named root cause. GroupInterval is the digest heartbeat;
+// RepeatInterval is the still-down reminder cadence in group-mode;
+// GroupMention controls the broadcast mention on group open/reminder.
+// Zero values fall back to the documented defaults.
+//
+// GroupWait is accepted as a deprecated alias for PendingWait for one
+// release; setting both is a validation error.
 type Coalesce struct {
-	// GroupWait is how long the first failure in a channel is held to
-	// collect the initial burst before the digest is posted once.
+	// PendingWait is the dispatcher's burst-collection window. The first
+	// failure in a channel starts the timer; at expiry, the pool's size
+	// vs BurstThreshold decides individual-vs-group dispatch. Default 30s.
+	PendingWait Duration `yaml:"pendingWait,omitempty"`
+	// GroupWait is the deprecated alias for PendingWait. It is consulted
+	// only when PendingWait is unset; setting both is a validation error.
 	GroupWait Duration `yaml:"groupWait,omitempty"`
-	// GroupInterval is the heartbeat at which accrued joins/recoveries/
-	// flaps are flushed as one digest edit + threaded reply. Also the
-	// resolve-debounce window (a recovery must hold this long before it
-	// renders, which dampens flap chatter).
+	// GroupInterval is the digest heartbeat in group-mode: accrued
+	// joins/recoveries/flaps flush as one edit + threaded reply per
+	// interval. Also the resolve-debounce window (a recovery must hold
+	// this long before it renders, dampening flap chatter). Default 5m.
 	GroupInterval Duration `yaml:"groupInterval,omitempty"`
-	// RepeatInterval is the cadence of the still-down reminder.
+	// RepeatInterval is the still-down reminder cadence in group-mode.
+	// Default 10m (groups exist only when a burst tripped — louder
+	// cadence is desired). Individual-mode reminders use the per-monitor
+	// reminderInterval instead; this knob does not affect them.
 	RepeatInterval Duration `yaml:"repeatInterval,omitempty"`
+	// BurstThreshold is the pool size at PendingWait expiry that
+	// promotes the pool to a group instead of flushing it as N
+	// individual messages. Must be 0 (disables group-mode entirely) or
+	// ≥ 2 (1 is pathological — would trip on any single failure).
+	// Pointer so "explicitly 0" (disable) is distinguishable from
+	// "unset" (default 5).
+	BurstThreshold *int `yaml:"burstThreshold,omitempty"`
+	// GroupMention controls the broadcast mention on group open and on
+	// each still-down reminder. One of "channel" (default), "here", or
+	// "none". Edits (heartbeat deltas) never re-mention regardless.
+	GroupMention string `yaml:"groupMention,omitempty"`
+	// OnDemandProbeTimeout is the per-probe budget for the hot-parent
+	// probe pass at PendingWait expiry. Default 5s. If a probe exceeds
+	// this budget, treat as inconclusive and proceed with the unredacted
+	// pool — the parent's regular tick will pick it up later.
+	OnDemandProbeTimeout Duration `yaml:"onDemandProbeTimeout,omitempty"`
+}
+
+// Documented defaults for the burst dispatcher (ADR-0004). Mirrored
+// from the comments on Coalesce so callers (lifecycle, manager) can
+// derive effective values without re-parsing.
+const (
+	DefaultPendingWait          = 30 * time.Second
+	DefaultGroupInterval        = 5 * time.Minute
+	DefaultRepeatInterval       = 10 * time.Minute
+	DefaultBurstThreshold       = 5
+	DefaultGroupMention         = "channel"
+	DefaultOnDemandProbeTimeout = 5 * time.Second
+)
+
+// EffectivePendingWait returns the configured PendingWait, falling back
+// to the deprecated GroupWait alias, then to DefaultPendingWait.
+func (c Coalesce) EffectivePendingWait() time.Duration {
+	if d := c.PendingWait.AsDuration(); d > 0 {
+		return d
+	}
+	if d := c.GroupWait.AsDuration(); d > 0 {
+		return d
+	}
+	return DefaultPendingWait
+}
+
+// EffectiveGroupInterval returns the configured GroupInterval, or the
+// default if unset.
+func (c Coalesce) EffectiveGroupInterval() time.Duration {
+	if d := c.GroupInterval.AsDuration(); d > 0 {
+		return d
+	}
+	return DefaultGroupInterval
+}
+
+// EffectiveRepeatInterval returns the configured RepeatInterval, or the
+// default if unset.
+func (c Coalesce) EffectiveRepeatInterval() time.Duration {
+	if d := c.RepeatInterval.AsDuration(); d > 0 {
+		return d
+	}
+	return DefaultRepeatInterval
+}
+
+// EffectiveBurstThreshold returns the configured BurstThreshold, or the
+// default if unset. Returns 0 verbatim when explicitly disabled.
+func (c Coalesce) EffectiveBurstThreshold() int {
+	if c.BurstThreshold == nil {
+		return DefaultBurstThreshold
+	}
+	return *c.BurstThreshold
+}
+
+// EffectiveGroupMention returns the configured mention policy, or the
+// default if unset.
+func (c Coalesce) EffectiveGroupMention() string {
+	if c.GroupMention == "" {
+		return DefaultGroupMention
+	}
+	return c.GroupMention
+}
+
+// EffectiveOnDemandProbeTimeout returns the configured probe timeout,
+// or the default if unset.
+func (c Coalesce) EffectiveOnDemandProbeTimeout() time.Duration {
+	if d := c.OnDemandProbeTimeout.AsDuration(); d > 0 {
+		return d
+	}
+	return DefaultOnDemandProbeTimeout
 }
 
 // SlackChannel is one Slack destination.
@@ -844,6 +952,8 @@ func (c *checker) validate(cfg *Config) {
 				"%q must match %s (U... = user, S... = subteam)", id, userOrSubteamIDPattern.String())
 		}
 	}
+
+	c.validateCoalesce(cfg.Slack.Coalesce)
 
 	// kube.match validation: see ADR-0002 §Validation. Structural
 	// errors only — resolved-value errors (interval/timeout, SSL
@@ -1686,6 +1796,39 @@ func (c *checker) validateKubeDependsOnRefs(rules []KubeMatchRule, monitorByIdx 
 		}
 		if len(r.Nested) > 0 {
 			c.validateKubeDependsOnRefs(r.Nested, monitorByIdx, append(append([]any{}, rbase...), "nested"))
+		}
+	}
+}
+
+// validateCoalesce enforces the burst-dispatcher rules from ADR-0004:
+// pendingWait and the deprecated groupWait are mutually exclusive;
+// burstThreshold is either 0 (disable group-mode) or ≥ 2 (1 would trip
+// on any single failure); groupMention is one of channel/here/none.
+// Duration knobs may be zero (defaulted) but cannot be negative — the
+// Duration unmarshaler already rejects negative values, so this only
+// guards positive-when-set semantics where the design needs them.
+func (c *checker) validateCoalesce(co Coalesce) {
+	base := []any{"slack", "coalesce"}
+	if co.PendingWait.AsDuration() > 0 && co.GroupWait.AsDuration() > 0 {
+		c.errf(append(base, "pendingWait"),
+			"cannot set both pendingWait and the deprecated groupWait alias — use pendingWait")
+	}
+	if co.BurstThreshold != nil {
+		switch n := *co.BurstThreshold; {
+		case n < 0:
+			c.errf(append(base, "burstThreshold"),
+				"%d must be >= 0 (0 disables group-mode)", n)
+		case n == 1:
+			c.errf(append(base, "burstThreshold"),
+				"1 is pathological — trips on any single failure. Use 0 to disable group-mode or >= 2")
+		}
+	}
+	if co.GroupMention != "" {
+		switch co.GroupMention {
+		case "channel", "here", "none":
+		default:
+			c.errf(append(base, "groupMention"),
+				"%q must be one of channel | here | none", co.GroupMention)
 		}
 	}
 }
