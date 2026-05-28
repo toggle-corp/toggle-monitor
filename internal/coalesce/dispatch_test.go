@@ -2,12 +2,15 @@ package coalesce
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/toggle-corp/toggle-monitor/internal/alert"
 	"github.com/toggle-corp/toggle-monitor/internal/group"
+	"github.com/toggle-corp/toggle-monitor/internal/slack"
 	"github.com/toggle-corp/toggle-monitor/internal/store"
 )
 
@@ -463,6 +466,122 @@ func TestDispatch_onDemandProbe_parentInPool_skipped(t *testing.T) {
 	m.evaluateAll(ctx)
 	if probeCalls != 0 {
 		t.Fatalf("parent already in pool → no on-demand probe; got %d calls", probeCalls)
+	}
+}
+
+// fakePosterCapturing extends fakePoster with structured capture of
+// every payload so mention-injection tests can assert the broadcast
+// marker (<!channel> / <!here>) shows up on open + reminder.
+type fakePosterCapturing struct {
+	postParents     []slack.ParentMessage
+	updateParents   []slack.ParentMessage
+	replyBlockLists [][]slack.Block
+}
+
+func (p *fakePosterCapturing) PostDigest(_ context.Context, _ string, msg slack.ParentMessage) (string, string, error) {
+	p.postParents = append(p.postParents, msg)
+	return "C1", "ts1", nil
+}
+
+func (p *fakePosterCapturing) UpdateDigest(_ context.Context, _, _ string, msg slack.ParentMessage) error {
+	p.updateParents = append(p.updateParents, msg)
+	return nil
+}
+
+func (p *fakePosterCapturing) Reply(_ context.Context, _, _ string, blocks []slack.Block) error {
+	p.replyBlockLists = append(p.replyBlockLists, blocks)
+	return nil
+}
+
+func parentContainsText(msg slack.ParentMessage, needle string) bool {
+	for _, att := range msg.Attachments {
+		for _, b := range att.Blocks {
+			if marshalContains(b, needle) {
+				return true
+			}
+		}
+	}
+	for _, b := range msg.Blocks {
+		if marshalContains(b, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func blocksContainText(blocks []slack.Block, needle string) bool {
+	for _, b := range blocks {
+		if marshalContains(b, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// marshalContains is a brittle-but-adequate way to check that a block
+// renders a particular substring without depending on the exact block
+// shape. The blocks package's struct fields are private to the slack
+// package, so we use fmt.Sprintf on the value.
+func marshalContains(v any, needle string) bool {
+	return strings.Contains(fmt.Sprintf("%+v", v), needle)
+}
+
+// TestDispatch_groupMention_channelInjectedOnOpen verifies that when
+// GroupMention="channel" is set, the initial digest's parent message
+// carries the <!channel> broadcast marker.
+func TestDispatch_groupMention_channelInjectedOnOpen(t *testing.T) {
+	clock := base
+	fs := newFakeStore()
+	fp := &fakePosterCapturing{}
+	m := New(Options{
+		Store:          fs,
+		Poster:         fp,
+		Config:         group.Config{GroupInterval: 5 * time.Minute, RepeatInterval: 30 * time.Minute},
+		PendingWait:    30 * time.Second,
+		BurstThreshold: 2,
+		GroupMention:   "channel",
+		Now:            func() time.Time { return clock },
+	})
+	ctx := context.Background()
+
+	m.Route(ctx, "ops", downEntry("a", clock))
+	m.Route(ctx, "ops", downEntry("b", clock))
+	clock = base.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+
+	if len(fp.postParents) != 1 {
+		t.Fatalf("want 1 PostDigest call, got %d", len(fp.postParents))
+	}
+	if !parentContainsText(fp.postParents[0], "<!channel>") {
+		t.Fatalf("expected <!channel> in digest open; payload did not contain it")
+	}
+}
+
+// TestDispatch_groupMention_noneSkipsBroadcast: GroupMention="none"
+// suppresses the broadcast marker entirely (operator opt-out for
+// personal / dev setups).
+func TestDispatch_groupMention_noneSkipsBroadcast(t *testing.T) {
+	clock := base
+	fs := newFakeStore()
+	fp := &fakePosterCapturing{}
+	m := New(Options{
+		Store:          fs,
+		Poster:         fp,
+		Config:         group.Config{GroupInterval: 5 * time.Minute, RepeatInterval: 30 * time.Minute},
+		PendingWait:    30 * time.Second,
+		BurstThreshold: 2,
+		GroupMention:   "none",
+		Now:            func() time.Time { return clock },
+	})
+	ctx := context.Background()
+
+	m.Route(ctx, "ops", downEntry("a", clock))
+	m.Route(ctx, "ops", downEntry("b", clock))
+	clock = base.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+
+	if parentContainsText(fp.postParents[0], "<!channel>") || parentContainsText(fp.postParents[0], "<!here>") {
+		t.Fatalf("GroupMention=none must suppress broadcast markers")
 	}
 }
 

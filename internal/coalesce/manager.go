@@ -82,6 +82,7 @@ type Manager struct {
 	cfg            group.Config
 	pendingWait    time.Duration
 	burstThreshold int
+	groupMention   string // "" | "channel" | "here" | "none"
 	log            *slog.Logger
 	now            func() time.Time
 
@@ -99,6 +100,7 @@ type Options struct {
 	Config              group.Config        // group state-machine intervals
 	PendingWait         time.Duration       // dispatcher pending window; <=0 → 30s
 	BurstThreshold      int                 // promote at-or-above this pool size; 0 disables group-mode
+	GroupMention        string              // "channel"|"here"|"none"; "" → no broadcast marker injected
 	Logger              *slog.Logger
 	Now                 func() time.Time
 }
@@ -130,11 +132,25 @@ func New(opts Options) *Manager {
 		cfg:            opts.Config,
 		pendingWait:    pw,
 		burstThreshold: opts.BurstThreshold,
+		groupMention:   opts.GroupMention,
 		log:            log,
 		now:            now,
 		groups:         map[string]*liveGroup{},
 		channels:       map[string]*channelState{},
 	}
+}
+
+// broadcastMarker maps the configured GroupMention policy to a raw
+// Slack mention marker. Returns "" when the policy is empty or
+// explicitly disabled — the caller skips injection in that case.
+func (m *Manager) broadcastMarker() string {
+	switch m.groupMention {
+	case "channel":
+		return "<!channel>"
+	case "here":
+		return "<!here>"
+	}
+	return ""
 }
 
 // SetOnDemandParentProbe wires the on-demand parent-probe hook
@@ -351,7 +367,7 @@ func (m *Manager) dispatch(ctx context.Context, lg *liveGroup, actions []group.A
 			m.reply(ctx, lg, slack.BuildDigestReminderReply(slack.DigestReminderInput{
 				DownCount:    sb.Down,
 				DownDuration: now.Sub(lg.g.OpenedAt),
-				Mentions:     m.unionMentions(lg, lg.g.DownSlugs()),
+				Mentions:     m.unionMentionsWithBroadcast(lg, lg.g.DownSlugs()),
 			}))
 		case group.ActionClose:
 			m.ensurePosted(ctx, lg)
@@ -427,7 +443,7 @@ func (m *Manager) buildParent(lg *liveGroup, closed, withMentions bool) slack.Pa
 		in.Downtime = m.now().Sub(lg.g.OpenedAt)
 	}
 	if withMentions {
-		in.Mentions = m.unionMentions(lg, lg.g.DownSlugs())
+		in.Mentions = m.unionMentionsWithBroadcast(lg, lg.g.DownSlugs())
 	}
 	return slack.BuildDigestParent(in)
 }
@@ -461,6 +477,23 @@ func (m *Manager) displayName(lg *liveGroup, slug string) string {
 		return info.FriendlyName
 	}
 	return slug
+}
+
+// unionMentionsWithBroadcast returns the owner-mention union prefixed
+// with the configured broadcast marker (<!channel> / <!here>) when
+// GroupMention is non-empty. The marker fires on group open and on
+// each still-down reminder; edits never re-mention (and call
+// unionMentions directly).
+func (m *Manager) unionMentionsWithBroadcast(lg *liveGroup, slugs []string) []string {
+	owners := m.unionMentions(lg, slugs)
+	marker := m.broadcastMarker()
+	if marker == "" {
+		return owners
+	}
+	out := make([]string, 0, 1+len(owners))
+	out = append(out, marker)
+	out = append(out, owners...)
+	return out
 }
 
 // unionMentions collects the deduplicated mentions of the given slugs,
