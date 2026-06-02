@@ -204,6 +204,16 @@ func (m *Manager) routeReminder(ctx context.Context, channel string, e Entry) {
 // must NOT hold m.mu (the sink may take time / fail).
 func (m *Manager) flushSink(ctx context.Context, channel string, e Entry) {
 	if m.sink == nil {
+		// A nil sink in production silently destroys every sub-threshold
+		// (individual-mode) notification — the exact failure mode that
+		// caused the 2026-06-02 alert blackout, where the lifecycle
+		// constructor omitted Options.Sink. Scream on the first dropped
+		// alert so a future wiring omission surfaces in logs immediately
+		// instead of in an incident postmortem. lifecycle additionally
+		// refuses to boot with a nil sink (see Manager.SinkWired); this
+		// log covers any other caller that legitimately runs sink-less.
+		m.log.Error("individual notification dropped: no sink wired",
+			"channel", channel, "slug", e.Row.Slug, "event", string(e.Event.Type))
 		return
 	}
 	if err := m.sink(ctx, e.Row, channel, e.Mentions, e.Event); err != nil {

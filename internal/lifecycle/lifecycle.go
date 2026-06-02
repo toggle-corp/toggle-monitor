@@ -320,6 +320,14 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	groupMgr := coalesce.New(coalesce.Options{
 		Store:  repo,
 		Poster: &digestPoster{client: slackClient, channels: channelLookup},
+		// Sink is the individual-notification path: every sub-threshold
+		// non-critical failure (the 90% case) flushes through it. It is
+		// the same notifier closure the scheduler's critical EventSink
+		// uses — EventSink and coalesce.Sink share an identical
+		// signature. Omitting it silently discards all routine alerts
+		// (the 2026-06-02 blackout); the SinkWired guard below makes that
+		// omission fatal at boot rather than silent in production.
+		Sink: coalesce.Sink(buildSink(notifier)),
 		Config: group.Config{
 			GroupInterval:  opts.Config.Slack.Coalesce.EffectiveGroupInterval(),
 			RepeatInterval: opts.Config.Slack.Coalesce.EffectiveRepeatInterval(),
@@ -329,6 +337,11 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		GroupMention:   opts.Config.Slack.Coalesce.EffectiveGroupMention(),
 		Logger:         log,
 	})
+	// Fail fast: the daemon must never run with a nil individual sink —
+	// it would silently swallow every sub-threshold non-critical alert.
+	if !groupMgr.SinkWired() {
+		return fmt.Errorf("coalesce dispatcher built without an individual notification sink: every sub-threshold non-critical alert would be silently dropped (refusing to start)")
+	}
 	if w := config.DependsOnIntervalWarnings(opts.Config); len(w) > 0 {
 		for _, line := range w {
 			log.Warn("dependsOn parent slower than child", "detail", line)

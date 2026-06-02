@@ -32,12 +32,17 @@ import (
 // criteria: "Integration test covers the full path: YAML → check →
 // DB → UI."
 func TestRunServe_endToEndTracerBullet(t *testing.T) {
-	// 1. Upstream service the monitor will probe. We flip its behavior
-	// from 500 to 200 after a few hits so the integration covers both
-	// the down and the resolve transitions.
+	// 1. Upstream service the monitor will probe. It stays down for the
+	// first ~8s (40 hits at a 200ms interval) so the failure survives the
+	// dispatcher's pendingWait window and gets flushed through the
+	// individual-notification path (gated by pendingWait + the central
+	// evaluator's 5s cadence) BEFORE it recovers — a faster recovery
+	// would retract the entry from the pending pool and no notification
+	// would ever fire. After that it returns 200 so the integration still
+	// covers the resolve transition.
 	var hits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if hits.Add(1) <= 2 {
+		if hits.Add(1) <= 40 {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -77,6 +82,8 @@ slack:
   bodyMaxChars: 200
   channels:
     - { slug: ops-alerts, channelId: C0123ABCD, tokenEnv: TOGGLE_SLACK_TOKEN }
+  coalesce:
+    pendingWait: 1s   # short window so the lone failure flushes individually fast
 monitors:
   - slug: api
     friendlyName: API
@@ -101,13 +108,12 @@ monitors:
 		t.Fatalf("config.Load: %v", err)
 	}
 
-	// Issue 3 wires Slack into serve; this test isn't about Slack
-	// behavior but the YAML still requires a slack: block, so point
-	// it at an always-OK fake server and set a stub token.
-	slackSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(200)
-		_, _ = w.Write([]byte(`{"ok": true, "team_id": "T1", "ts": "1.0", "channel": "C0"}`))
-	}))
+	// Slack is wired into serve; record posts so we can assert the
+	// individual-notification path actually fires for a lone non-critical
+	// monitor — the path the 2026-06-02 blackout silently dropped when
+	// the coalesce dispatcher was built without its Sink.
+	recorder := &fakeSlackRecorder{}
+	slackSrv := httptest.NewServer(recorder.handler())
 	t.Cleanup(slackSrv.Close)
 	t.Setenv("TOGGLE_SLACK_TOKEN", "xoxb-test")
 
@@ -148,6 +154,25 @@ monitors:
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for full uptime lifecycle on /monitor/api; last body excerpt:\n%s", firstN(lastBody, 600))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// 4b. Assert the individual-notification path actually posted to
+	// Slack. This is the regression guard for the 2026-06-02 blackout:
+	// a lone non-critical monitor going down MUST produce at least one
+	// chat.postMessage. Before the Sink was wired into coalesce.New this
+	// silently stayed at zero while every other assertion above passed.
+	postDeadline := time.Now().Add(15 * time.Second)
+	for {
+		recorder.mu.Lock()
+		posts := len(recorder.postMessages)
+		recorder.mu.Unlock()
+		if posts >= 1 {
+			break
+		}
+		if time.Now().After(postDeadline) {
+			t.Fatalf("no individual Slack notification fired for the down monitor; got %d posts (coalesce dispatcher Sink not wired?)", posts)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

@@ -119,6 +119,12 @@ slack:
   bodyMaxChars: 200
   channels:
     - { slug: ops-alerts, channelId: C0123ABCD, tokenEnv: TOGGLE_SLACK_TOKEN }
+  coalesce:
+    # Short pending window so the lone monitor's failure flushes the
+    # individual-notification path quickly (ADR-0004: the dispatcher
+    # waits pendingWait before deciding individual-vs-group). The
+    # default 30s would never flush inside this test's 15s waits.
+    pendingWait: 1s
 monitors:
   - slug: api
     friendlyName: API
@@ -166,8 +172,10 @@ monitors:
 		t.Fatal("RunServe never bound")
 	}
 
-	// Wait for a parent + at least one reminder.
-	deadline := time.Now().Add(10 * time.Second)
+	// Wait for a parent + at least one reminder. The individual flush is
+	// gated by pendingWait (1s) plus the central evaluator's cadence
+	// (5s), so the first post can land ~5–6s in — give it generous room.
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		recorder.mu.Lock()
 		posts := len(recorder.postMessages)
@@ -185,7 +193,7 @@ monitors:
 	resolveGate.Store(true)
 
 	// Wait for the update + the resolve thread reply.
-	deadline = time.Now().Add(10 * time.Second)
+	deadline = time.Now().Add(15 * time.Second)
 	for {
 		recorder.mu.Lock()
 		updates := len(recorder.updateMessages)
