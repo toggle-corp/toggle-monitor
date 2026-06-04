@@ -67,6 +67,14 @@ type ParentMessage struct {
 	Attachments []Attachment
 }
 
+// Message is the generic block-kit envelope cross-package renderers
+// return. It carries the same `{Blocks, Attachments}` shape Slack's
+// chat.postMessage accepts, so handlers can post the result without an
+// adapter. ParentMessage is the monitor-specific alias preserved for
+// existing callers; new renderers (e.g. the Alertmanager receiver in
+// internal/alertmanager) use Message.
+type Message = ParentMessage
+
 // BuildDownParent renders the initial 🔴 parent for an uptime
 // incident. The header sits outside the color attachment so the red
 // stripe wraps only the smaller body lines.
@@ -237,6 +245,33 @@ func contextBlock(mrkdwn string) Block {
 		"elements": []map[string]any{
 			{"type": "mrkdwn", "text": mrkdwn},
 		},
+	}
+}
+
+// LinkButton renders a single Block Kit `button` element pointing at
+// url. Exported so cross-package renderers (e.g. the Alertmanager
+// receiver) can compose an actions row without duplicating the element
+// shape. style is one of "" (default), "primary", or "danger".
+func LinkButton(text, url, style string) map[string]any {
+	el := map[string]any{
+		"type": "button",
+		"text": map[string]any{"type": "plain_text", "text": text, "emoji": true},
+		"url":  url,
+	}
+	if style != "" {
+		el["style"] = style
+	}
+	return el
+}
+
+// ActionsBlock wraps one or more button elements (see LinkButton) into
+// a Slack `actions` block. Exported for cross-package use; the monitor
+// builders here still render their footer CTAs as inline mrkdwn links
+// in the context footer for compactness.
+func ActionsBlock(elements ...map[string]any) Block {
+	return Block{
+		"type":     "actions",
+		"elements": elements,
 	}
 }
 
