@@ -64,7 +64,30 @@ type Server struct {
 	statusConfigs   []*templates.StatusConfig
 	statusBySlug    map[string]*templates.StatusConfig
 	discoveryStatus templates.DiscoveryStatus
+	customRoutes    []customRoute
 	ready           atomic.Bool
+}
+
+// customRoute is an externally-registered handler installed on the mux
+// at Routes() build time. Patterns follow go 1.22 ServeMux syntax
+// (e.g. "POST /webhooks/alertmanager"), so a route may be method- or
+// host-scoped without web.Server knowing what the caller is mounting.
+type customRoute struct {
+	Pattern string
+	Handler http.Handler
+}
+
+// RegisterRoute installs an external handler onto the mux. Must be
+// called before Routes() so the registration lands on the mux that
+// the HTTP listener serves. Patterns follow go 1.22 ServeMux syntax
+// — most callers will want the explicit method gate ("POST /…") so
+// the handler doesn't catch GETs by mistake.
+//
+// The seam exists so lifecycle wiring (e.g. internal/alertmanager,
+// ADR-0005) can plumb its own handler in without web.Server needing
+// to import the consumer package.
+func (s *Server) RegisterRoute(pattern string, h http.Handler) {
+	s.customRoutes = append(s.customRoutes, customRoute{Pattern: pattern, Handler: h})
 }
 
 // ConfigLookup returns the effective runtime config for a monitor (the
@@ -229,6 +252,15 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /status/{slug}", s.navWrap(s.handleStatusBySlug))
 	mux.HandleFunc("GET /discovery", s.navWrap(s.handleDiscoveryListing))
 	mux.HandleFunc("GET /discovery/{ns}/{name}/{host}", s.navWrap(s.handleDiscoveryDetail))
+
+	// Externally-registered routes (e.g. the Alertmanager webhook
+	// handler wired in by lifecycle). Registered last so any future
+	// built-in route always wins on a pattern collision — the operator
+	// gets a clear runtime panic ("multiple registrations for …") at
+	// boot rather than a silent override.
+	for _, r := range s.customRoutes {
+		mux.Handle(r.Pattern, r.Handler)
+	}
 
 	return mux
 }

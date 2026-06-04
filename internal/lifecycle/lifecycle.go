@@ -285,6 +285,29 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		}
 		srv.SetStatusConfigs(configs)
 	}
+	// Alertmanager webhook receiver (ADR-0005). Constructed and
+	// registered before Routes() is invoked so the listener actually
+	// serves /webhooks/<slug> when cfg.Alertmanager is set. Absent
+	// block → no handler, no route, no sweeper (the goroutine spawn
+	// below is also gated on a nil sweeper).
+	amHandler, err := buildAMHandler(
+		opts.Config.Alertmanager,
+		opts.Config.Slack.UserMapping,
+		repo,
+		slackClient,
+		channelLookup,
+		metrics,
+		opts.Config.PublicBaseURL,
+		log,
+	)
+	if err != nil {
+		return fmt.Errorf("alertmanager handler init: %w", err)
+	}
+	if amHandler != nil {
+		srv.RegisterRoute("POST "+opts.Config.Alertmanager.Endpoint.Path, amHandler)
+	}
+	amSweeper := buildAMSweeper(opts.Config.Alertmanager, repo, log)
+
 	listener, err := net.Listen("tcp", opts.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("bind listen address %q: %w", opts.ListenAddr, err)
@@ -447,6 +470,19 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		defer wg.Done()
 		umValidator.Run(ctx, 24*time.Hour)
 	}()
+
+	// AM retention sweeper. Hardcoded 24h cadence (see ADR-0005
+	// §"Persistence"). When the alertmanager block is absent the
+	// sweeper is nil and the goroutine isn't started; when present
+	// but RetentionDays == 0 the sweeper's Run logs disabled and
+	// exits immediately, which still satisfies the wg balance.
+	if amSweeper != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			amSweeper.Run(ctx)
+		}()
+	}
 
 	// Kube auto-discovery: the materializer was built above so the
 	// scheduler's plan source can read its CurrentPlans(). Here we
