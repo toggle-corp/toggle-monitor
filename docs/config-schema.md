@@ -693,6 +693,99 @@ A monitor lands in a section when any one selector fires; within a selector the 
 
 ---
 
+## 5c. Alertmanager webhook receiver (optional)
+
+First-class receiver for Prometheus Alertmanager webhooks. Omit the block to disable the endpoint entirely. Authoritative design: [ADR-0005 — Alertmanager webhook receiver](./adr/0005-alertmanager-webhook-receiver.md).
+
+```yaml
+alertmanager:
+  endpoint:
+    path: /webhooks/alertmanager                       # single-segment suffix under hardcoded /webhooks/
+    tokenEnv: ALERTMANAGER_WEBHOOK_TOKEN               # Bearer token, env-resolved like every other secret
+  retentionDays: 180                                   # daily sweep; only purges resolved incidents
+  rateLimit:
+    perChannel: 10                                     # flood threshold per Slack channel
+    window: 30m                                        # sliding-window size
+    noticeEvery: 1d                                    # min interval between flood-notice messages
+  match:
+    # Root rule — `when: {}` matches every alert and is MANDATORY.
+    # Must set `config.slack`. `config.notify` cascades (union by
+    # default; tag with `!override` to replace).
+    - when: {}
+      config:
+        slack: ops-alerts
+        notify: [ops-team]
+
+    # Watchdog: Prometheus's keep-alive rule. Ignore so it never lands
+    # in Slack; `final: true` keeps later rules from un-ignoring it.
+    - when: { alertname: "Watchdog" }
+      ignore: true
+      final: true
+
+    # Critical severity branches to a louder channel.
+    - when:
+        labels: { severity: "critical" }
+      config:
+        slack: ops-critical
+```
+
+The receiver's pipeline is deliberately thin — it persists per-fingerprint, posts to Slack, edits the parent message on resolve. AM alerts are not monitor probes; they share the `slack.channels[]` / `slack.userMapping` config but do not participate in `alert.Apply`, `coalesce.Manager`, or the `MonitorRow` machinery.
+
+| Field | Type | Req | Validation | Notes |
+|---|---|---|---|---|
+| `alertmanager` | object | — | (the whole block) | Omit to disable the webhook endpoint. All fields below apply only when the block is present. |
+| `alertmanager.endpoint.path` | string | — | `^/webhooks/[a-z0-9_-]+$`; default `/webhooks/alertmanager` | Single-segment suffix; the `/webhooks/` prefix is hardcoded. |
+| `alertmanager.endpoint.tokenEnv` | string | ✓ | env var name regex `^[A-Z][A-Z0-9_]*$`; env var must be set and non-empty at startup | Bearer token compared in constant time against the `Authorization` header. |
+| `alertmanager.retentionDays` | int | — | `>= 0`; default `180` | Daily sweeper purges incidents whose `ended_at` is older than the window. `0` keeps everything. Active incidents are never purged. |
+| `alertmanager.rateLimit.perChannel` | int | — | `>= 0`; default `10` | Per-channel sliding-window flood detector. `0` disables the detector entirely. |
+| `alertmanager.rateLimit.window` | duration | — | `> 0` when `perChannel > 0`; default `30m` | Sliding-window size for the detector. |
+| `alertmanager.rateLimit.noticeEvery` | duration | — | `> 0` when `perChannel > 0`; default `1d` | Minimum gap between flood-notice messages on the same channel. |
+| `alertmanager.match` | list | ✓ (when block present) | non-empty; first top-level rule must have empty (`{}` or omitted) `when:` and set `config.slack` | The cascading rule tree. Mirrors `kube.match` grammar — see [ADR-0002](./adr/0002-kube-match-tree-cascade.md) for the merge / `!override` / `final` / `ignore` semantics. |
+| `alertmanager.match[].when` | object | — | see selector table below | Absent or `{}` means "match anything." |
+| `alertmanager.match[].when.alertname` | string | — | valid glob | Matched against the alert's `labels.alertname`. Mutually exclusive with `alertnameRegex` in the same `when:`. |
+| `alertmanager.match[].when.alertnameRegex` | string | — | valid Go regexp; auto-anchored `^…$` | Mutually exclusive with `alertname`. |
+| `alertmanager.match[].when.labels` | map[string]string | — | per-key twin convention (see below); each base key must satisfy k8s label-key syntax | A key suffixed `Regex` is the regex variant for the bare key; values are globs / regexes. All set keys AND together. |
+| `alertmanager.match[].when.receiver` | string | — | exact match | Matched against the AM webhook envelope's `receiver`. |
+| `alertmanager.match[].when.externalURL` | string | — | exact match | Matched against the AM webhook envelope's `externalURL`. Use to discriminate between multiple Alertmanagers feeding the same endpoint. |
+| `alertmanager.match[].config.slack` | string | ✓ at root | resolves to a `slack.channels[].slug` | Required at the root rule (every alert inherits it). Descendants override selectively. |
+| `alertmanager.match[].config.notify` | list[string] | — | each entry: a `slack.userMapping` slug OR raw `<…>` Slack markup | Union across cascade by default; tag with `!override` to replace. |
+| `alertmanager.match[].nested` | list[rule] | — | each entry follows the same rule shape | Recursive. |
+| `alertmanager.match[].ignore` | bool | — | default unset | Cascades like a scalar; deepest matching rule wins. Resolved `true` → no Slack post, no `am_alerts` row. |
+| `alertmanager.match[].final` | bool | — | requires non-empty `when:` | Halts the tree walk after descending into this rule's `nested:`. |
+
+### `alertmanager.match[].when.labels` — per-key twin convention
+
+Inside `when.labels`, a key `K` selects on `labels.K` with glob semantics; a key `KRegex` selects on `labels.K` with Go-regexp semantics (auto-anchored `^…$`). Setting both `K` and `KRegex` on the same `when:` is a validation error — pick one. Example:
+
+```yaml
+when:
+  labels:
+    severity:       "critical"             # glob value
+    namespace:      "acme-*"               # glob value
+    instanceRegex:  "^pod-\\d+$"           # regex value; selects on `labels.instance`
+```
+
+Base keys must satisfy k8s label-key syntax (the same check applied to `kube.match[].when.labels` keys).
+
+### Validation
+
+**Structural errors** (refuse to start):
+- `endpoint.path` does not match `^/webhooks/[a-z0-9_-]+$`.
+- `endpoint.tokenEnv` empty or fails the env-var name regex.
+- `retentionDays < 0`.
+- `rateLimit.perChannel < 0`.
+- `rateLimit.perChannel > 0` with `window <= 0` or `noticeEvery <= 0`.
+- Missing root rule or root rule's `config.slack` missing.
+- Orphan slug references inside any `config:` block (`slack`, `notify` entries that don't resolve to `slack.userMapping`).
+- Within any `when:`, both `alertname` and `alertnameRegex` set.
+- Within any `when.labels`, the same base key set as both `K` and `KRegex`.
+- `final: true` with empty `when:`.
+- Invalid Go regex (per `regexp.Compile`), invalid glob (per `path.Match`), or invalid label-key syntax.
+
+The receiver inherits `slack.channels[]` and `slack.userMapping` — no new Slack config surface is introduced.
+
+---
+
 ## 6. Schema-level rules
 
 **Recognized top-level keys** (anything else is a typo unless prefixed `x-`):
@@ -702,6 +795,7 @@ A monitor lands in a section when any one selector fires; within a selector the 
 - `proxies`
 - `groups`, `monitors`
 - `statusPages`
+- `alertmanager`
 - `x-*` — ignored (docker-compose-style anchor host)
 
 **Validator behavior:**

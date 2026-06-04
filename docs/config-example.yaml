@@ -157,6 +157,12 @@ slack:
     - slug: ops-summary
       channelId: C0789EFGH                          # #monitor-summary
       tokenEnv: SLACK_BOT_TOKEN
+    - slug: ops-critical
+      channelId: C0ABC1234                          # #ops-critical (Alertmanager critical-severity)
+      tokenEnv: SLACK_BOT_TOKEN
+    - slug: ops-staging
+      channelId: C0DEF5678                          # #ops-staging  (staging Alertmanager)
+      tokenEnv: SLACK_BOT_TOKEN
   userMapping:
     alice: U01ABCDEF12                              # @alice
     ops-team: S02ABCDEF34                           # @ops-team (subteam)
@@ -266,6 +272,56 @@ smtpMonitors:
     sslAlertThreshold: 14d
     sslEscalationThreshold: 3d
     sslReminderInterval: 24h
+
+# ── Alertmanager webhook receiver ─────────────────────────────────────────────
+# First-class receiver for Prometheus Alertmanager webhooks; replaces
+# the PagerDuty pipe for k8s alerts. `match:` mirrors `kube.match`
+# (cascade, !override, final, ignore — see ADR-0002 for the grammar).
+# AM alerts are persisted per-fingerprint to `am_alerts` and posted to
+# Slack; they don't participate in the monitor state machine.
+#
+# Full reference: docs/config-schema.md §5c and
+# docs/adr/0005-alertmanager-webhook-receiver.md.
+alertmanager:
+  endpoint:
+    path: /webhooks/alertmanager                       # one segment under the hardcoded /webhooks/ prefix
+    tokenEnv: ALERTMANAGER_WEBHOOK_TOKEN               # Bearer token; env-resolved like every other secret
+  retentionDays: 180                                   # daily sweeper purges resolved incidents older than this
+  rateLimit:
+    perChannel: 10                                     # flood threshold per Slack channel
+    window: 30m                                        # sliding-window size
+    noticeEvery: 1d                                    # min interval between flood-notice messages
+  match:
+    # ── Root rule (REQUIRED) ───────────────────────────────────────
+    # Empty `when:` matches every alert. Must set `config.slack`
+    # (every fingerprint inherits it). `notify` cascades by union.
+    - when: {}
+      config:
+        slack: ops-alerts
+        notify: [ops-team]
+
+    # ── Watchdog: ignore Prometheus's keep-alive rule ──────────────
+    # `final: true` prevents any later rule (e.g., a catch-all
+    # critical-severity branch) from un-ignoring it.
+    - when: { alertname: "Watchdog" }
+      ignore: true
+      final: true
+
+    # ── Critical severity → louder channel ─────────────────────────
+    # `severity` is a glob value inside the per-key twin convention.
+    - when:
+        labels: { severity: "critical" }
+      config:
+        slack: ops-critical
+        notify: !override [ops-team, "<!channel>"]     # replace inherited notify; broadcast on critical
+
+    # ── Multi-Alertmanager via externalURL ─────────────────────────
+    # Same endpoint, multiple AMs: discriminate by the payload
+    # envelope's `externalURL` and route the staging AM elsewhere.
+    - when:
+        externalURL: "https://am.staging.example.test"
+      config:
+        slack: ops-staging
 
 # ── Status pages ──────────────────────────────────────────────────────────────
 # StatusPage is the sole collection entity since ADR-0003. Each entry
