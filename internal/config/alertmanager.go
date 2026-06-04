@@ -25,10 +25,12 @@ const (
 	DefaultAlertmanagerRateLimitNoticeEvery = 24 * time.Hour
 )
 
-// labelRegexSuffix is the per-key twin convention's regex marker:
+// LabelRegexSuffix is the per-key twin convention's regex marker:
 // a label-selector key suffixed `Regex` selects via Go regexp on the
-// base key. See ADR-0005 §"Match tree".
-const labelRegexSuffix = "Regex"
+// base key. See ADR-0005 §"Match tree". Exported so the cascade
+// evaluator (internal/alertmanager) can share the same source of
+// truth instead of duplicating the literal.
+const LabelRegexSuffix = "Regex"
 
 // AlertmanagerConfig is the optional top-level block that turns on
 // the Alertmanager webhook receiver (ADR-0005). When nil, the
@@ -270,8 +272,8 @@ func (c *checker) validateAlertmanagerWhen(w *AlertmanagerMatchWhen, base []any)
 	baseKeys := map[string]bool{}
 	regexKeys := map[string]bool{}
 	for k := range w.Labels {
-		if strings.HasSuffix(k, labelRegexSuffix) && k != labelRegexSuffix {
-			regexKeys[strings.TrimSuffix(k, labelRegexSuffix)] = true
+		if strings.HasSuffix(k, LabelRegexSuffix) && k != LabelRegexSuffix {
+			regexKeys[strings.TrimSuffix(k, LabelRegexSuffix)] = true
 		} else {
 			baseKeys[k] = true
 		}
@@ -280,14 +282,14 @@ func (c *checker) validateAlertmanagerWhen(w *AlertmanagerMatchWhen, base []any)
 		if regexKeys[bk] {
 			c.errf(append(append([]any{}, base...), "labels"),
 				"label key %q is set as both glob (%q) and regex (%q) — pick one",
-				bk, bk, bk+labelRegexSuffix)
+				bk, bk, bk+LabelRegexSuffix)
 		}
 	}
 	for k, v := range w.Labels {
-		isRegex := strings.HasSuffix(k, labelRegexSuffix) && k != labelRegexSuffix
+		isRegex := strings.HasSuffix(k, LabelRegexSuffix) && k != LabelRegexSuffix
 		validatedKey := k
 		if isRegex {
-			validatedKey = strings.TrimSuffix(k, labelRegexSuffix)
+			validatedKey = strings.TrimSuffix(k, LabelRegexSuffix)
 		}
 		if errs := validation.IsQualifiedName(validatedKey); len(errs) > 0 {
 			c.errf(append(append([]any{}, base...), "labels", k),
