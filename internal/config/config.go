@@ -36,20 +36,21 @@ var colorHexPattern = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 // Config is the typed, validated representation of the toggle-monitor
 // YAML config.
 type Config struct {
-	DisplayTimezone string        `yaml:"displayTimezone"`
-	PublicBaseURL   string        `yaml:"publicBaseURL,omitempty"`
-	DBBodyMaxChars  int           `yaml:"dbBodyMaxChars"`
-	Database        Database      `yaml:"database"`
-	UI              UI            `yaml:"ui"`
-	HTTPClient      HTTPClient    `yaml:"httpClient"`
-	Heartbeat       *Heartbeat    `yaml:"heartbeat,omitempty"` // optional; nil disables the deadman loop
-	Kube            *Kube         `yaml:"kube,omitempty"`      // optional; nil disables auto-discovery
-	Sentry          *Sentry       `yaml:"sentry,omitempty"`    // optional; nil disables Sentry forwarding
-	Slack           Slack         `yaml:"slack"`
-	Proxies         []Proxy       `yaml:"proxies,omitempty"`
-	Monitors        []Monitor     `yaml:"monitors"`
-	SMTPMonitors    []SMTPMonitor `yaml:"smtpMonitors,omitempty"` // optional; static-only SMTP probes
-	StatusPages     []StatusPage  `yaml:"statusPages,omitempty"`  // optional; empty → /status renders empty listing
+	DisplayTimezone string              `yaml:"displayTimezone"`
+	PublicBaseURL   string              `yaml:"publicBaseURL,omitempty"`
+	DBBodyMaxChars  int                 `yaml:"dbBodyMaxChars"`
+	Database        Database            `yaml:"database"`
+	UI              UI                  `yaml:"ui"`
+	HTTPClient      HTTPClient          `yaml:"httpClient"`
+	Heartbeat       *Heartbeat          `yaml:"heartbeat,omitempty"` // optional; nil disables the deadman loop
+	Kube            *Kube               `yaml:"kube,omitempty"`      // optional; nil disables auto-discovery
+	Sentry          *Sentry             `yaml:"sentry,omitempty"`    // optional; nil disables Sentry forwarding
+	Slack           Slack               `yaml:"slack"`
+	Alertmanager    *AlertmanagerConfig `yaml:"alertmanager,omitempty"` // optional; nil disables the AM webhook receiver (ADR-0005)
+	Proxies         []Proxy             `yaml:"proxies,omitempty"`
+	Monitors        []Monitor           `yaml:"monitors"`
+	SMTPMonitors    []SMTPMonitor       `yaml:"smtpMonitors,omitempty"` // optional; static-only SMTP probes
+	StatusPages     []StatusPage        `yaml:"statusPages,omitempty"`  // optional; empty → /status renders empty listing
 }
 
 // Proxy is one outbound proxy that monitors can route their probes
@@ -788,6 +789,7 @@ func Load(data []byte) (Config, error) {
 	if err := root.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("parse yaml: %w", err)
 	}
+	applyAlertmanagerDefaults(&cfg)
 	c := &checker{root: &root}
 	c.validate(&cfg)
 	if err := c.err(); err != nil {
@@ -963,6 +965,11 @@ func (c *checker) validate(cfg *Config) {
 	// slack channel / proxy / userMapping sets, so this runs after
 	// those have been populated above.
 	c.validateKube(cfg, seenSlackChannels, seenProxies)
+
+	// alertmanager.* — see ADR-0005. Slug references inside config
+	// blocks need the slack channel set; userMapping is consumed from
+	// cfg.Slack.UserMapping directly inside the validator.
+	c.validateAlertmanager(cfg, seenSlackChannels)
 
 	// Monitor validation.
 	seenMonitors := map[string]struct{}{}
