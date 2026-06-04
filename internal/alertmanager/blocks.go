@@ -104,6 +104,45 @@ func BuildAMLateResolve(in AMResolveInput) slack.Message {
 	return BuildAMResolveEdit(in)
 }
 
+// AMThrottleNoticeInput carries the per-channel state the throttle
+// notice renders. ChannelSlug is operator-visible (it appears in the
+// rendered message) so they can connect the warning to the AM-side
+// route group_by that's likely overproducing alerts.
+type AMThrottleNoticeInput struct {
+	ChannelSlug string        // human-readable channel handle
+	Dropped     int           // count of drops accumulated since the previous notice
+	PerChannel  int           // operator-configured per-window limit
+	Window      time.Duration // operator-configured window
+}
+
+// BuildAMThrottleNotice renders the "AM throttle engaged" warning the
+// handler posts the first time a channel trips the sliding-window
+// limiter, and again every noticeEvery while the channel stays engaged.
+// It's a plain Slack section block, no attachment / no buttons — the
+// goal is a single dim line that operators can spot without it
+// pretending to be its own alert.
+func BuildAMThrottleNotice(in AMThrottleNoticeInput) slack.Message {
+	msg := fmt.Sprintf(
+		":warning: Alertmanager throttle engaged in `#%s` — dropped %d alert%s "+
+			"(limit: %d per %s). Likely misconfigured upstream — check your AM `group_by`.",
+		in.ChannelSlug,
+		in.Dropped,
+		plural(in.Dropped),
+		in.PerChannel,
+		in.Window,
+	)
+	return slack.Message{
+		Blocks: []slack.Block{sectionBlock(msg)},
+	}
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
 // -- internals --------------------------------------------------------
 
 // severityEmoji picks the lead emoji from labels["severity"]. Unknown

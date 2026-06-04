@@ -25,6 +25,13 @@ func TestMetrics_exposesAllDocumentedSeries(t *testing.T) {
 	m.SlackRetry("recovered", "dns")
 	m.SlackFreshParent("uptime")
 	m.IngressReconcileTotal.WithLabelValues("added").Inc()
+	m.AMWebhookRequest("success", "ok")
+	m.AMAlertProcessed("success", "ok")
+	m.AMSlackPost("success", "ok")
+	m.AMRateLimitDrop("ops-critical")
+	m.AMLateResolve()
+	m.AMWebhookLatency(0.123)
+	m.AMBatchSize(3)
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/metrics", nil)
@@ -44,6 +51,13 @@ func TestMetrics_exposesAllDocumentedSeries(t *testing.T) {
 		"toggle_monitor_slack_fresh_parent_total",
 		"toggle_monitor_ingress_reconcile_total",
 		"toggle_monitor_worker_last_tick_seconds",
+		"toggle_monitor_am_webhook_request_total",
+		"toggle_monitor_am_alert_processed_total",
+		"toggle_monitor_am_slack_post_total",
+		"toggle_monitor_am_rate_limit_drop_total",
+		"toggle_monitor_am_late_resolve_total",
+		"toggle_monitor_am_webhook_latency_seconds",
+		"toggle_monitor_am_batch_size",
 		"go_goroutines",             // Go runtime collector
 		"process_cpu_seconds_total", // process collector
 	} {

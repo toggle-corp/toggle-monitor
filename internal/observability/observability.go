@@ -35,6 +35,17 @@ type Metrics struct {
 	IngressReconcileTotal *prometheus.CounterVec
 	WorkerLastTickSeconds prometheus.Gauge
 
+	// AM-scoped counters (ADR-0005). Kept distinct from SlackPostTotal
+	// so dashboards can separate AM-driven volume from monitor-driven
+	// volume even though both ultimately hit the same Slack channel.
+	AMWebhookRequestTotal *prometheus.CounterVec
+	AMAlertProcessedTotal *prometheus.CounterVec
+	AMSlackPostTotal      *prometheus.CounterVec
+	AMRateLimitDropTotal  *prometheus.CounterVec
+	AMLateResolveTotal       prometheus.Counter
+	AMWebhookLatencySeconds  prometheus.Histogram
+	AMBatchSizeHist          prometheus.Histogram
+
 	lastTickUnix atomic.Int64
 }
 
@@ -87,6 +98,43 @@ func New() *Metrics {
 			Name: "toggle_monitor_worker_last_tick_seconds",
 			Help: "Unix time of the most recent check completion (success or failure).",
 		}),
+		AMWebhookRequestTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "toggle_monitor_am_webhook_request_total",
+			Help: "Alertmanager webhook deliveries, partitioned by result " +
+				"(success/fail) and reason (ok/auth/method/too_large/malformed/" +
+				"partial_failure).",
+		}, []string{"result", "reason"}),
+		AMAlertProcessedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "toggle_monitor_am_alert_processed_total",
+			Help: "Per-alert outcomes inside an AM batch, partitioned by result " +
+				"(success/drop/fail) and reason (ok/ignored/duplicate/rate_limited/" +
+				"channel_unknown/slack_post/db_insert/db_resolve).",
+		}, []string{"result", "reason"}),
+		AMSlackPostTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "toggle_monitor_am_slack_post_total",
+			Help: "Slack postMessage / chat.update calls fired by the AM " +
+				"handler. Separate counter from the monitor-side slack_post_total " +
+				"so dashboards can disaggregate volumes.",
+		}, []string{"result", "reason"}),
+		AMRateLimitDropTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "toggle_monitor_am_rate_limit_drop_total",
+			Help: "AM alerts dropped by the per-channel sliding-window flood " +
+				"detector. The channel label is the configured slack slug.",
+		}, []string{"channel"}),
+		AMLateResolveTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "toggle_monitor_am_late_resolve_total",
+			Help: "AM resolves received without any prior firing record on file.",
+		}),
+		AMWebhookLatencySeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "toggle_monitor_am_webhook_latency_seconds",
+			Help:    "End-to-end wall-clock time for one AM webhook delivery.",
+			Buckets: prometheus.DefBuckets,
+		}),
+		AMBatchSizeHist: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "toggle_monitor_am_batch_size",
+			Help:    "Size of the alerts[] array in each AM webhook delivery.",
+			Buckets: []float64{1, 2, 5, 10, 25, 50, 100, 250},
+		}),
 	}
 
 	reg.MustRegister(
@@ -99,6 +147,13 @@ func New() *Metrics {
 		m.SlackFreshParentTotal,
 		m.IngressReconcileTotal,
 		m.WorkerLastTickSeconds,
+		m.AMWebhookRequestTotal,
+		m.AMAlertProcessedTotal,
+		m.AMSlackPostTotal,
+		m.AMRateLimitDropTotal,
+		m.AMLateResolveTotal,
+		m.AMWebhookLatencySeconds,
+		m.AMBatchSizeHist,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -165,4 +220,46 @@ func (m *Metrics) SlackRetry(outcome, code string) {
 // Implements the slack.NotifierObserver interface.
 func (m *Metrics) SlackFreshParent(kind string) {
 	m.SlackFreshParentTotal.WithLabelValues(kind).Inc()
+}
+
+// AMWebhookRequest, AMAlertProcessed, AMSlackPost, AMRateLimitDrop,
+// AMLateResolve, AMWebhookLatency, AMBatchSize implement the
+// alertmanager.Observer interface (defined in internal/alertmanager so
+// the AM handler stays observability-agnostic). Method names are
+// suggestive of the underlying series; semantics mirror the existing
+// monitor-side counters.
+
+// AMWebhookRequest increments toggle_monitor_am_webhook_request_total.
+func (m *Metrics) AMWebhookRequest(result, reason string) {
+	m.AMWebhookRequestTotal.WithLabelValues(result, reason).Inc()
+}
+
+// AMAlertProcessed increments toggle_monitor_am_alert_processed_total.
+func (m *Metrics) AMAlertProcessed(result, reason string) {
+	m.AMAlertProcessedTotal.WithLabelValues(result, reason).Inc()
+}
+
+// AMSlackPost increments toggle_monitor_am_slack_post_total.
+func (m *Metrics) AMSlackPost(result, reason string) {
+	m.AMSlackPostTotal.WithLabelValues(result, reason).Inc()
+}
+
+// AMRateLimitDrop increments toggle_monitor_am_rate_limit_drop_total.
+func (m *Metrics) AMRateLimitDrop(channel string) {
+	m.AMRateLimitDropTotal.WithLabelValues(channel).Inc()
+}
+
+// AMLateResolve increments toggle_monitor_am_late_resolve_total.
+func (m *Metrics) AMLateResolve() {
+	m.AMLateResolveTotal.Inc()
+}
+
+// AMWebhookLatency observes one wall-clock latency sample.
+func (m *Metrics) AMWebhookLatency(seconds float64) {
+	m.AMWebhookLatencySeconds.Observe(seconds)
+}
+
+// AMBatchSize observes the size of one AM batch (len(webhook.Alerts)).
+func (m *Metrics) AMBatchSize(n int) {
+	m.AMBatchSizeHist.Observe(float64(n))
 }
