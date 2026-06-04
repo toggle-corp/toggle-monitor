@@ -351,6 +351,30 @@ func (r *Repo) ListAMIncidentsByFingerprint(ctx context.Context, fingerprint str
 	return out, rows.Err()
 }
 
+// GetLatestAMEventPayload returns the raw_payload JSONB blob of the
+// most recent am_alert_events row for the given incident, or
+// (nil, pgx.ErrNoRows) when the incident exists but has recorded no
+// events. The detail page renders this verbatim (after a pretty-print
+// pass) inside its <details>Raw payload</details> section so operators
+// can see exactly what AM sent.
+func (r *Repo) GetLatestAMEventPayload(ctx context.Context, incidentID int64) ([]byte, error) {
+	var payload []byte
+	err := r.pool.QueryRow(ctx, `
+		SELECT raw_payload
+		FROM am_alert_events
+		WHERE incident_id = $1
+		ORDER BY received_at DESC, id DESC
+		LIMIT 1
+	`, incidentID).Scan(&payload)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, pgx.ErrNoRows
+		}
+		return nil, fmt.Errorf("get latest am_alert_events payload: %w", err)
+	}
+	return payload, nil
+}
+
 // SweepAMResolved deletes every resolved incident whose ended_at is
 // older than the cutoff. The am_alert_events foreign key's ON DELETE
 // CASCADE clears the event trail in the same transaction. Active

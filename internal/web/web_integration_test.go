@@ -318,7 +318,7 @@ func TestDiscoveryListing_namespaceAndStatusFilter(t *testing.T) {
 		{Namespace: "test-2", IngressName: "api", Host: "t2.example.com", Status: "kube-ignored", Reason: reason("ignored (via match[0]: namespace=test-*)")},
 		{Namespace: "review", IngressName: "api", Host: "rev.example.com", Status: "kube-invalid", Reason: reason("no preset annotation")},
 	} {
-		if err := repo.UpsertDiscoverySnapshot(ctx, row); err != nil {
+		if _, err := repo.UpsertDiscoverySnapshot(ctx, row); err != nil {
 			t.Fatalf("upsert: %v", err)
 		}
 	}
@@ -353,7 +353,7 @@ func TestNav_issueBadgeAndStatusLink(t *testing.T) {
 	ctx := context.Background()
 	// Insert a kube-invalid row → issueCount becomes 1, badge should render.
 	reason := "no preset annotation"
-	if err := repo.UpsertDiscoverySnapshot(ctx, store.DiscoverySnapshotRow{
+	if _, err := repo.UpsertDiscoverySnapshot(ctx, store.DiscoverySnapshotRow{
 		Namespace: "prod", IngressName: "api", Host: "api.example.com",
 		Status: "kube-invalid", Reason: &reason,
 	}); err != nil {
@@ -595,7 +595,7 @@ func TestIssuesPage_emptyAndKubeInvalid(t *testing.T) {
 
 	// Insert a kube-invalid row and verify it surfaces.
 	reason := "no preset annotation"
-	if err := repo.UpsertDiscoverySnapshot(ctx, store.DiscoverySnapshotRow{
+	if _, err := repo.UpsertDiscoverySnapshot(ctx, store.DiscoverySnapshotRow{
 		Namespace: "prod", IngressName: "api", Host: "api.example.com",
 		Status: "kube-invalid", Reason: &reason,
 	}); err != nil {

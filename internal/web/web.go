@@ -252,6 +252,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /status/{slug}", s.navWrap(s.handleStatusBySlug))
 	mux.HandleFunc("GET /discovery", s.navWrap(s.handleDiscoveryListing))
 	mux.HandleFunc("GET /discovery/{ns}/{name}/{host}", s.navWrap(s.handleDiscoveryDetail))
+	mux.HandleFunc("GET /alerts", s.navWrap(s.handleAMAlertsListing))
+	mux.HandleFunc("GET /alert/{id}", s.navWrap(s.handleAMAlertDetail))
 
 	// Externally-registered routes (e.g. the Alertmanager webhook
 	// handler wired in by lifecycle). Registered last so any future
