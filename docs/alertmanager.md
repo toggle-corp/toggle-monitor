@@ -107,8 +107,55 @@ metadata:
   namespace: monitoring          # same namespace as alertmanager
 type: Opaque
 stringData:
-  token: <random-32-char-string>
+  token: "<output of openssl rand -hex 32>"
 ```
+
+### Generating the token
+
+Use `openssl rand -hex 32` — 64 hex chars, 256 bits of entropy,
+header-safe characters that survive shell quoting, YAML, and
+Alertmanager's `credentials_file` framing without escaping. The
+validator only requires the env var to be non-empty; there is no
+length floor, but hex-256 is the conventional default for long-lived
+secrets like this one.
+
+```bash
+# 1. Generate once.
+TOKEN=$(openssl rand -hex 32)
+
+# 2. AM-side Secret (kube-prometheus-stack mounts it).
+kubectl create secret generic toggle-monitor-webhook \
+  --namespace monitoring \
+  --from-literal=token="$TOKEN" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# 3. toggle-monitor-side Secret (fed via env var).
+kubectl create secret generic toggle-monitor-am-token \
+  --namespace toggle-monitor \
+  --from-literal=token="$TOKEN" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# 4. Paranoia check — confirm both Secrets carry the same value.
+diff \
+  <(kubectl get -n monitoring secret toggle-monitor-webhook \
+      -o jsonpath='{.data.token}' | base64 -d) \
+  <(kubectl get -n toggle-monitor secret toggle-monitor-am-token \
+      -o jsonpath='{.data.token}' | base64 -d) \
+  && echo "tokens match"
+```
+
+If `openssl` is unavailable, equivalent alternatives:
+
+```bash
+head -c 32 /dev/urandom | xxd -p -c 64                       # pure unix
+python3 -c 'import secrets; print(secrets.token_hex(32))'    # python
+```
+
+Avoid `uuidgen` (only 122 bits and includes dashes), `date | md5sum`
+(predictable entropy), and base64 forms (the `+/=` characters are
+valid in `Authorization: Bearer` headers but routinely break in
+operator-edited YAML and in `kubectl create secret --from-literal`
+when the value isn't quoted exactly right).
 
 The matching toggle-monitor env var, fed from a Secret in the
 toggle-monitor namespace:
@@ -193,11 +240,12 @@ have hit.
   request never crosses the network.
 
 - **Token rotation requires restart.** The token is read once at
-  process start. Rotation = roll both Secrets, restart
-  toggle-monitor (so it re-reads the env var), restart Alertmanager
-  (so it re-reads the `credentials_file`). v1 does not support a
-  grace-period dual-token mode; that's deferred per ADR-0005's "out
-  of scope" list.
+  process start. Rotation = regenerate via `openssl rand -hex 32`
+  (see [Generating the token](#generating-the-token)), roll both
+  Secrets, restart toggle-monitor (so it re-reads the env var),
+  restart Alertmanager (so it re-reads the `credentials_file`). v1
+  does not support a grace-period dual-token mode; that's deferred
+  per ADR-0005's "out of scope" list.
 
 - **PagerDuty severity mapping does not carry over.** The `severity`
   you set in PagerDuty's `pagerduty_configs` mapped to PD's incident
