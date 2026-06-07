@@ -53,11 +53,32 @@ func BuildRemovedClose() []Block {
 // removed monitor's uptime thread. Green stripe + :large_green_circle:
 // header (outside the stripe), with a "Resolved: monitor removed"
 // detail line (no timestamp — the removal isn't a real recovery
-// moment).
+// moment). This path keeps the legacy attachment-wrapped labeled-row
+// shape; ADR-0006 scopes only the live parent renderers and the
+// removal flow stays as-is until a future ADR revisits it.
 func BuildRemovedResolveEdit(in DownInput) ParentMessage {
-	blocks := buildParentBlocks(in, []detailLine{
-		{Label: "Resolved", Value: "monitor removed"},
-	}, "", time.Time{})
+	var lines []string
+	if len(in.Mentions) > 0 {
+		lines = append(lines, "*CC:* "+strings.Join(in.Mentions, " "))
+	}
+	if in.URL != "" {
+		lines = append(lines, "*Monitor URL:* "+in.URL)
+	}
+	if in.StatusCode != 0 || in.StatusText != "" {
+		lines = append(lines, fmt.Sprintf("*Reason:* `%d %s`", in.StatusCode, in.StatusText))
+	}
+	if in.LastError != "" {
+		lines = append(lines, "*Error:* `"+in.LastError+"`")
+	}
+	if len(in.Tags) > 0 {
+		lines = append(lines, "*Tags:* `"+strings.Join(in.Tags, "`, `")+"`")
+	}
+	lines = append(lines, "*Resolved:* monitor removed")
+
+	blocks := []Block{contextBlock(strings.Join(lines, "\n"))}
+	if in.DetailURL != "" {
+		blocks = append(blocks, contextBlock(fmt.Sprintf("<%s|View details>", in.DetailURL)))
+	}
 	return ParentMessage{
 		Blocks:      []Block{bigHeader(fmt.Sprintf(":large_green_circle: %s — Resolved (monitor removed)", in.FriendlyName))},
 		Attachments: []Attachment{{Color: ColorResolved, Blocks: blocks}},

@@ -22,17 +22,15 @@ type SSLDownInput struct {
 	Banner        string    // optional top-of-body banner (used for fresh-parent fallback); "" omits
 }
 
-// BuildSSLParent renders the initial ⚠️ SSL parent. Amber stripe.
-// Header sits outside the attachment so the stripe wraps only the
-// quieter body.
+// BuildSSLParent renders the initial ⚠️ SSL parent as the three-block
+// iA2 shape from ADR-0006: title carries name + days-remaining + URL;
+// body carries Issuer (and Subject when present); footer carries
+// mentions + Detected + View-details. No attachments, no header block.
 func BuildSSLParent(in SSLDownInput) ParentMessage {
+	title := fmt.Sprintf(":warning: *%s* — SSL expires in %dd (%s)  ·  <%s|%s>",
+		in.FriendlyName, in.DaysRemaining, shortDate(in.ExpiresAt), in.URL, in.URL)
 	return ParentMessage{
-		Blocks: []Block{bigHeader(fmt.Sprintf(":warning: %s — SSL expiring in %d days",
-			in.FriendlyName, in.DaysRemaining))},
-		Attachments: []Attachment{{
-			Color:  ColorSSLWarn,
-			Blocks: buildSSLParentBlocks(in, nil, "Detected", in.DetectedAt),
-		}},
+		Blocks: buildSSLParentBlocks(in, title, sslBodyText(in), "Detected", in.DetectedAt),
 	}
 }
 
@@ -57,21 +55,20 @@ type SSLResolveInput struct {
 	RenewedAt    time.Time // when renewal was observed; zero omits the footer date
 }
 
-// BuildSSLResolveEdit produces the attachments the SSL parent is
-// edited to after the cert is renewed. Green stripe, header swap, a
-// "New expiry" line appended to the body, and the footer rewrites
-// to "Renewed <date>".
+// BuildSSLResolveEdit produces the parent edit emitted when the cert
+// is renewed. Three blocks: green title with new expiry days + short
+// date, body preserves Issuer (helpful when the CA changed), footer
+// prefixed with "Renewed".
 func BuildSSLResolveEdit(in SSLResolveInput) ParentMessage {
 	days := int(time.Until(in.NewExpiresAt).Hours() / 24)
+	if days < 0 {
+		days = 0
+	}
+	title := fmt.Sprintf(":large_green_circle: *%s* — Cert renewed (%dd expiry · %s)  ·  <%s|%s>",
+		in.FriendlyName, days, shortDate(in.NewExpiresAt), in.URL, in.URL)
 	return ParentMessage{
-		Blocks: []Block{bigHeader(fmt.Sprintf(":large_green_circle: %s — Certificate renewed (in %d days expiry)",
-			in.FriendlyName, days))},
-		Attachments: []Attachment{{
-			Color: ColorResolved,
-			Blocks: buildSSLParentBlocks(in.SSLDownInput,
-				[]detailLine{{Label: "New expiry", Value: FormatDate(in.NewExpiresAt)}},
-				"Renewed", in.RenewedAt),
-		}},
+		Blocks: buildSSLParentBlocks(in.SSLDownInput, title, sslBodyText(in.SSLDownInput),
+			"Renewed", in.RenewedAt),
 	}
 }
 
@@ -82,41 +79,44 @@ func BuildSSLResolveReply(in SSLResolveInput) []Block {
 	return []Block{section(text)}
 }
 
-// buildSSLParentBlocks mirrors buildParentBlocks: a single context
-// block carrying mentions + UR-style fields, then optional footer.
-// No header — that's a top-level block outside this attachment.
-func buildSSLParentBlocks(in SSLDownInput, extra []detailLine, footerPrefix string, footerTime time.Time) []Block {
-	var blocks []Block
+// buildSSLParentBlocks composes the three-block iA2 SSL parent: title
+// section, body section (Issuer/Subject), footer context. Mirrors
+// buildParentBlocks but with SSL-specific inputs.
+func buildSSLParentBlocks(in SSLDownInput, title, body, footerPrefix string, footerTime time.Time) []Block {
+	blocks := []Block{section(title)}
 
 	if in.Banner != "" {
 		blocks = append(blocks, contextBlock(in.Banner))
 	}
-
-	var lines []string
-	if len(in.Mentions) > 0 {
-		lines = append(lines, "*CC:* "+strings.Join(in.Mentions, " "))
+	if body != "" {
+		blocks = append(blocks, section(body))
 	}
-	if in.URL != "" {
-		lines = append(lines, "*Monitor URL:* "+in.URL)
-	}
-	lines = append(lines, "*Expires:* "+FormatDate(in.ExpiresAt))
-	lines = append(lines, fmt.Sprintf("*Days remaining:* `%d`", in.DaysRemaining))
-	if in.Issuer != "" {
-		lines = append(lines, "*Issuer:* `"+in.Issuer+"`")
-	}
-	if in.Subject != "" {
-		lines = append(lines, "*Subject:* `"+in.Subject+"`")
-	}
-	if len(in.Tags) > 0 {
-		lines = append(lines, "*Tags:* `"+strings.Join(in.Tags, "`, `")+"`")
-	}
-	for _, e := range extra {
-		lines = append(lines, "*"+e.Label+":* "+e.Value)
-	}
-	blocks = append(blocks, contextBlock(strings.Join(lines, "\n")))
-
-	if footer := footerLine(footerPrefix, footerTime, in.DetailURL); footer != "" {
+	if footer := parentFooter(in.Mentions, footerPrefix, footerTime, in.DetailURL); footer != "" {
 		blocks = append(blocks, contextBlock(footer))
 	}
 	return blocks
+}
+
+// sslBodyText composes the Issuer/Subject body line(s). Issuer is the
+// primary signal; Subject folds in when present and short enough to
+// keep the body within a single readable line.
+func sslBodyText(in SSLDownInput) string {
+	var parts []string
+	if in.Issuer != "" {
+		parts = append(parts, "Issuer `"+in.Issuer+"`")
+	}
+	if in.Subject != "" {
+		parts = append(parts, "Subject `"+in.Subject+"`")
+	}
+	return strings.Join(parts, "  ·  ")
+}
+
+// shortDate renders a Slack `<!date^…>` token with a short-date format
+// only, e.g. "Jun 14". The fallback string is the UTC short date.
+func shortDate(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return fmt.Sprintf(`<!date^%d^{date_short_pretty}|%s>`,
+		t.Unix(), t.UTC().Format("Jan 2"))
 }

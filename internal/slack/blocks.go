@@ -53,11 +53,6 @@ type ReminderInput struct {
 	LastError     string
 }
 
-// detailLine is one "*Label:* value" row appended to the parent body.
-type detailLine struct {
-	Label, Value string
-}
-
 // ParentMessage is what the parent-message builders return. The
 // header rides on the top-level Blocks (no color stripe) so it stays
 // at full prominence; Attachments carries the colored stripe wrapping
@@ -76,33 +71,28 @@ type ParentMessage struct {
 type Message = ParentMessage
 
 // BuildDownParent renders the initial 🔴 parent for an uptime
-// incident. The header sits outside the color attachment so the red
-// stripe wraps only the smaller body lines.
+// incident as the three-block iA2 shape from ADR-0006: title section,
+// body section (inline-coded error), footer context. No attachments,
+// no header block.
 func BuildDownParent(in DownInput) ParentMessage {
+	title := fmt.Sprintf(":red_circle: *%s is DOWN*  ·  <%s|%s>",
+		in.FriendlyName, in.URL, in.URL)
 	return ParentMessage{
-		Blocks: []Block{bigHeader(":red_circle: " + in.FriendlyName + " is DOWN")},
-		Attachments: []Attachment{{
-			Color:  ColorDown,
-			Blocks: buildParentBlocks(in, nil, "Detected", in.FailureAt),
-		}},
+		Blocks: buildParentBlocks(in, title, downBodyText(in), "Detected", in.FailureAt),
 	}
 }
 
-// BuildResolveEdit renders the attachments the parent should be
-// edited to when the monitor recovers. The header swaps to
-// :large_green_circle:, the color stripe swaps to green, a Duration
-// line is appended to the body, and the footer rewrites to
-// "Resolved <date>".
+// BuildResolveEdit renders the parent edit emitted when the monitor
+// recovers. Three blocks: green title with "(down around N)" suffix,
+// the original body kept as a record of what was, footer prefixed
+// with "Resolved". The phrasing is "down around" — never "was down for"
+// — because the check interval is the resolution limit.
 func BuildResolveEdit(in ResolveInput) ParentMessage {
+	title := fmt.Sprintf(":large_green_circle: *%s is UP*  (down around %s)  ·  <%s|%s>",
+		in.FriendlyName, formatDowntime(in.Downtime), in.URL, in.URL)
 	return ParentMessage{
-		Blocks: []Block{bigHeader(fmt.Sprintf(":large_green_circle: %s is UP (was down for %s)",
-			in.FriendlyName, formatDowntime(in.Downtime)))},
-		Attachments: []Attachment{{
-			Color: ColorResolved,
-			Blocks: buildParentBlocks(in.DownInput,
-				[]detailLine{{Label: "Duration", Value: "`" + formatDowntime(in.Downtime) + "`"}},
-				"Resolved", in.ResolveAt),
-		}},
+		Blocks: buildParentBlocks(in.DownInput, title, downBodyText(in.DownInput),
+			"Resolved", in.ResolveAt),
 	}
 }
 
@@ -129,74 +119,76 @@ func BuildResolveReply(in ResolveInput) []Block {
 	return []Block{section(text)}
 }
 
-// buildParentBlocks renders the colored half of the parent message:
-// a single context block with the mentions + UR-style fields (no
-// header — that's a top-level block outside the attachment), an
-// optional response body, the cascading-effect note, and the
-// timestamp footer.
+// buildParentBlocks composes the three-block iA2 parent shape from
+// ADR-0006: title section, body section (inline-coded error or fenced
+// response body), footer context. Optional banner sits above the body;
+// optional cascade-effect note sits above the footer. Returns the
+// flat top-level blocks slice ready to assign to ParentMessage.Blocks.
 //
-// `extra` lines are appended to the body (used by BuildResolveEdit
-// to surface Duration). footerPrefix + footerTime drive the
-// "Detected <date>" / "Resolved <date>" line; either may be empty.
+// title is the full mrkdwn for the title section; body is the full
+// mrkdwn for the body section (caller pre-wraps in inline code or a
+// fenced block). An empty body string omits the body block entirely
+// (rare; defensive for callers with no status + no error).
 //
-// Mentions ride at the top of the body lines rather than in a
-// separate section. Slack still fires notifications from mrkdwn in
-// context blocks as long as the markup is the canonical `<!here>` /
-// `<@U…>` form (which our ResolveMentions helper guarantees).
-func buildParentBlocks(in DownInput, extra []detailLine, footerPrefix string, footerTime time.Time) []Block {
-	var blocks []Block
+// footerPrefix is "Detected" / "Resolved" / "Renewed"; footerTime is
+// the moment to render. Either being zero drops the timestamp half.
+func buildParentBlocks(in DownInput, title, body, footerPrefix string, footerTime time.Time) []Block {
+	blocks := []Block{section(title)}
 
-	// Optional late-notice banner sits at the very top so operators
-	// notice it before scanning the regular body. Used by the
-	// fresh-parent fallback when an initial Open failed to deliver.
 	if in.Banner != "" {
 		blocks = append(blocks, contextBlock(in.Banner))
 	}
 
-	// Body in a context block: smaller + dimmer than a section.
-	// Mentions sit at the very top, prefixed with "*CC:*" so the row
-	// reads as a labeled field consistent with the rest of the body.
-	var lines []string
-	if len(in.Mentions) > 0 {
-		lines = append(lines, "*CC:* "+strings.Join(in.Mentions, " "))
-	}
-	if in.URL != "" {
-		lines = append(lines, "*Monitor URL:* "+in.URL)
-	}
-	if in.StatusCode != 0 || in.StatusText != "" {
-		lines = append(lines, fmt.Sprintf("*Reason:* `%d %s`", in.StatusCode, in.StatusText))
-	}
-	if in.LastError != "" {
-		lines = append(lines, "*Error:* `"+in.LastError+"`")
-	}
-	if len(in.Tags) > 0 {
-		lines = append(lines, "*Tags:* `"+strings.Join(in.Tags, "`, `")+"`")
-	}
-	for _, e := range extra {
-		lines = append(lines, "*"+e.Label+":* "+e.Value)
-	}
-	if len(lines) > 0 {
-		blocks = append(blocks, contextBlock(strings.Join(lines, "\n")))
-	}
-
-	// Optional inline response body.
-	if in.ResponseBody != "" && len(in.ResponseBody) <= in.BodyMaxChars {
+	// Body block: either the caller-supplied inline-code error, or a
+	// fenced response body, or nothing if neither is present.
+	if in.ResponseBody != "" && in.BodyMaxChars > 0 && len(in.ResponseBody) <= in.BodyMaxChars {
 		blocks = append(blocks, section("```\n"+in.ResponseBody+"\n```"))
+	} else if body != "" {
+		blocks = append(blocks, section(body))
 	}
 
-	// Small dim note (e.g. "⏸ Pauses dependents: `a`, `b`"). Rendered
-	// just above the footer so cascading-effect context sits close to
-	// the timestamp.
 	if in.Note != "" {
 		blocks = append(blocks, contextBlock(in.Note))
 	}
 
-	// Footer: timestamp + View details link.
-	if footer := footerLine(footerPrefix, footerTime, in.DetailURL); footer != "" {
+	if footer := parentFooter(in.Mentions, footerPrefix, footerTime, in.DetailURL); footer != "" {
 		blocks = append(blocks, contextBlock(footer))
 	}
-
 	return blocks
+}
+
+// downBodyText returns the inline-coded body mrkdwn for a monitor
+// DOWN / resolve edit: the HTTP status when StatusCode != 0,
+// otherwise the transport-level LastError. Empty when both are zero
+// (caller will skip the body block).
+func downBodyText(in DownInput) string {
+	if in.StatusCode != 0 {
+		return fmt.Sprintf("`%d %s`", in.StatusCode, strings.TrimSpace(in.StatusText))
+	}
+	if in.LastError != "" {
+		return "`" + in.LastError + "`"
+	}
+	return ""
+}
+
+// parentFooter assembles the footer mrkdwn:
+//
+//	<mentions>  ·  _<prefix> <date>_  ·  <DetailURL|View details>
+//
+// Any segment whose input is empty is omitted; an entirely empty
+// footer returns "" so the caller can skip the block.
+func parentFooter(mentions []string, prefix string, t time.Time, detailURL string) string {
+	var parts []string
+	if len(mentions) > 0 {
+		parts = append(parts, strings.Join(mentions, " "))
+	}
+	if prefix != "" && !t.IsZero() {
+		parts = append(parts, fmt.Sprintf("_%s %s_", prefix, FormatDate(t)))
+	}
+	if detailURL != "" {
+		parts = append(parts, fmt.Sprintf("<%s|View details>", detailURL))
+	}
+	return strings.Join(parts, "  ·  ")
 }
 
 // footerLine assembles the parent footer mrkdwn:

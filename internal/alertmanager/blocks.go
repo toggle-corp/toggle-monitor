@@ -17,11 +17,11 @@ const DefaultBodyMaxChars = 1500
 // lateResolveBanner is the default banner rendered atop a standalone
 // resolve message when the receiver has no record of the alert ever
 // firing. Mirrors the freshParentBanner convention in the probe path.
-const lateResolveBanner = "ℹ️ This alert resolved without an open incident on file — possibly a process restart or first-time delivery of a stale resolve."
+const lateResolveBanner = "ℹ️ Resolved without an open incident on file — possibly a process restart or first-time delivery of a stale resolve."
 
 // keyLabelOrder defines the canonical, bounded set of labels surfaced
-// in the Slack header chip. The full label set lives on the detail
-// page; here we cap display cardinality at three so the header stays
+// in the title chip row. The full label set lives on the detail page;
+// here we cap display cardinality at three so the title stays
 // scannable. Order is stable across renders.
 var keyLabelOrder = []string{"namespace", "instance", "service", "job", "cluster", "pod"}
 
@@ -31,7 +31,7 @@ const maxKeyLabels = 3
 type AMOpenInput struct {
 	Alert        Alert    // the AM Alert object
 	Mentions     []string // pre-resolved Slack markup (`<!here>`, `<@U…>`)
-	DetailURL    string   // toggle-monitor /alert/{id} link; empty → omit button
+	DetailURL    string   // toggle-monitor /alert/{id} link; empty → omit View-details
 	BodyMaxChars int      // hard cap on summary length; 0 → DefaultBodyMaxChars
 	Receiver     string   // payload envelope field, displayed in footer
 	ExternalURL  string   // payload envelope field, displayed in footer (host only)
@@ -39,7 +39,7 @@ type AMOpenInput struct {
 
 // AMResolveInput carries everything the resolve-edit and resolve-reply
 // renderers need. Embeds AMOpenInput so the resolve banner can re-render
-// the original header + body inline.
+// the original title + body inline.
 type AMResolveInput struct {
 	AMOpenInput
 	ResolvedAt time.Time
@@ -47,40 +47,32 @@ type AMResolveInput struct {
 	Banner     string // optional late-resolve banner; "" for normal resolve-edit
 }
 
-// BuildAMOpen builds the parent message for a firing AM alert.
-//
-// Header:   severity emoji + alertname + [severity] chip + key labels
-// CC line:  pre-resolved mention markup (operator notifications)
-// Body:     annotations["summary"] (truncated at BodyMaxChars when set)
-// Actions:  "View details →" (DetailURL) + "Runbook →" (runbook_url)
-// Footer:   Receiver · Via <ExternalURL host> · Firing since <relative>
+// BuildAMOpen builds the parent message for a firing AM alert using
+// the three-block iA2 shape from ADR-0006: title section (emoji +
+// alertname + severity chip + key=`value` chips), body section
+// (annotations.summary), footer context (mentions + Receiver + Via +
+// Firing-ago + View-details + Runbook as inline mrkdwn links). No
+// attachments, no header block, no actions block.
 func BuildAMOpen(in AMOpenInput) slack.Message {
+	title := amTitle(in, severityEmoji(in.Alert), "")
+	footer := amFooter(in, "" /*resolveStamp*/)
 	return slack.Message{
-		Blocks: []slack.Block{headerBlock(in, severityEmoji(in.Alert), "")},
-		Attachments: []slack.Attachment{{
-			Color:  amColor(in.Alert),
-			Blocks: amBodyBlocks(in, "" /*banner*/, nil /*extraFooter*/),
-		}},
+		Blocks: amBlocks(title, "" /*banner*/, bodyText(in), footer),
 	}
 }
 
 // BuildAMResolveEdit edits the parent in place when the alert resolves.
-// Same header layout but the severity emoji swaps to ✅, a "· Resolved"
-// suffix is appended, and a resolved-at + downtime line is appended to
-// the footer. Body, action row, and original footer remain so the
-// message stays coherent if viewed standalone.
+// The emoji swaps to ✅ and a `_Resolved_` suffix is appended to the
+// title; the footer replaces the "Firing N ago" stamp with a
+// "Resolved <date> · down around N" stamp.
 func BuildAMResolveEdit(in AMResolveInput) slack.Message {
-	extraFooter := []string{
-		fmt.Sprintf("Resolved at %s · Downtime %s",
-			slack.FormatDate(in.ResolvedAt),
-			formatDowntime(in.Downtime)),
-	}
+	title := amTitle(in.AMOpenInput, "✅", "  ·  _Resolved_")
+	stamp := fmt.Sprintf("_Resolved %s · down around %s_",
+		slack.FormatDate(in.ResolvedAt),
+		formatDowntime(in.Downtime))
+	footer := amFooter(in.AMOpenInput, stamp)
 	return slack.Message{
-		Blocks: []slack.Block{headerBlock(in.AMOpenInput, "✅", "· Resolved")},
-		Attachments: []slack.Attachment{{
-			Color:  slack.ColorResolved,
-			Blocks: amBodyBlocks(in.AMOpenInput, in.Banner, extraFooter),
-		}},
+		Blocks: amBlocks(title, in.Banner, bodyText(in.AMOpenInput), footer),
 	}
 }
 
@@ -93,10 +85,9 @@ func BuildAMResolveReply(in AMResolveInput) []slack.Block {
 }
 
 // BuildAMLateResolve renders a standalone resolve message for a
-// fingerprint we never saw open (no parent on file). Mirrors
-// BuildAMResolveEdit but with a "this alert resolved without an open
-// incident" banner. Caller may override Banner; empty falls back to
-// the package default.
+// fingerprint we never saw open (no parent on file). Same shape as
+// BuildAMResolveEdit but with the late-resolve banner inserted as a
+// context block between title and body.
 func BuildAMLateResolve(in AMResolveInput) slack.Message {
 	if in.Banner == "" {
 		in.Banner = lateResolveBanner
@@ -105,9 +96,7 @@ func BuildAMLateResolve(in AMResolveInput) slack.Message {
 }
 
 // AMThrottleNoticeInput carries the per-channel state the throttle
-// notice renders. ChannelSlug is operator-visible (it appears in the
-// rendered message) so they can connect the warning to the AM-side
-// route group_by that's likely overproducing alerts.
+// notice renders.
 type AMThrottleNoticeInput struct {
 	ChannelSlug string        // human-readable channel handle
 	Dropped     int           // count of drops accumulated since the previous notice
@@ -116,11 +105,9 @@ type AMThrottleNoticeInput struct {
 }
 
 // BuildAMThrottleNotice renders the "AM throttle engaged" warning the
-// handler posts the first time a channel trips the sliding-window
-// limiter, and again every noticeEvery while the channel stays engaged.
-// It's a plain Slack section block, no attachment / no buttons — the
-// goal is a single dim line that operators can spot without it
-// pretending to be its own alert.
+// handler posts when a channel trips the sliding-window limiter. A
+// single section block, no footer / no buttons — operators should
+// spot it without it pretending to be its own alert.
 func BuildAMThrottleNotice(in AMThrottleNoticeInput) slack.Message {
 	msg := fmt.Sprintf(
 		":warning: Alertmanager throttle engaged in `#%s` — dropped %d alert%s "+
@@ -160,56 +147,34 @@ func severityEmoji(a Alert) string {
 	}
 }
 
-// amColor picks the attachment stripe color based on severity. We
-// reuse the monitor palette so probe + AM messages read as kindred.
-func amColor(a Alert) string {
-	switch a.Labels["severity"] {
-	case "warning", "info":
-		return slack.ColorSSLWarn // amber
-	default:
-		return slack.ColorDown // red (critical + unknown)
-	}
-}
-
-// headerBlock renders the Slack header line:
+// amTitle renders the title-section mrkdwn:
 //
-//	<emoji>  <alertname> [<severity>]  ·  <key=v>  <key=v>  <key=v>  <suffix>
+//	<emoji> *<alertname>*  `<severity>`  ·  <k>=`<v>`  ·  <k>=`<v>`  <suffix>
 //
-// suffix is appended verbatim (e.g. "· Resolved" for the edit variant).
-func headerBlock(in AMOpenInput, emoji, suffix string) slack.Block {
-	parts := []string{emoji}
-
+// severity chip is omitted when the label is absent. suffix is
+// appended verbatim (e.g. " · _Resolved_" for the resolve variant).
+func amTitle(in AMOpenInput, emoji, suffix string) string {
 	name := in.Alert.Labels["alertname"]
 	if name == "" {
 		name = "(unnamed alert)"
 	}
+	var parts []string
+	parts = append(parts, fmt.Sprintf("%s *%s*", emoji, name))
 	if sev := in.Alert.Labels["severity"]; sev != "" {
-		parts = append(parts, fmt.Sprintf(" %s [%s]", name, sev))
-	} else {
-		parts = append(parts, " "+name)
+		parts = append(parts, "`"+sev+"`")
 	}
-
-	if chips := keyLabelChips(in.Alert.Labels); len(chips) > 0 {
-		parts = append(parts, "  ·  "+strings.Join(chips, "  "))
+	for _, chip := range keyLabelChips(in.Alert.Labels) {
+		parts = append(parts, chip)
 	}
-
+	out := strings.Join(parts, "  ·  ")
 	if suffix != "" {
-		parts = append(parts, "  "+suffix)
+		out += suffix
 	}
-
-	// plain_text + emoji:true keeps unicode emoji rendering consistent
-	// with bigHeader in internal/slack/blocks.go.
-	return slack.Block{
-		"type": "header",
-		"text": map[string]any{
-			"type":  "plain_text",
-			"text":  strings.Join(parts, ""),
-			"emoji": true,
-		},
-	}
+	return out
 }
 
-// keyLabelChips picks up to maxKeyLabels labels in canonical order. Stable.
+// keyLabelChips picks up to maxKeyLabels labels in canonical order and
+// returns them as `key=\`value\`` mrkdwn chips.
 func keyLabelChips(labels map[string]string) []string {
 	var chips []string
 	for _, k := range keyLabelOrder {
@@ -217,7 +182,7 @@ func keyLabelChips(labels map[string]string) []string {
 		if !ok || v == "" {
 			continue
 		}
-		chips = append(chips, fmt.Sprintf("%s=%s", k, v))
+		chips = append(chips, fmt.Sprintf("%s=`%s`", k, v))
 		if len(chips) == maxKeyLabels {
 			break
 		}
@@ -225,42 +190,20 @@ func keyLabelChips(labels map[string]string) []string {
 	return chips
 }
 
-// amBodyBlocks renders the attachment-wrapped body: mentions (CC), the
-// summary body, the action row, and the small context footer.
-//
-// banner is rendered at the very top when non-empty (resolve-edit /
-// late-resolve banners). extraFooter lines are appended as additional
-// dim context lines below the main footer (used for the resolve
-// "Resolved at … · Downtime …" stamp).
-func amBodyBlocks(in AMOpenInput, banner string, extraFooter []string) []slack.Block {
-	var blocks []slack.Block
+// amBlocks composes the AM parent's blocks-only payload: title, then
+// optional banner (between title and body), then body, then a single
+// footer context block.
+func amBlocks(title, banner, body, footer string) []slack.Block {
+	blocks := []slack.Block{sectionBlock(title)}
 
 	if banner != "" {
 		blocks = append(blocks, contextBlock(banner))
 	}
 
-	// Mentions ride at the top of the body, mirroring buildParentBlocks
-	// in internal/slack/blocks.go where "*CC:* …" is the first line.
-	if len(in.Mentions) > 0 {
-		blocks = append(blocks, contextBlock("*CC:* "+strings.Join(in.Mentions, " ")))
-	}
+	blocks = append(blocks, sectionBlock(body))
 
-	// Body: summary or italic placeholder.
-	blocks = append(blocks, sectionBlock(bodyText(in)))
-
-	// Actions row: View details + Runbook. Omit entirely when neither URL set.
-	if row := actionsRow(in); row != nil {
-		blocks = append(blocks, row)
-	}
-
-	// Footer: Receiver · Via · Firing since.
-	if footer := footerLine(in); footer != "" {
+	if footer != "" {
 		blocks = append(blocks, contextBlock(footer))
-	}
-	for _, extra := range extraFooter {
-		if extra != "" {
-			blocks = append(blocks, contextBlock(extra))
-		}
 	}
 	return blocks
 }
@@ -282,38 +225,39 @@ func bodyText(in AMOpenInput) string {
 	return summary
 }
 
-// actionsRow assembles the Slack `actions` block carrying the View
-// details + Runbook buttons. Returns nil when neither URL is set so
-// callers can skip appending the block altogether.
-func actionsRow(in AMOpenInput) slack.Block {
-	var buttons []map[string]any
-	if in.DetailURL != "" {
-		buttons = append(buttons, slack.LinkButton("View details →", in.DetailURL, "primary"))
-	}
-	if rb := in.Alert.Annotations["runbook_url"]; rb != "" {
-		buttons = append(buttons, slack.LinkButton("Runbook →", rb, ""))
-	}
-	if len(buttons) == 0 {
-		return nil
-	}
-	return slack.ActionsBlock(buttons...)
-}
-
-// footerLine renders the small context footer: Receiver · Via · Firing since.
-// Any field with a zero value is omitted; an entirely empty footer
-// returns "" so the caller can skip the block.
-func footerLine(in AMOpenInput) string {
+// amFooter renders the AM parent footer as a single mrkdwn string:
+//
+//	<mentions>  ·  Receiver `X`  ·  Via `host`  ·  _Firing Nm ago_  ·  <det|View details>  ·  <runbook|Runbook>
+//
+// When resolveStamp is non-empty it replaces the "Firing N ago"
+// segment with the caller-supplied stamp (used by the resolve edit
+// for "_Resolved <date> · down around N_"). Any segment whose input
+// is empty is skipped; an entirely empty footer returns "" so the
+// caller can skip the block.
+func amFooter(in AMOpenInput, resolveStamp string) string {
 	var parts []string
+	if len(in.Mentions) > 0 {
+		parts = append(parts, strings.Join(in.Mentions, " "))
+	}
 	if in.Receiver != "" {
-		parts = append(parts, "Receiver: `"+in.Receiver+"`")
+		parts = append(parts, "Receiver `"+in.Receiver+"`")
 	}
 	if host := externalHost(in.ExternalURL); host != "" {
-		parts = append(parts, "Via: `"+host+"`")
+		parts = append(parts, "Via `"+host+"`")
 	}
-	if !in.Alert.StartsAt.IsZero() {
-		parts = append(parts, "Firing since: "+relativeAgo(in.Alert.StartsAt))
+	switch {
+	case resolveStamp != "":
+		parts = append(parts, resolveStamp)
+	case !in.Alert.StartsAt.IsZero():
+		parts = append(parts, fmt.Sprintf("_Firing %s ago_", relativeAgo(in.Alert.StartsAt)))
 	}
-	return strings.Join(parts, " · ")
+	if in.DetailURL != "" {
+		parts = append(parts, fmt.Sprintf("<%s|View details>", in.DetailURL))
+	}
+	if rb := in.Alert.Annotations["runbook_url"]; rb != "" {
+		parts = append(parts, fmt.Sprintf("<%s|Runbook>", rb))
+	}
+	return strings.Join(parts, "  ·  ")
 }
 
 // externalHost extracts the host from a URL; on parse failure (or
@@ -330,8 +274,8 @@ func externalHost(raw string) string {
 	return u.Host
 }
 
-// relativeAgo renders a compact "Nm ago" / "Nh ago" / "Nd ago" for the
-// header footer. Bounded to one unit, never multi-part.
+// relativeAgo returns a compact "Ns" / "Nm" / "Nh" / "Nd" suffix for
+// the "Firing N ago" footer line. Bounded to one unit.
 func relativeAgo(t time.Time) string {
 	d := time.Since(t)
 	if d < 0 {
@@ -339,19 +283,18 @@ func relativeAgo(t time.Time) string {
 	}
 	switch {
 	case d < time.Minute:
-		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+		return fmt.Sprintf("%ds", int(d.Seconds()))
 	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+		return fmt.Sprintf("%dm", int(d.Minutes()))
 	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
+		return fmt.Sprintf("%dh", int(d.Hours()))
 	default:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
 }
 
 // formatDowntime renders a compact human form like "1d 4h" or "12m"
-// or "2h". Mirrors internal/slack/blocks.go's formatDowntime but
-// caps display at two units so resolve replies stay terse.
+// or "2h". Caps display at two units so resolve replies stay terse.
 func formatDowntime(d time.Duration) string {
 	if d <= 0 {
 		return "0s"
@@ -371,8 +314,7 @@ func formatDowntime(d time.Duration) string {
 	if hours > 0 {
 		parts = append(parts, fmt.Sprintf("%dh", hours))
 	}
-	// Drop minutes once we have days, since "1d 4h" reads better than
-	// "1d 4h 23m"; the detail page carries the exact figure.
+	// Drop minutes once we have days, since "1d 4h" reads better.
 	if mins > 0 && days == 0 {
 		parts = append(parts, fmt.Sprintf("%dm", mins))
 	}
@@ -383,10 +325,8 @@ func formatDowntime(d time.Duration) string {
 }
 
 // sectionBlock + contextBlock are tiny local mirrors of the unexported
-// helpers in internal/slack/blocks.go. They render identical shapes —
-// exporting the slack-package versions would force ripple edits across
-// every existing caller for no semantic gain. Kept local so this file
-// is the only thing that needs to evolve when AM block shapes change.
+// helpers in internal/slack/blocks.go. Kept local so this file is the
+// only thing that needs to evolve when AM block shapes change.
 func sectionBlock(mrkdwn string) slack.Block {
 	return slack.Block{
 		"type": "section",

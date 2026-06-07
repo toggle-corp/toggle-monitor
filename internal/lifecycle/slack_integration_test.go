@@ -225,18 +225,20 @@ monitors:
 		t.Error("expected at least one auth.test call at startup")
 	}
 
-	// --- Parent: header sits on the top-level blocks (outside the
-	// color stripe); mentions + View-details link live in the body /
-	// footer context blocks inside attachments[0].blocks.
+	// --- Parent: ADR-0006 blocks-only iA2 shape. Title + body + footer
+	// all live on parent["blocks"]; parent["attachments"] is absent.
 	parent := recorder.postMessages[0]
-	if !blocksContain(t, parent["blocks"], ":red_circle: API is DOWN") {
-		t.Error("parent message missing DOWN header")
+	if !blocksContain(t, parent["blocks"], ":red_circle: *API is DOWN*") {
+		t.Error("parent message missing DOWN title block")
 	}
-	if !blocksContain(t, parent["attachments"], "<!here>") {
-		t.Error("parent message missing <!here> mention in body attachment")
+	if !blocksContain(t, parent["blocks"], "<!here>") {
+		t.Error("parent message missing <!here> mention in footer")
 	}
-	if !blocksContain(t, parent["attachments"], "View details") {
+	if !blocksContain(t, parent["blocks"], "View details") {
 		t.Error("parent message missing View-details link in footer")
+	}
+	if _, hasAttachments := parent["attachments"]; hasAttachments {
+		t.Errorf("parent must not carry attachments (blocks-only contract): %v", parent["attachments"])
 	}
 	if _, hasThread := parent["thread_ts"]; hasThread {
 		t.Error("first post must be a parent (no thread_ts), but thread_ts is set")
@@ -252,14 +254,16 @@ monitors:
 		}
 	}
 
-	// --- Update: parent edit must rewrite header to the green
-	// "is UP" form.
+	// --- Update: parent edit rewrites the title to the green "is UP" form.
 	if len(recorder.updateMessages) == 0 {
 		t.Fatal("expected at least one chat.update on resolve")
 	}
 	update := recorder.updateMessages[0]
-	if !blocksContain(t, update["blocks"], ":large_green_circle: API is UP") {
-		t.Error("update did not rewrite header to resolved")
+	if !blocksContain(t, update["blocks"], ":large_green_circle: *API is UP*") {
+		t.Error("update did not rewrite title to resolved (green) form")
+	}
+	if !blocksContain(t, update["blocks"], "down around") {
+		t.Error("update title must say 'down around <duration>'")
 	}
 }
 
