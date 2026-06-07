@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-06-07
 deciders: [thenav56]
 supersedes:
@@ -8,7 +8,7 @@ supersedes:
 
 # ADR 0006 — Slack rendering: blocks-only parent shape
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-06-07
 **Supersedes:** the `### Slack rendering` sub-section of
 [ADR 0005](0005-alertmanager-webhook-receiver.md) — severity-emoji

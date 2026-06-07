@@ -174,6 +174,14 @@ gives at-most-twice posting on crash and exactly-once on success.
 
 ### Slack rendering
 
+> **Superseded by [ADR 0006](0006-slack-rendering-blocks-only-parent-shape.md)
+> (2026-06-07).** The block-kit shape sketched below — severity-emoji
+> header, summary body, View-details / Runbook button row — is replaced
+> by the three-block iA2 contract (title section + body section + footer
+> context, no attachments, inline mrkdwn links instead of buttons). The
+> rest of this ADR (receiver architecture, persistence, match tree,
+> rate limit, etc.) stays accepted as-is.
+
 Hardcoded format, not operator-configurable in v1:
 
 - Header: severity emoji + `alertname` + the two or three key labels
