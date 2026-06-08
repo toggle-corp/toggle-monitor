@@ -72,8 +72,8 @@ type Message = ParentMessage
 
 // BuildDownParent renders the initial 🔴 parent for an uptime
 // incident as the three-block iA2 shape from ADR-0006: title section,
-// body section (inline-coded error), footer context. No attachments,
-// no header block.
+// body section (fenced error per ADR-0007), footer context. No
+// attachments, no header block.
 func BuildDownParent(in DownInput) ParentMessage {
 	title := fmt.Sprintf(":red_circle: *%s is DOWN*  ·  <%s|%s>",
 		in.FriendlyName, in.URL, in.URL)
@@ -98,17 +98,23 @@ func BuildResolveEdit(in ResolveInput) ParentMessage {
 
 // BuildReminderReply renders the short scannable thread reply posted
 // every reminderInterval while the monitor remains down. No mentions.
-// Stays inside a thread, so no color stripe. One *Label:* value per
-// line for consistency with the parent body.
+// Stays inside a thread, so no color stripe.
+//
+// ADR-0007: two blocks — a labels section (Still down for / Last
+// checked) and a fenced-error section. The error lives in its own
+// fenced block so URLs survive Slack mobile, which auto-extracts URLs
+// out of inline-code spans. When LastError is empty the reply collapses
+// to a single labels-only block.
 func BuildReminderReply(in ReminderInput) []Block {
-	lines := []string{
+	labels := strings.Join([]string{
 		"⏰ *Still down for:* `" + formatDowntime(in.DownDuration) + "`",
 		"*Last checked:* " + FormatDate(in.LastCheckedAt),
-	}
+	}, "\n")
+	blocks := []Block{section(labels)}
 	if in.LastError != "" {
-		lines = append(lines, "*Last error:* `"+in.LastError+"`")
+		blocks = append(blocks, section("```\n"+in.LastError+"\n```"))
 	}
-	return []Block{section(strings.Join(lines, "\n"))}
+	return blocks
 }
 
 // BuildResolveReply renders the thread reply emitted on resolve.
@@ -120,15 +126,16 @@ func BuildResolveReply(in ResolveInput) []Block {
 }
 
 // buildParentBlocks composes the three-block iA2 parent shape from
-// ADR-0006: title section, body section (inline-coded error or fenced
-// response body), footer context. Optional banner sits above the body;
-// optional cascade-effect note sits above the footer. Returns the
-// flat top-level blocks slice ready to assign to ParentMessage.Blocks.
+// ADR-0006: title section, body section (fenced error per ADR-0007, or
+// fenced response body), footer context. Optional banner sits above
+// the body; optional cascade-effect note sits above the footer.
+// Returns the flat top-level blocks slice ready to assign to
+// ParentMessage.Blocks.
 //
 // title is the full mrkdwn for the title section; body is the full
-// mrkdwn for the body section (caller pre-wraps in inline code or a
-// fenced block). An empty body string omits the body block entirely
-// (rare; defensive for callers with no status + no error).
+// mrkdwn for the body section (caller pre-wraps in a fenced block).
+// An empty body string omits the body block entirely (rare; defensive
+// for callers with no status + no error).
 //
 // footerPrefix is "Detected" / "Resolved" / "Renewed"; footerTime is
 // the moment to render. Either being zero drops the timestamp half.
@@ -157,16 +164,22 @@ func buildParentBlocks(in DownInput, title, body, footerPrefix string, footerTim
 	return blocks
 }
 
-// downBodyText returns the inline-coded body mrkdwn for a monitor
-// DOWN / resolve edit: the HTTP status when StatusCode != 0,
-// otherwise the transport-level LastError. Empty when both are zero
-// (caller will skip the body block).
+// downBodyText returns the fenced body mrkdwn for a monitor DOWN /
+// resolve edit: the HTTP status when StatusCode != 0, otherwise the
+// transport-level LastError. Empty when both are zero (caller will skip
+// the body block).
+//
+// ADR-0007: the error wraps in a fenced code block (triple-backtick)
+// rather than inline code (single-backtick) so a URL inside the error
+// — e.g. `Get "https://…": context deadline exceeded` — renders as
+// literal text on Slack mobile. Inline-code spans containing URLs are
+// auto-extracted on mobile, producing duplicated URLs and empty quotes.
 func downBodyText(in DownInput) string {
 	if in.StatusCode != 0 {
-		return fmt.Sprintf("`%d %s`", in.StatusCode, strings.TrimSpace(in.StatusText))
+		return fmt.Sprintf("```\n%d %s\n```", in.StatusCode, strings.TrimSpace(in.StatusText))
 	}
 	if in.LastError != "" {
-		return "`" + in.LastError + "`"
+		return "```\n" + in.LastError + "\n```"
 	}
 	return ""
 }

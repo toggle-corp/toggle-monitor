@@ -112,9 +112,15 @@ func TestBuildDownParent_threeBlockShape(t *testing.T) {
 		}
 	}
 
-	// Body shape — inline-code status text.
-	if !strings.Contains(body, "`503 Service Unavailable`") {
-		t.Errorf("body missing inline-coded status: %q", body)
+	// Body shape — fenced status text (ADR-0007: fenced code blocks
+	// avoid mobile Slack auto-extracting URLs out of inline-code spans).
+	if !strings.Contains(body, "```\n503 Service Unavailable\n```") {
+		t.Errorf("body missing fenced status: %q", body)
+	}
+	// Must not be wrapped in inline code (single backticks around the
+	// whole thing).
+	if strings.Contains(body, "`503 Service Unavailable`") {
+		t.Errorf("body must be fenced, not inline-coded: %q", body)
 	}
 
 	// Footer (context) — mentions, Detected, View-details.
@@ -147,7 +153,7 @@ func TestBuildDownParent_threeBlockShape(t *testing.T) {
 }
 
 func TestBuildDownParent_transportErrorBody(t *testing.T) {
-	// StatusCode 0 → body falls back to LastError in inline code.
+	// StatusCode 0 → body falls back to LastError, fenced (ADR-0007).
 	out := slack.BuildDownParent(slack.DownInput{
 		FriendlyName: "API",
 		URL:          "http://api",
@@ -159,8 +165,31 @@ func TestBuildDownParent_transportErrorBody(t *testing.T) {
 	if len(sections) < 2 {
 		t.Fatalf("expected title + body sections, got %d", len(sections))
 	}
-	if !strings.Contains(sections[1], "`dial tcp: i/o timeout`") {
-		t.Errorf("body missing inline-coded transport error: %q", sections[1])
+	if !strings.Contains(sections[1], "```\ndial tcp: i/o timeout\n```") {
+		t.Errorf("body missing fenced transport error: %q", sections[1])
+	}
+}
+
+// TestBuildDownParent_urlInErrorBodyStaysLiteral guards the ADR-0007
+// regression: an error message containing a URL must render the URL as
+// literal text inside a fenced block, not as a separately-rendered
+// auto-link with empty quotes (the mobile-Slack bug).
+func TestBuildDownParent_urlInErrorBodyStaysLiteral(t *testing.T) {
+	out := slack.BuildDownParent(slack.DownInput{
+		FriendlyName: "API",
+		URL:          "http://api",
+		StatusCode:   0,
+		LastError:    `Get "https://api.example.com/health": context deadline exceeded`,
+		FailureAt:    t0,
+	})
+	sections := blockTexts(t, out.Blocks, "section")
+	if len(sections) < 2 {
+		t.Fatalf("expected title + body sections, got %d", len(sections))
+	}
+	body := sections[1]
+	want := "```\n" + `Get "https://api.example.com/health": context deadline exceeded` + "\n```"
+	if !strings.Contains(body, want) {
+		t.Errorf("body must wrap the URL-bearing error in a fenced block; got: %q", body)
 	}
 }
 
@@ -313,27 +342,80 @@ func TestBuildResolveEdit_bodyKeepsFailureReason(t *testing.T) {
 	if len(sections) < 2 {
 		t.Fatalf("expected title + body sections on resolve edit, got %d", len(sections))
 	}
-	if !strings.Contains(sections[1], "`503 Service Unavailable`") {
-		t.Errorf("body should keep the inline-coded failure reason: %q", sections[1])
+	if !strings.Contains(sections[1], "```\n503 Service Unavailable\n```") {
+		t.Errorf("body should keep the fenced failure reason: %q", sections[1])
 	}
 }
 
 // -- Thread replies (unchanged) -------------------------------------
 
 func TestBuildReminderReply_noMentions(t *testing.T) {
-	s := dump(t, slack.BuildReminderReply(slack.ReminderInput{
+	blocks := slack.BuildReminderReply(slack.ReminderInput{
 		DownDuration:  3 * 24 * time.Hour,
 		LastCheckedAt: t0,
 		LastError:     "still 503",
-	}))
-	if !strings.Contains(s, "*Still down for:* `3d`") {
-		t.Errorf("missing 'Still down for: `3d`' in:\n%s", s)
+	})
+
+	// ADR-0007: reminder splits into two blocks — labels section, then
+	// fenced error section — so a URL in LastError survives mobile.
+	if got := len(blocks); got != 2 {
+		t.Fatalf("expected 2 blocks (labels + fenced error), got %d", got)
 	}
-	if !strings.Contains(s, "*Last error:* `still 503`") {
-		t.Errorf("missing last error line in:\n%s", s)
+	sections := blockTexts(t, blocks, "section")
+	if len(sections) != 2 {
+		t.Fatalf("expected 2 section blocks, got %d", len(sections))
 	}
+	labels := sections[0]
+	if !strings.Contains(labels, "*Still down for:* `3d`") {
+		t.Errorf("missing 'Still down for: `3d`' in labels block:\n%s", labels)
+	}
+	if !strings.Contains(labels, "*Last checked:*") {
+		t.Errorf("missing 'Last checked:' in labels block:\n%s", labels)
+	}
+	if strings.Contains(labels, "*Last error:*") {
+		t.Errorf("labels block must not carry the *Last error:* label anymore:\n%s", labels)
+	}
+
+	errBody := sections[1]
+	if !strings.Contains(errBody, "```\nstill 503\n```") {
+		t.Errorf("expected fenced error in second block, got:\n%s", errBody)
+	}
+
+	s := dump(t, blocks)
 	if strings.Contains(s, "<!here>") || strings.Contains(s, "<@U") {
 		t.Errorf("reminder should have NO mentions, got:\n%s", s)
+	}
+}
+
+// TestBuildReminderReply_omitsErrorBlockWhenEmpty: with no LastError
+// the reminder collapses back to a single labels-only block.
+func TestBuildReminderReply_omitsErrorBlockWhenEmpty(t *testing.T) {
+	blocks := slack.BuildReminderReply(slack.ReminderInput{
+		DownDuration:  47 * time.Minute,
+		LastCheckedAt: t0,
+		LastError:     "",
+	})
+	if got := len(blocks); got != 1 {
+		t.Fatalf("expected 1 block when LastError empty, got %d", got)
+	}
+}
+
+// TestBuildReminderReply_urlInErrorStaysLiteral guards the ADR-0007
+// regression: a URL inside LastError must end up inside the fenced
+// error block, not as a Slack auto-link.
+func TestBuildReminderReply_urlInErrorStaysLiteral(t *testing.T) {
+	blocks := slack.BuildReminderReply(slack.ReminderInput{
+		DownDuration:  10 * time.Minute,
+		LastCheckedAt: t0,
+		LastError:     `Get "https://api.example.com/health": context deadline exceeded`,
+	})
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks, got %d", len(blocks))
+	}
+	sections := blockTexts(t, blocks, "section")
+	want := "```\n" + `Get "https://api.example.com/health": context deadline exceeded` + "\n```"
+	if !strings.Contains(sections[1], want) {
+		t.Errorf("URL-bearing error must be fenced verbatim in block 2; got: %q", sections[1])
 	}
 }
 

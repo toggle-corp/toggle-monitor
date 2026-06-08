@@ -4,6 +4,8 @@ date: 2026-06-07
 deciders: [thenav56]
 supersedes:
   - "0005-alertmanager-webhook-receiver.md (partial — the `### Slack rendering` sub-section only)"
+refined_by:
+  - "0007-fenced-error-bodies-for-mobile-url-rendering.md (the body-block formatting only)"
 ---
 
 # ADR 0006 — Slack rendering: blocks-only parent shape
@@ -130,6 +132,11 @@ same three-block shape:
    render. For multi-line content (stack traces, multi-line probe
    responses) escalate to a triple-backtick fenced block inside the same
    section.
+
+   **Refined by [ADR 0007](0007-fenced-error-bodies-for-mobile-url-rendering.md):**
+   the HTTP/SMTP monitor body always renders fenced, not inline, because
+   Slack mobile auto-extracts URLs out of inline-code spans. AM and SSL
+   body formatting are unaffected.
 
 3. **Footer** — `context` block, mrkdwn:
 
