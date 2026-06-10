@@ -348,7 +348,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		// the same notifier closure the scheduler's critical EventSink
 		// uses — EventSink and coalesce.Sink share an identical
 		// signature. Omitting it silently discards all routine alerts
-		// (the 2026-06-02 blackout); the SinkWired guard below makes that
+		// (a past regression); the SinkWired guard below makes that
 		// omission fatal at boot rather than silent in production.
 		Sink: coalesce.Sink(buildSink(notifier)),
 		Config: group.Config{

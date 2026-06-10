@@ -206,8 +206,8 @@ func (m *Manager) flushSink(ctx context.Context, channel string, e Entry) {
 	if m.sink == nil {
 		// A nil sink in production silently destroys every sub-threshold
 		// (individual-mode) notification — the exact failure mode that
-		// caused the 2026-06-02 alert blackout, where the lifecycle
-		// constructor omitted Options.Sink. Scream on the first dropped
+		// caused a past regression where the lifecycle constructor
+		// omitted Options.Sink. Scream on the first dropped
 		// alert so a future wiring omission surfaces in logs immediately
 		// instead of in an incident postmortem. lifecycle additionally
 		// refuses to boot with a nil sink (see Manager.SinkWired); this

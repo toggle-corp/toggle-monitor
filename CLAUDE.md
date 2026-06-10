@@ -10,7 +10,5 @@ Before changing notification/dispatch wiring (`internal/coalesce`,
     go test -tags integration ./internal/lifecycle/... -count=1
 
 The lifecycle integration tests are the only ones that exercise the real
-`RunServe` → `coalesce.New` → dispatcher → Slack path end to end. The
-2026-06-02 alert blackout (dispatcher built without its individual `Sink`,
-silently dropping all sub-threshold alerts) was caught only by these — and it
-shipped because they weren't being run. Treat them as required, not optional.
+`RunServe` → `coalesce.New` → dispatcher → Slack path end to end. Treat them
+as required, not optional.

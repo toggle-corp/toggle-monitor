@@ -110,8 +110,8 @@ monitors:
 
 	// Slack is wired into serve; record posts so we can assert the
 	// individual-notification path actually fires for a lone non-critical
-	// monitor — the path the 2026-06-02 blackout silently dropped when
-	// the coalesce dispatcher was built without its Sink.
+	// monitor — the path a past regression silently dropped when the
+	// coalesce dispatcher was built without its Sink.
 	recorder := &fakeSlackRecorder{}
 	slackSrv := httptest.NewServer(recorder.handler())
 	t.Cleanup(slackSrv.Close)
@@ -159,7 +159,7 @@ monitors:
 	}
 
 	// 4b. Assert the individual-notification path actually posted to
-	// Slack. This is the regression guard for the 2026-06-02 blackout:
+	// Slack. This is the regression guard for the prior wiring bug:
 	// a lone non-critical monitor going down MUST produce at least one
 	// chat.postMessage. Before the Sink was wired into coalesce.New this
 	// silently stayed at zero while every other assertion above passed.

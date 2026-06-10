@@ -157,9 +157,9 @@ func (m *Manager) broadcastMarker() string {
 // configured. lifecycle uses it as a fail-fast boot guard: the real
 // daemon must never run without one, because sub-threshold failures
 // (the 90% case) flush through the sink and a nil sink discards them
-// silently — the ADR-0004 regression behind the 2026-06-02 alert
-// blackout. Tests may legitimately run sink-less; they just don't call
-// this guard.
+// silently — a past ADR-0004 regression hit exactly this path.
+// Tests may legitimately run sink-less; they just don't call this
+// guard.
 func (m *Manager) SinkWired() bool { return m.sink != nil }
 
 // SetOnDemandParentProbe wires the on-demand parent-probe hook
