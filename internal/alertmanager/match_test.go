@@ -372,7 +372,7 @@ func TestEvaluate_scalarUnsetDeeperPreservesShallower(t *testing.T) {
 	rules := []config.AlertmanagerMatchRule{
 		rootRule("root-channel"),
 		{
-			When:   &config.AlertmanagerMatchWhen{Alertname: "X"},
+			When: &config.AlertmanagerMatchWhen{Alertname: "X"},
 			Config: &config.AlertmanagerMatchConfig{
 				// Slack unset: should not override root.
 				Notify: config.NotifyList{Values: []string{"team"}},
@@ -546,10 +546,10 @@ func TestEvaluate_ruleChain_selectorSummary(t *testing.T) {
 		rootRule("root"),
 		{
 			When: &config.AlertmanagerMatchWhen{
-				Alertname:      "Watchdog",
-				Labels:         map[string]string{"severity": "critical"},
-				Receiver:       "rcv",
-				ExternalURL:    "https://am.example.test",
+				Alertname:   "Watchdog",
+				Labels:      map[string]string{"severity": "critical"},
+				Receiver:    "rcv",
+				ExternalURL: "https://am.example.test",
 			},
 			Config: &config.AlertmanagerMatchConfig{Slack: "child"},
 		},

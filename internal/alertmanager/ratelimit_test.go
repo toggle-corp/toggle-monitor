@@ -29,8 +29,6 @@ func (c *fakeClock) advance(d time.Duration) {
 	c.v.Store(c.now().Add(d))
 }
 
-func (c *fakeClock) set(t time.Time) { c.v.Store(t) }
-
 // enabledCfg builds a typical enabled-detector config: 10 alerts in
 // 30m, notice cooldown 1h.
 func enabledCfg() config.AlertmanagerRateLimit {

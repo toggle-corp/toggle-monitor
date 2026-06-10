@@ -165,41 +165,41 @@ func visitRuleTraced(
 type traceAccumulator struct {
 	// Scalars: a presence flag + the value. Sentinels avoid
 	// distinguishing "unset" from "explicitly set to zero".
-	scheme                                                   string
-	hasScheme                                                bool
-	path                                                     string
-	hasPath                                                  bool
-	httpMethod                                               string
-	hasHTTPMethod                                            bool
-	interval                                                 config.Duration
-	hasInterval                                              bool
-	timeout                                                  config.Duration
-	hasTimeout                                               bool
-	retries                                                  int
-	hasRetries                                               bool
-	retryBackoff                                             config.Duration
-	hasRetryBackoff                                          bool
-	followRedirects                                          bool
-	hasFollowRedirects                                       bool
-	tlsInsecureSkipVerify                                    bool
-	hasTLSInsecureSkipVerify                                 bool
-	proxy                                                    string
-	hasProxy                                                 bool
-	reminderInterval                                         config.Duration
-	hasReminderInterval                                      bool
-	sslAlertThreshold                                        config.Duration
-	hasSSLAlertThreshold                                     bool
-	sslEscalationThreshold                                   config.Duration
-	hasSSLEscalationThreshold                                bool
-	sslReminderInterval                                      config.Duration
-	hasSSLReminderInterval                                   bool
-	slack                                                    string
-	hasSlack                                                 bool
-	acceptedStatusCodes                                      []int
-	hasAcceptedStatusCodes                                   bool
-	notify, tags, dependsOn                                  []string
-	ignore                                                   bool
-	hasIgnore                                                bool
+	scheme                    string
+	hasScheme                 bool
+	path                      string
+	hasPath                   bool
+	httpMethod                string
+	hasHTTPMethod             bool
+	interval                  config.Duration
+	hasInterval               bool
+	timeout                   config.Duration
+	hasTimeout                bool
+	retries                   int
+	hasRetries                bool
+	retryBackoff              config.Duration
+	hasRetryBackoff           bool
+	followRedirects           bool
+	hasFollowRedirects        bool
+	tlsInsecureSkipVerify     bool
+	hasTLSInsecureSkipVerify  bool
+	proxy                     string
+	hasProxy                  bool
+	reminderInterval          config.Duration
+	hasReminderInterval       bool
+	sslAlertThreshold         config.Duration
+	hasSSLAlertThreshold      bool
+	sslEscalationThreshold    config.Duration
+	hasSSLEscalationThreshold bool
+	sslReminderInterval       config.Duration
+	hasSSLReminderInterval    bool
+	slack                     string
+	hasSlack                  bool
+	acceptedStatusCodes       []int
+	hasAcceptedStatusCodes    bool
+	notify, tags, dependsOn   []string
+	ignore                    bool
+	hasIgnore                 bool
 }
 
 func newTraceAccumulator() *traceAccumulator { return &traceAccumulator{} }

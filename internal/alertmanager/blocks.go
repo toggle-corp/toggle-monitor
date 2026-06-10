@@ -163,9 +163,7 @@ func amTitle(in AMOpenInput, emoji, suffix string) string {
 	if sev := in.Alert.Labels["severity"]; sev != "" {
 		parts = append(parts, "`"+sev+"`")
 	}
-	for _, chip := range keyLabelChips(in.Alert.Labels) {
-		parts = append(parts, chip)
-	}
+	parts = append(parts, keyLabelChips(in.Alert.Labels)...)
 	out := strings.Join(parts, "  ·  ")
 	if suffix != "" {
 		out += suffix
@@ -174,7 +172,7 @@ func amTitle(in AMOpenInput, emoji, suffix string) string {
 }
 
 // keyLabelChips picks up to maxKeyLabels labels in canonical order and
-// returns them as `key=\`value\`` mrkdwn chips.
+// returns them as `key=\`value\“ mrkdwn chips.
 func keyLabelChips(labels map[string]string) []string {
 	var chips []string
 	for _, k := range keyLabelOrder {

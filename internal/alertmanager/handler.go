@@ -176,7 +176,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 1) Method gate.
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
-		h.fail(w, log, http.StatusMethodNotAllowed, "fail", "method",
+		h.fail(w, log, http.StatusMethodNotAllowed, "method",
 			"method not allowed", "method", r.Method)
 		return
 	}
@@ -185,13 +185,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	const bearerPrefix = "Bearer "
 	authHdr := r.Header.Get("Authorization")
 	if len(authHdr) <= len(bearerPrefix) || authHdr[:len(bearerPrefix)] != bearerPrefix {
-		h.fail(w, log, http.StatusUnauthorized, "fail", "auth",
+		h.fail(w, log, http.StatusUnauthorized, "auth",
 			"missing or malformed bearer")
 		return
 	}
 	received := authHdr[len(bearerPrefix):]
 	if subtle.ConstantTimeCompare([]byte(received), []byte(h.expectedToken.Reveal())) != 1 {
-		h.fail(w, log, http.StatusUnauthorized, "fail", "auth",
+		h.fail(w, log, http.StatusUnauthorized, "auth",
 			"bearer mismatch")
 		return
 	}
@@ -202,11 +202,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			h.fail(w, log, http.StatusRequestEntityTooLarge, "fail", "too_large",
+			h.fail(w, log, http.StatusRequestEntityTooLarge, "too_large",
 				"body exceeds cap", "limit_bytes", h.bodyMaxBytes)
 			return
 		}
-		h.fail(w, log, http.StatusBadRequest, "fail", "malformed",
+		h.fail(w, log, http.StatusBadRequest, "malformed",
 			"read body", "error", err.Error())
 		return
 	}
@@ -214,12 +214,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 4) Decode + validate.
 	var wh Webhook
 	if err := json.Unmarshal(rawBody, &wh); err != nil {
-		h.fail(w, log, http.StatusBadRequest, "fail", "malformed",
+		h.fail(w, log, http.StatusBadRequest, "malformed",
 			"json decode", "error", err.Error())
 		return
 	}
 	if err := wh.Validate(); err != nil {
-		h.fail(w, log, http.StatusBadRequest, "fail", "malformed",
+		h.fail(w, log, http.StatusBadRequest, "malformed",
 			"envelope validate", "error", err.Error())
 		return
 	}
@@ -276,11 +276,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // fail centralises the failure response + observer + log path so the
-// happy path of ServeHTTP stays readable. result/reason are observer
-// counter values; the log line carries any additional structured args.
-func (h *Handler) fail(w http.ResponseWriter, log *slog.Logger, code int, result, reason string, msg string, args ...any) {
+// happy path of ServeHTTP stays readable. reason is the observer
+// counter value; the log line carries any additional structured args.
+func (h *Handler) fail(w http.ResponseWriter, log *slog.Logger, code int, reason string, msg string, args ...any) {
 	if h.observer != nil {
-		h.observer.AMWebhookRequest(result, reason)
+		h.observer.AMWebhookRequest("fail", reason)
 	}
 	logArgs := append([]any{"reason", reason, "status", code}, args...)
 	switch {

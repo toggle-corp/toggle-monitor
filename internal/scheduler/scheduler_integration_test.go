@@ -553,8 +553,8 @@ func TestTick_dependsOn_pushPropagation_notFiredOnReminder(t *testing.T) {
 		Slug: "parent", URL: "http://x", HTTPMethod: "GET",
 		AcceptedStatusCodes: []int{200},
 		Interval:            5 * time.Minute, Timeout: time.Second,
-		ReminderInterval:    time.Nanosecond, // ensures the second tick emits a reminder
-		Prober:              constProber{res: probe.Result{Code: 500, Error: "boom"}},
+		ReminderInterval: time.Nanosecond, // ensures the second tick emits a reminder
+		Prober:           constProber{res: probe.Result{Code: 500, Error: "boom"}},
 	}
 	if err := s.Tick(ctx, plan); err != nil {
 		t.Fatalf("first tick: %v", err)

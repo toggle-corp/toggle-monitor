@@ -190,11 +190,9 @@ func (c *checker) validateAlertmanager(cfg *Config, slackChannels map[string]str
 	if !alertmanagerWhenIsEmpty(root.When) {
 		c.errf(append(append([]any{}, base...), "match", 0, "when"),
 			"the first rule must have an empty when: (the mandatory root baseline that sets config.slack for every alert)")
-	} else {
-		if root.Config == nil || root.Config.Slack == "" {
-			c.errf(append(append([]any{}, base...), "match", 0, "config", "slack"),
-				"required at the root rule (every alert inherits this channel)")
-		}
+	} else if root.Config == nil || root.Config.Slack == "" {
+		c.errf(append(append([]any{}, base...), "match", 0, "config", "slack"),
+			"required at the root rule (every alert inherits this channel)")
 	}
 
 	for i := range am.Match {

@@ -345,14 +345,14 @@ func newProbeManager(t *testing.T, clock *time.Time, threshold int, probe func(c
 	fp := &fakePoster{}
 	sink := &fakeSink{}
 	m := New(Options{
-		Store:                fs,
-		Poster:               fp,
-		Sink:                 sink.Notify,
-		Config:               group.Config{GroupInterval: 5 * time.Minute, RepeatInterval: 30 * time.Minute},
-		PendingWait:          30 * time.Second,
-		BurstThreshold:       threshold,
-		OnDemandParentProbe:  probe,
-		Now:                  func() time.Time { return *clock },
+		Store:               fs,
+		Poster:              fp,
+		Sink:                sink.Notify,
+		Config:              group.Config{GroupInterval: 5 * time.Minute, RepeatInterval: 30 * time.Minute},
+		PendingWait:         30 * time.Second,
+		BurstThreshold:      threshold,
+		OnDemandParentProbe: probe,
+		Now:                 func() time.Time { return *clock },
 	})
 	return m, fs, fp, sink
 }
@@ -502,15 +502,6 @@ func parentContainsText(msg slack.ParentMessage, needle string) bool {
 		}
 	}
 	for _, b := range msg.Blocks {
-		if marshalContains(b, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-func blocksContainText(blocks []slack.Block, needle string) bool {
-	for _, b := range blocks {
 		if marshalContains(b, needle) {
 			return true
 		}

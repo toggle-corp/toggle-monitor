@@ -69,11 +69,14 @@ func (p *digestPoster) Reply(ctx context.Context, channelSlug, ts string, blocks
 type groupSinkAdapter struct{ m *coalesce.Manager }
 
 func (a groupSinkAdapter) Down(ctx context.Context, channel string, gm scheduler.GroupMember, at time.Time) {
-	a.m.Down(ctx, channel, coalesce.MemberInfo{
-		Slug:         gm.Slug,
-		FriendlyName: gm.FriendlyName,
-		Mentions:     gm.Mentions,
-	}, at)
+	a.m.Route(ctx, channel, coalesce.Entry{
+		Member: coalesce.MemberInfo{
+			Slug:         gm.Slug,
+			FriendlyName: gm.FriendlyName,
+			Mentions:     gm.Mentions,
+		},
+		Event: &alert.Event{Type: alert.EventOpen, At: at},
+	})
 }
 
 func (a groupSinkAdapter) Up(ctx context.Context, channel, slug string, at time.Time) {

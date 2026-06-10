@@ -252,7 +252,7 @@ func TestBuildAMOpen_keyLabelsCappedAtThreeStableOrder(t *testing.T) {
 	if idxNS == -1 || idxInst == -1 || idxSvc == -1 {
 		t.Fatalf("expected namespace/instance/service chips in title: %q", title)
 	}
-	if !(idxNS < idxInst && idxInst < idxSvc) {
+	if idxNS >= idxInst || idxInst >= idxSvc {
 		t.Errorf("expected canonical order namespace, instance, service: %q", title)
 	}
 	for _, unwanted := range []string{"job=", "cluster=", "pod=`api-7b8`"} {

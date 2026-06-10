@@ -187,17 +187,17 @@ func TestAlertDetail_rendersAllSections(t *testing.T) {
 	for _, want := range []string{
 		"HighCPU",
 		"critical",
-		"CPU is hot",          // annotations.summary
-		"Detailed body",       // annotations.description
-		"runbooks.example",    // annotations.runbook_url
-		"toggle_monitor",      // receiver
+		"CPU is hot",           // annotations.summary
+		"Detailed body",        // annotations.description
+		"runbooks.example",     // annotations.runbook_url
+		"toggle_monitor",       // receiver
 		"am.prod.example.test", // externalURL
-		"ops",                 // channel
-		"root&gt;critical",    // rule chain (templ html-escapes ">")
-		"ops-team",            // notify
-		"C12345",              // slack channel
-		"Raw payload",         // raw payload section header
-		"FIRING",              // status label
+		"ops",                  // channel
+		"root&gt;critical",     // rule chain (templ html-escapes ">")
+		"ops-team",             // notify
+		"C12345",               // slack channel
+		"Raw payload",          // raw payload section header
+		"FIRING",               // status label
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/alert/{id} body missing %q; first 3000:\n%s", want, firstN(body, 3000))

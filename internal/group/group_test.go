@@ -46,8 +46,8 @@ func TestGroupWaitHoldsThenPosts(t *testing.T) {
 	g := New("ops", t0, testCfg())
 	g.MarkDown("a", t0)
 
-	none(t, g.Evaluate(t0))                            // born, within wait
-	none(t, g.Evaluate(t0.Add(29*time.Second)))        // still within wait
+	none(t, g.Evaluate(t0))                     // born, within wait
+	none(t, g.Evaluate(t0.Add(29*time.Second))) // still within wait
 	only(t, g.Evaluate(t0.Add(30*time.Second)), ActionPostDigest)
 
 	if !g.Posted {
@@ -162,7 +162,7 @@ func TestReminderAtRepeatInterval(t *testing.T) {
 	// Reminder due at t0+30s+30m.
 	only(t, g.Evaluate(t0.Add(30*time.Minute+30*time.Second)), ActionRemind)
 	// Not again until another 30m.
-	none(t, g.Evaluate(t0.Add(40 * time.Minute)))
+	none(t, g.Evaluate(t0.Add(40*time.Minute)))
 }
 
 func TestCloseWhenAllRecovered(t *testing.T) {
@@ -175,7 +175,7 @@ func TestCloseWhenAllRecovered(t *testing.T) {
 	g.MarkUp("b", t0.Add(1*time.Minute))
 
 	// Before debounce elapses, both are Recovering → group stays open.
-	none(t, g.Evaluate(t0.Add(3 * time.Minute)))
+	none(t, g.Evaluate(t0.Add(3*time.Minute)))
 	if g.Closed {
 		t.Fatal("group closed prematurely while members recovering")
 	}

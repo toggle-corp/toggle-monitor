@@ -199,4 +199,3 @@ func prettyJSON(payload []byte) string {
 	}
 	return string(payload)
 }
-

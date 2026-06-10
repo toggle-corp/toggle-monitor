@@ -38,13 +38,13 @@ type Metrics struct {
 	// AM-scoped counters (ADR-0005). Kept distinct from SlackPostTotal
 	// so dashboards can separate AM-driven volume from monitor-driven
 	// volume even though both ultimately hit the same Slack channel.
-	AMWebhookRequestTotal *prometheus.CounterVec
-	AMAlertProcessedTotal *prometheus.CounterVec
-	AMSlackPostTotal      *prometheus.CounterVec
-	AMRateLimitDropTotal  *prometheus.CounterVec
-	AMLateResolveTotal       prometheus.Counter
-	AMWebhookLatencySeconds  prometheus.Histogram
-	AMBatchSizeHist          prometheus.Histogram
+	AMWebhookRequestTotal   *prometheus.CounterVec
+	AMAlertProcessedTotal   *prometheus.CounterVec
+	AMSlackPostTotal        *prometheus.CounterVec
+	AMRateLimitDropTotal    *prometheus.CounterVec
+	AMLateResolveTotal      prometheus.Counter
+	AMWebhookLatencySeconds prometheus.Histogram
+	AMBatchSizeHist         prometheus.Histogram
 
 	lastTickUnix atomic.Int64
 }

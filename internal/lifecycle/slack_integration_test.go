@@ -27,9 +27,9 @@ import (
 type fakeSlackRecorder struct {
 	mu sync.Mutex
 
-	authCalls       int
-	postMessages    []map[string]any
-	updateMessages  []map[string]any
+	authCalls      int
+	postMessages   []map[string]any
+	updateMessages []map[string]any
 
 	nextTS atomic.Int64
 }

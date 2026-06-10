@@ -238,10 +238,8 @@ func whenMatches(w *config.AlertmanagerMatchWhen, alert Alert, env Envelope) boo
 			if !matchRegex(v, alert.Labels[bare]) {
 				return false
 			}
-		} else {
-			if !matchGlob(v, alert.Labels[k]) {
-				return false
-			}
+		} else if !matchGlob(v, alert.Labels[k]) {
+			return false
 		}
 	}
 	if w.Receiver != "" && w.Receiver != env.Receiver {

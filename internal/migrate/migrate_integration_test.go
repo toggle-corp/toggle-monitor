@@ -63,4 +63,3 @@ func TestCheck_returnsErrorWhenPending(t *testing.T) {
 		t.Fatal("expected Check on un-migrated DB to error, got nil")
 	}
 }
-

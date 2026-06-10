@@ -263,21 +263,21 @@ func TestListAMIncidents_filtersAcrossEveryDimension(t *testing.T) {
 	inserts := []store.AMIncidentInsert{
 		{
 			Fingerprint: "a", Alertname: "HighCPU",
-			Labels: map[string]string{"alertname": "HighCPU", "severity": "critical"},
+			Labels:      map[string]string{"alertname": "HighCPU", "severity": "critical"},
 			StartedAt:   t0,
 			ChannelSlug: "ops", Receiver: "toggle_monitor", RuleChain: "root",
 			Annotations: map[string]string{}, ResolvedNotify: []string{}, ExternalURL: "https://am1.example.test",
 		},
 		{
 			Fingerprint: "b", Alertname: "LowDisk",
-			Labels: map[string]string{"alertname": "LowDisk", "severity": "warning"},
+			Labels:      map[string]string{"alertname": "LowDisk", "severity": "warning"},
 			StartedAt:   t0.Add(time.Minute),
 			ChannelSlug: "infra", Receiver: "toggle_monitor", RuleChain: "root",
 			Annotations: map[string]string{}, ResolvedNotify: []string{}, ExternalURL: "https://am1.example.test",
 		},
 		{
 			Fingerprint: "c", Alertname: "HighCPU",
-			Labels: map[string]string{"alertname": "HighCPU", "severity": "warning"},
+			Labels:      map[string]string{"alertname": "HighCPU", "severity": "warning"},
 			StartedAt:   t0.Add(2 * time.Minute),
 			ChannelSlug: "ops", Receiver: "other_receiver", RuleChain: "root",
 			Annotations: map[string]string{}, ResolvedNotify: []string{}, ExternalURL: "https://am1.example.test",

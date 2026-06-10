@@ -318,4 +318,3 @@ func postCount(r *fakeSlackRecorder) int {
 	defer r.mu.Unlock()
 	return len(r.postMessages)
 }
-
