@@ -2,8 +2,6 @@
 // bridge. When the config's sentry block is absent or disabled, every
 // exported function is a no-op so callers can wire the package
 // unconditionally.
-//
-// See docs/superpowers/specs/2026-05-25-sentry-integration-design.md.
 package sentry
 
 import (
