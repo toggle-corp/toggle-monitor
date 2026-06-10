@@ -12,16 +12,16 @@ jobs:
   build-test-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26"
           check-latest: true
 
       - name: Install just
-        uses: extractions/setup-just@v3
+        uses: extractions/setup-just@v4
         with:
           just-version: "1.51.0"
 
@@ -29,12 +29,12 @@ jobs:
         # Needed for internal/helmcharttest: shells out to `helm template`
         # against deploy/helm/toggle-monitor to verify chart-rendered
         # ConfigMaps are accepted by the binary's config loader.
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
         with:
           version: latest
 
       - name: Module cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cache/go-build
@@ -50,6 +50,6 @@ jobs:
         run: just test
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
