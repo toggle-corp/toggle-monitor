@@ -4,15 +4,47 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_call:
+    inputs:
+      docker_push:
+        type: boolean
+        default: false
+      helm_push:
+        type: boolean
+        default: false
+    outputs:
+      docker_image:
+        description: Fully-qualified docker image reference.
+        value: ${{ jobs.docker_build.outputs.docker_image }}
+      docker_image_name:
+        description: Docker image name without tag.
+        value: ${{ jobs.docker_build.outputs.docker_image_name }}
+      docker_image_tag:
+        description: Docker image tag.
+        value: ${{ jobs.docker_build.outputs.docker_image_tag }}
+      helm_repo_url:
+        description: OCI URL consumers use for the helm chart.
+        value: ${{ jobs.helm_validate.outputs.helm_repo_url }}
+      helm_chart:
+        description: Helm chart name.
+        value: ${{ jobs.helm_validate.outputs.helm_chart }}
+      helm_target_revision:
+        description: Helm chart target revision.
+        value: ${{ jobs.helm_validate.outputs.helm_target_revision }}
 
-permissions:
-  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-test-lint:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -53,3 +85,131 @@ jobs:
         uses: golangci/golangci-lint-action@v8
         with:
           version: v2.12.2
+
+  docker_build:
+    runs-on: ubuntu-latest
+    # contents:read for checkout, packages:write for the optional GHCR
+    # push at the bottom of this job (gated by inputs.docker_push, so
+    # never exercised on direct PR/main triggers).
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      docker_image: ${{ steps.coords.outputs.docker_image }}
+      docker_image_name: ${{ steps.coords.outputs.docker_image_name }}
+      docker_image_tag: ${{ steps.coords.outputs.docker_image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Set docker coordinates
+        id: coords
+        shell: bash
+        run: |
+          image_name="ghcr.io/toggle-corp/toggle-monitor"
+          image_tag="ci-dryrun"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            image_tag="${GITHUB_REF_NAME}"
+          fi
+          {
+            echo "docker_image_name=${image_name}"
+            echo "docker_image_tag=${image_tag}"
+            echo "docker_image=${image_name}:${image_tag}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build dry-run image
+        if: ${{ !inputs.docker_push }}
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ghcr.io/toggle-corp/toggle-monitor:ci-dryrun
+          build-args: VERSION=ci-dryrun
+
+      - name: Log in to GHCR
+        if: ${{ inputs.docker_push }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push release image
+        if: ${{ inputs.docker_push }}
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/toggle-corp/toggle-monitor:${{ github.ref_name }}
+          build-args: VERSION=${{ github.ref_name }}
+
+  helm_validate:
+    runs-on: ubuntu-latest
+    # contents:read for checkout, packages:write for the optional GHCR
+    # push at the bottom of this job (gated by inputs.helm_push, so
+    # never exercised on direct PR/main triggers).
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      helm_repo_url: ${{ steps.coords.outputs.helm_repo_url }}
+      helm_chart: ${{ steps.coords.outputs.helm_chart }}
+      helm_target_revision: ${{ steps.coords.outputs.helm_target_revision }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install helm
+        uses: azure/setup-helm@v4
+        with:
+          version: latest
+
+      - name: Set helm coordinates
+        id: coords
+        shell: bash
+        run: |
+          target_revision="ci-dryrun"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            target_revision="${GITHUB_REF_NAME}"
+          fi
+          {
+            echo "helm_repo_url=oci://ghcr.io/toggle-corp/toggle-monitor-helm"
+            echo "helm_chart=toggle-monitor-helm"
+            echo "helm_target_revision=${target_revision}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Helm lint
+        run: helm lint deploy/helm/toggle-monitor
+
+      - name: Helm template
+        run: helm template deploy/helm/toggle-monitor >/dev/null
+
+      - name: Verify release chart version
+        if: ${{ inputs.helm_push }}
+        shell: bash
+        run: |
+          grep -q "^version: ${GITHUB_REF_NAME}  # managed by release\.sh$" deploy/helm/toggle-monitor/Chart.yaml
+          grep -q "^appVersion: \"${GITHUB_REF_NAME}\"  # managed by release\.sh$" deploy/helm/toggle-monitor/Chart.yaml
+
+      - name: Package helm chart
+        if: ${{ inputs.helm_push }}
+        shell: bash
+        run: |
+          mkdir -p dist
+          helm package deploy/helm/toggle-monitor --destination dist
+
+      - name: Log in to GHCR for helm
+        if: ${{ inputs.helm_push }}
+        shell: bash
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
+
+      - name: Push helm chart
+        if: ${{ inputs.helm_push }}
+        shell: bash
+        run: helm push "dist/toggle-monitor-helm-${GITHUB_REF_NAME}.tgz" oci://ghcr.io/toggle-corp

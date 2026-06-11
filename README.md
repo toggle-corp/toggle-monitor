@@ -48,6 +48,10 @@ teardown commands: **[deploy/local/README.md](deploy/local/README.md)**.
 
 ### Deploy to Kubernetes
 
+Published versions are listed on the
+[GitHub Releases page](https://github.com/toggle-corp/toggle-monitor/releases);
+use that page as the source of truth for the latest chart version.
+
 ```bash
 # Render to review:
 helm template my-toggle deploy/helm/toggle-monitor \
@@ -59,6 +63,18 @@ helm upgrade --install toggle-monitor deploy/helm/toggle-monitor \
   --namespace monitoring --create-namespace \
   -f my-values.yaml
 ```
+
+For released installs from GHCR:
+
+```bash
+helm install monitor oci://ghcr.io/toggle-corp/toggle-monitor-helm \
+  --version 0.2.0 \
+  --namespace monitoring --create-namespace \
+  -f my-values.yaml
+```
+
+The docker image is wired by the chart via `values.yaml`; consumers do
+not pull it directly.
 
 Chart structure + production checklist:
 **[deploy/helm/toggle-monitor/README.md](deploy/helm/toggle-monitor/README.md)**.

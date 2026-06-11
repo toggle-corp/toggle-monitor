@@ -23,6 +23,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
     -o /out/toggle-monitor ./cmd/toggle-monitor
 
 FROM gcr.io/distroless/static-debian12:nonroot
+LABEL org.opencontainers.image.source="https://github.com/toggle-corp/toggle-monitor"
+LABEL org.opencontainers.image.description="Kubernetes-native uptime + SSL monitor with Slack alerts and ingress auto-discovery"
+LABEL org.opencontainers.image.licenses="MIT"
 # 65532 is the nonroot UID baked into the distroless image.
 USER 65532:65532
 WORKDIR /app
