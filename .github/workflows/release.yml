@@ -58,9 +58,16 @@ jobs:
         uses: orhun/git-cliff-action@v4
         with:
           config: fugit/configs/cliff.toml
-          args: -vv --latest --no-exec --strip all --github-repo ${{ github.repository }}
+          # NOTE: no --no-exec. fugit/configs/cliff.toml uses git-cliff
+          # postprocessors that shell out to `sed` to substitute <REPO>
+          # placeholders for real commit/PR URLs. --no-exec disables
+          # those postprocessors, leaving literal "<REPO>" strings in
+          # the release notes. The env vars below feed the sed.
+          args: -vv --latest --strip all --github-repo ${{ github.repository }}
         env:
           OUTPUT: CHANGELOG.latest.md
+          FUGIT_REMOTE_BASE_URL: https://github.com/${{ github.repository }}
+          FUGIT_REMOTE_PLATFORM_URL: https://github.com
 
       - name: Build extended changelog
         shell: bash
