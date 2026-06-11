@@ -1,0 +1,10 @@
+# Shared release-automation toolkit. Drives ./release.sh.
+#
+# TEMPORARY: pinned to the `feat/gitea-support` branch because this
+# repo is the test gateway for fugit's GitHub-path behavior on that
+# branch. Swap to a tag (e.g. `branch = v0.2.0`) and remove this
+# comment once fugit cuts a tagged release containing those commits.
+[submodule "fugit"]
+	path = fugit
+	url = https://github.com/toggle-corp/fugit.git
+	branch = feat/gitea-support
