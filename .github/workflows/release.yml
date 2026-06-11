@@ -1,0 +1,67 @@
+name: release
+
+on:
+  push:
+    tags: ['[0-9]+.[0-9]+.[0-9]+']
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      docker_push: true
+      helm_push: true
+
+  generate_release:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: true
+
+      - name: Derive release version
+        id: release
+        shell: bash
+        run: |
+          release_version="${GITHUB_REF#refs/tags/}"
+          echo "release_version=${release_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate changelog
+        id: git-cliff
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: fugit/configs/cliff.toml
+          args: -vv --latest --no-exec --strip all --github-repo ${{ github.repository }}
+        env:
+          OUTPUT: CHANGELOG.latest.md
+
+      - name: Build extended changelog
+        shell: bash
+        run: |
+          {
+            echo "> [!NOTE]"
+            echo "> Helm Repo URL: \`${{ needs.build.outputs.helm_repo_url }}\`"
+            echo "> Helm Chart: \`${{ needs.build.outputs.helm_chart }}\`"
+            echo "> Helm Target Revision: \`${{ needs.build.outputs.helm_target_revision }}\`"
+            echo "> Docker image: \`${{ needs.build.outputs.docker_image }}\`"
+            echo
+            cat "${{ steps.git-cliff.outputs.changelog }}"
+          } > CHANGELOG.extended.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.release.outputs.release_version }}
+          body_path: CHANGELOG.extended.md
+          prerelease: false
