@@ -53,6 +53,17 @@ jobs:
             echo "is_prerelease=${is_prerelease}"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Install typos
+        # Required by fugit/configs/cliff.toml line 111: a commit
+        # preprocessor runs `typos --write-changes -` against every
+        # commit message to auto-fix spelling on the way to the
+        # changelog. Without typos on PATH the preprocessor's shell
+        # command fails and git-cliff silently drops commits,
+        # producing an empty release body.
+        uses: taiki-e/install-action@v2
+        with:
+          tool: typos
+
       - name: Generate changelog
         id: git-cliff
         uses: orhun/git-cliff-action@v4
@@ -60,9 +71,10 @@ jobs:
           config: fugit/configs/cliff.toml
           # NOTE: no --no-exec. fugit/configs/cliff.toml uses git-cliff
           # postprocessors that shell out to `sed` to substitute <REPO>
-          # placeholders for real commit/PR URLs. --no-exec disables
-          # those postprocessors, leaving literal "<REPO>" strings in
-          # the release notes. The env vars below feed the sed.
+          # placeholders for real commit/PR URLs, and a preprocessor
+          # that runs `typos` against commit messages. --no-exec
+          # disables both, leaving literal "<REPO>" strings AND empty
+          # bodies (typos failure causes commits to be dropped).
           args: -vv --latest --strip all --github-repo ${{ github.repository }}
         env:
           OUTPUT: CHANGELOG.latest.md
