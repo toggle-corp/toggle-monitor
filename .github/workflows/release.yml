@@ -2,7 +2,13 @@ name: release
 
 on:
   push:
-    tags: ['[0-9]+.[0-9]+.[0-9]+']
+    tags:
+      # Stable releases: 0.2.0
+      - '[0-9]+.[0-9]+.[0-9]+'
+      # Pre-releases: 0.2.0-dev1, 0.2.0-rc.1, 0.2.0-test, …
+      # The hyphen suffix flags these as `prerelease: true` in
+      # generate_release below.
+      - '[0-9]+.[0-9]+.[0-9]+-*'
 
 concurrency:
   group: release-${{ github.ref }}
@@ -35,7 +41,17 @@ jobs:
         shell: bash
         run: |
           release_version="${GITHUB_REF#refs/tags/}"
-          echo "release_version=${release_version}" >> "$GITHUB_OUTPUT"
+          # Hyphen in the tag (SemVer pre-release identifier) flags this
+          # as a pre-release on the GitHub Releases page. Stable tags like
+          # "0.2.0" stay false; "0.2.0-dev1", "0.2.0-rc.1" become true.
+          is_prerelease=false
+          if [[ "$release_version" == *-* ]]; then
+            is_prerelease=true
+          fi
+          {
+            echo "release_version=${release_version}"
+            echo "is_prerelease=${is_prerelease}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Generate changelog
         id: git-cliff
@@ -64,4 +80,4 @@ jobs:
         with:
           name: ${{ steps.release.outputs.release_version }}
           body_path: CHANGELOG.extended.md
-          prerelease: false
+          prerelease: ${{ steps.release.outputs.is_prerelease }}
