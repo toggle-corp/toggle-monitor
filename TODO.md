@@ -2,10 +2,10 @@
 
 - [x] Setup grafana dashboard
 - [x] Handle slack API downtime
-- [ ] Push to Github
-    - [ ] Setup fugit for release
-    - [ ] Setup CI to push docker, helm
-        - [ ] For release use banjo-action?
+- [x] Push to Github
+    - [x] Setup fugit for release
+    - [x] Setup CI to push docker, helm
+        - Modeled on banjo-action's generate-release; implemented in `release.yml` directly (not via `workflow_call` to banjo).
 - [ ] Simple admin panel (With credential, using secrets)
     - [ ] Test slack notification
     - [ ] View parsed config (masked sensitive information)
