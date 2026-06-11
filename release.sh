@@ -47,6 +47,8 @@ release_custom_hook() {
         echo "  The '# managed by release.sh' marker was probably removed by hand." >&2
         return 1
     fi
+
+    helm lint "$(dirname "$chart")"
 }
 export -f release_custom_hook
 export RELEASE_CUSTOM_HOOK=release_custom_hook
