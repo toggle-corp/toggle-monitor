@@ -88,6 +88,12 @@ jobs:
 
   docker_build:
     runs-on: ubuntu-latest
+    # contents:read for checkout, packages:write for the optional GHCR
+    # push at the bottom of this job (gated by inputs.docker_push, so
+    # never exercised on direct PR/main triggers).
+    permissions:
+      contents: read
+      packages: write
     outputs:
       docker_image: ${{ steps.coords.outputs.docker_image }}
       docker_image_name: ${{ steps.coords.outputs.docker_image_name }}
@@ -144,6 +150,12 @@ jobs:
 
   helm_validate:
     runs-on: ubuntu-latest
+    # contents:read for checkout, packages:write for the optional GHCR
+    # push at the bottom of this job (gated by inputs.helm_push, so
+    # never exercised on direct PR/main triggers).
+    permissions:
+      contents: read
+      packages: write
     outputs:
       helm_repo_url: ${{ steps.coords.outputs.helm_repo_url }}
       helm_chart: ${{ steps.coords.outputs.helm_chart }}
