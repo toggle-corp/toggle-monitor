@@ -39,8 +39,14 @@ build:
         {{go}} build -ldflags "-X main.version=$VERSION" -o {{binary}} ./cmd/toggle-monitor
 
 # Run unit tests (fast, no Docker required).
-test:
+test: test-release-hook
     {{go}} test ./...
+
+# Verify release.sh's RELEASE_CUSTOM_HOOK bumps Chart.yaml under the
+# '# managed by release.sh' marker contract. Cheap (~1s) — keeps the
+# release path from drifting between release runs.
+test-release-hook:
+    bash scripts/test-release-hook.sh
 
 # Run integration tests (requires Docker; spins up Postgres via testcontainers).
 test-integration:
