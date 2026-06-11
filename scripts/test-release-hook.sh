@@ -130,6 +130,35 @@ test_works_on_real_chart() {
 
 run_test "works on real Chart.yaml copy" test_works_on_real_chart
 
+# --- Test 6: hook stages the bumped Chart.yaml in git ------------------------
+# Fugit's scripts/release.sh runs `git add CHANGELOG.md` + `git commit`
+# (without -a). If we don't stage Chart.yaml ourselves, the release commit
+# does NOT carry the version bump — the tag points at the old version.
+test_stages_chart_in_git() {
+    local tmp="$TMPROOT/t6"
+    mkdir -p "$tmp"
+    git -C "$tmp" init -q
+    git -C "$tmp" config user.email test@example.test
+    git -C "$tmp" config user.name "test"
+    git -C "$tmp" config commit.gpgsign false
+    git -C "$tmp" config tag.gpgsign false
+    make_chart "$tmp"
+    git -C "$tmp" add Chart.yaml
+    git -C "$tmp" commit -q -m "seed"
+
+    CHART_YAML_PATH="$tmp/Chart.yaml" \
+    version_tag="9.9.9" \
+        release_custom_hook
+
+    # `git status --short` shows 'M ' for staged-modified, ' M' for unstaged.
+    # We want staged ('M ' or 'MM' if also re-modified after staging).
+    local status
+    status=$(git -C "$tmp" status --short Chart.yaml)
+    [[ "$status" =~ ^M ]]
+}
+
+run_test "stages bumped Chart.yaml in git" test_stages_chart_in_git
+
 # --- Summary ----------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

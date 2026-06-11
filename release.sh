@@ -49,6 +49,17 @@ release_custom_hook() {
     fi
 
     helm lint "$(dirname "$chart")"
+
+    # Stage the bumped file so fugit's release commit picks it up. Fugit
+    # only runs `git add CHANGELOG.md` itself (NOT `git commit -a`), so
+    # without this step the working tree would have the bump but the
+    # released tag would still point at the previous version. The guard
+    # keeps the function safe to source from a non-git tempdir (unit tests).
+    local chart_dir
+    chart_dir=$(cd "$(dirname "$chart")" && pwd)
+    if git -C "$chart_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git -C "$chart_dir" add "$(basename "$chart")"
+    fi
 }
 export -f release_custom_hook
 export RELEASE_CUSTOM_HOOK=release_custom_hook
