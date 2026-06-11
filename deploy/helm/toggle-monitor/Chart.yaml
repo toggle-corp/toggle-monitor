@@ -2,8 +2,8 @@ apiVersion: v2
 name: toggle-monitor-helm
 description: Kubernetes-native uptime + SSL monitor with Slack alerts and ingress auto-discovery.
 type: application
-version: 0.1.1  # managed by release.sh
-appVersion: "0.1.0"  # managed by release.sh
+version: 0.2.0-dev4  # managed by release.sh
+appVersion: "0.2.0-dev4"  # managed by release.sh
 home: https://github.com/toggle-corp/toggle-monitor
 sources:
   - https://github.com/toggle-corp/toggle-monitor
