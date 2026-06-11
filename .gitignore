@@ -19,3 +19,6 @@ deploy/local/config.yaml
 
 .env
 secrets/
+
+# Local scratch dir for PRDs / issue drafts / session docs.
+tmp/
