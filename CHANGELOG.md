@@ -1,6 +1,18 @@
 # Changelog
 
-## [0.2.0](https://github.com/toggle-corp/toggle-monitor/compare/0.2.0-dev3..0.2.0) - 2026-06-11
+## [0.3.0](https://github.com/toggle-corp/toggle-monitor/compare/0.2.0..0.3.0) - 2026-07-24
+### Changes:
+
+#### 🚀  Features
+
+- *(selfhealth)* Detect monitor-blind outage, suppress false storm (ADR-0008) - ([86e6459](https://github.com/toggle-corp/toggle-monitor/commit/86e64595bc704aafaf9f6649a5f40ed0c9eada9e))
+
+#### ⚙️ Miscellaneous Tasks
+
+- Use tagged version for fugit - ([efdd485](https://github.com/toggle-corp/toggle-monitor/commit/efdd485be78f95ce9a2d206f52f45013cd732e1a))
+
+
+## [0.2.0] - 2026-06-11
 ### Changes:
 
 #### 🚀  Features
