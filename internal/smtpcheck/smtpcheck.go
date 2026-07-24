@@ -76,7 +76,7 @@ func (cfg Config) run(ctx context.Context) probe.Result {
 	addr := net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", cfg.Port))
 	conn, err := cfg.dial(dialCtx, addr)
 	if err != nil {
-		return probe.Result{Error: fmt.Sprintf("dial %s: %v", addr, err)}
+		return probe.Result{Error: fmt.Sprintf("dial %s: %v", addr, err), FailKind: classify(err)}
 	}
 	// One overall deadline covers the entire conversation start-to-finish.
 	_ = conn.SetDeadline(deadline)
@@ -97,7 +97,7 @@ func (cfg Config) run(ctx context.Context) probe.Result {
 		tconn := tls.Client(conn, tlsConfig)
 		if err := tconn.HandshakeContext(dialCtx); err != nil {
 			_ = conn.Close()
-			return probe.Result{Error: fmt.Sprintf("implicit tls handshake: %v", err)}
+			return probe.Result{Error: fmt.Sprintf("implicit tls handshake: %v", err), FailKind: probe.FailKindTLS}
 		}
 		conn = tconn
 	}
@@ -117,7 +117,7 @@ func (cfg Config) run(ctx context.Context) probe.Result {
 
 	if cfg.TLSMode == TLSStartTLS {
 		if ok, _ := client.Extension("STARTTLS"); !ok {
-			return probe.Result{Code: 250, Error: "server does not advertise STARTTLS"}
+			return probe.Result{Code: 250, Error: "server does not advertise STARTTLS", FailKind: probe.FailKindHTTP}
 		}
 		if err := client.StartTLS(tlsConfig); err != nil {
 			return failure("starttls", err)
@@ -155,12 +155,47 @@ func (cfg Config) dial(ctx context.Context, addr string) (net.Conn, error) {
 }
 
 // failure builds a probe.Result for an error at the named SMTP step.
-// SMTP reply errors (textproto.Error) carry the decisive reply code;
-// transport/TLS errors leave Code at 0 with the reason in Error.
+// SMTP reply errors (textproto.Error) carry the decisive reply code and
+// are application-level failures (probe.FailKindHTTP); transport/TLS
+// errors leave Code at 0 and get classified from the error chain.
 func failure(step string, err error) probe.Result {
 	var pe *textproto.Error
 	if errors.As(err, &pe) {
-		return probe.Result{Code: pe.Code, Error: fmt.Sprintf("%s: %v", step, err)}
+		return probe.Result{Code: pe.Code, Error: fmt.Sprintf("%s: %v", step, err), FailKind: probe.FailKindHTTP}
 	}
-	return probe.Result{Error: fmt.Sprintf("%s: %v", step, err)}
+	return probe.Result{Error: fmt.Sprintf("%s: %v", step, err), FailKind: classify(err)}
+}
+
+// classify maps a transport-level error into a probe.FailKind by
+// unwrapping the real error chain (errors.As), never by string-matching.
+// DNS runs before the generic timeout check because a timed-out lookup
+// is wrapped in a *net.DNSError. See ADR-0008.
+func classify(err error) probe.FailKind {
+	if err == nil {
+		return probe.FailKindNone
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return probe.FailKindDNS
+	}
+	var certErr *tls.CertificateVerificationError
+	if errors.As(err, &certErr) {
+		return probe.FailKindTLS
+	}
+	var recordErr *tls.RecordHeaderError
+	if errors.As(err, &recordErr) {
+		return probe.FailKindTLS
+	}
+	var alertErr tls.AlertError
+	if errors.As(err, &alertErr) {
+		return probe.FailKindTLS
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return probe.FailKindTimeout
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return probe.FailKindTimeout
+	}
+	return probe.FailKindDial
 }

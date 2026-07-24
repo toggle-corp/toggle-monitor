@@ -5,6 +5,7 @@ package httpcheck
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -40,6 +41,11 @@ type Result struct {
 	Error        string // empty iff the request returned a status code in AcceptedStatusCodes
 	ResponseBody []byte
 
+	// FailKind classifies a failure by network layer, derived from the
+	// real error chain (never string-matched). probe.FailKindNone on
+	// success. See ADR-0008.
+	FailKind probe.FailKind
+
 	// TLS holds certificate info captured from the response's
 	// TLS handshake. Nil for plain HTTP probes and for probes that
 	// failed before the handshake completed.
@@ -62,6 +68,7 @@ func (cfg Config) Probe(ctx context.Context) probe.Result {
 	out := probe.Result{
 		Code:     res.StatusCode,
 		Error:    res.Error,
+		FailKind: res.FailKind,
 		Duration: res.Duration,
 	}
 	if res.TLS != nil {
@@ -122,7 +129,7 @@ func Check(ctx context.Context, cfg Config) Result {
 	resp, err := client.Do(req)
 	dur := time.Since(start)
 	if err != nil {
-		return Result{Error: err.Error(), Duration: dur}
+		return Result{Error: err.Error(), FailKind: classify(err), Duration: dur}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -142,8 +149,53 @@ func Check(ctx context.Context, cfg Config) Result {
 	}
 	if !accepted(resp.StatusCode, cfg.AcceptedStatusCodes) {
 		res.Error = fmt.Sprintf("unexpected status %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+		// A decisive status code was received — an application-level
+		// failure, never a transport/DNS one (ADR-0008).
+		res.FailKind = probe.FailKindHTTP
 	}
 	return res
+}
+
+// classify maps a transport-level error from client.Do into a
+// probe.FailKind by unwrapping the real error chain (errors.As on
+// *net.DNSError / *tls.*), never by string-matching. Order matters:
+// a DNS lookup that timed out is wrapped in a *net.DNSError, so the
+// DNS check runs before the generic timeout check. Anything after a
+// completed resolution that is a connect/timeout is FailKindDial or
+// FailKindTimeout; a TLS-handshake failure is FailKindTLS.
+func classify(err error) probe.FailKind {
+	if err == nil {
+		return probe.FailKindNone
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return probe.FailKindDNS
+	}
+	var certErr *tls.CertificateVerificationError
+	if errors.As(err, &certErr) {
+		return probe.FailKindTLS
+	}
+	var recordErr *tls.RecordHeaderError
+	if errors.As(err, &recordErr) {
+		return probe.FailKindTLS
+	}
+	var alertErr tls.AlertError
+	if errors.As(err, &alertErr) {
+		return probe.FailKindTLS
+	}
+	// context deadline / i/o timeout after resolution succeeded.
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return probe.FailKindTimeout
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return probe.FailKindTimeout
+	}
+	// Anything left — a connect-level failure (connection refused /
+	// reset) after resolution, or an unrecognized transport error — is
+	// dial-class. This is the safe default for ADR-0008: only FailKindDNS
+	// trips degraded mode, so a misclassification here never over-trips.
+	return probe.FailKindDial
 }
 
 func accepted(code int, list []int) bool {

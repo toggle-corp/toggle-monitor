@@ -46,6 +46,7 @@ type Config struct {
 	Kube            *Kube               `yaml:"kube,omitempty"`      // optional; nil disables auto-discovery
 	Sentry          *Sentry             `yaml:"sentry,omitempty"`    // optional; nil disables Sentry forwarding
 	Slack           Slack               `yaml:"slack"`
+	SelfHealth      *SelfHealth         `yaml:"selfHealth,omitempty"`   // optional; nil disables self-health degraded mode (ADR-0008)
 	Alertmanager    *AlertmanagerConfig `yaml:"alertmanager,omitempty"` // optional; nil disables the AM webhook receiver (ADR-0005)
 	Proxies         []Proxy             `yaml:"proxies,omitempty"`
 	Monitors        []Monitor           `yaml:"monitors"`
@@ -515,6 +516,52 @@ func (c Coalesce) EffectiveOnDemandProbeTimeout() time.Duration {
 	return DefaultOnDemandProbeTimeout
 }
 
+// SelfHealth configures the self-health degraded-mode detector
+// (ADR-0008). When the block is present, a burst of DNS-resolution
+// failures across ≥ MinMonitors distinct monitors (with zero successes)
+// within Window is treated as "the monitor went blind" and suppressed
+// into a single self-health notice instead of N phantom service
+// outages. Omitting the whole block disables the feature entirely:
+// individual DNS failures commit immediately, as before.
+type SelfHealth struct {
+	// Window is W: the rolling detection/decision window. Default 90s.
+	Window Duration `yaml:"window,omitempty"`
+	// MinMonitors is N_min: the number of distinct DNS-failing monitors
+	// required to trip degraded mode. Must be ≥ 2 (a 1–2 monitor
+	// deployment inferring global blindness off a single flaky lookup is
+	// pathological). Default 3.
+	MinMonitors int `yaml:"minMonitors,omitempty"`
+	// Channel is the Slack channel slug the self-health incident posts
+	// to. Empty → metric + log only (no Slack). Must resolve to a
+	// configured slack channel when set.
+	Channel string `yaml:"channel,omitempty"`
+	// Mention is optional raw on-call escalation markup added to the
+	// degraded notice.
+	Mention string `yaml:"mention,omitempty"`
+}
+
+// Documented defaults for self-health degraded mode (ADR-0008).
+const (
+	DefaultSelfHealthWindow      = 90 * time.Second
+	DefaultSelfHealthMinMonitors = 3
+)
+
+// EffectiveWindow returns the configured Window or the default.
+func (s SelfHealth) EffectiveWindow() time.Duration {
+	if d := s.Window.AsDuration(); d > 0 {
+		return d
+	}
+	return DefaultSelfHealthWindow
+}
+
+// EffectiveMinMonitors returns the configured MinMonitors or the default.
+func (s SelfHealth) EffectiveMinMonitors() int {
+	if s.MinMonitors > 0 {
+		return s.MinMonitors
+	}
+	return DefaultSelfHealthMinMonitors
+}
+
 // SlackChannel is one Slack destination.
 type SlackChannel struct {
 	Slug      string `yaml:"slug"`
@@ -956,6 +1003,13 @@ func (c *checker) validate(cfg *Config) {
 	}
 
 	c.validateCoalesce(cfg.Slack.Coalesce)
+
+	// selfHealth.* — see ADR-0008. minMonitors < 2 is pathological; the
+	// channel slug (if set) must resolve to a configured slack channel.
+	// Runs after the channel set is populated above.
+	if cfg.SelfHealth != nil {
+		c.validateSelfHealth(*cfg.SelfHealth, seenSlackChannels)
+	}
 
 	// kube.match validation: see ADR-0002 §Validation. Structural
 	// errors only — resolved-value errors (interval/timeout, SSL
@@ -1836,6 +1890,27 @@ func (c *checker) validateCoalesce(co Coalesce) {
 		default:
 			c.errf(append(base, "groupMention"),
 				"%q must be one of channel | here | none", co.GroupMention)
+		}
+	}
+}
+
+// validateSelfHealth enforces the ADR-0008 rules: minMonitors, when
+// set, must be >= 2 (1 trips on any single flaky lookup; a 1–2 monitor
+// deployment cannot meaningfully infer global blindness). The channel
+// slug, when set, must resolve to a configured slack channel; empty
+// channel is valid (metric + log only). Window may be zero (defaulted);
+// the Duration unmarshaler already rejects negatives.
+func (c *checker) validateSelfHealth(sh SelfHealth, channels map[string]struct{}) {
+	base := []any{"selfHealth"}
+	if sh.MinMonitors != 0 && sh.MinMonitors < 2 {
+		c.errf(append(base, "minMonitors"),
+			"%d is pathological — a 1–2 monitor deployment cannot infer global blindness. Use >= 2",
+			sh.MinMonitors)
+	}
+	if sh.Channel != "" {
+		if _, ok := channels[sh.Channel]; !ok {
+			c.errf(append(base, "channel"),
+				"unknown channel slug %q", sh.Channel)
 		}
 	}
 }

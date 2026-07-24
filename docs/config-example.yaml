@@ -179,6 +179,19 @@ slack:
     groupMention: channel                           # @channel on group open + reminder (channel | here | none)
     onDemandProbeTimeout: 5s                        # hot-parent probe budget at pendingWait expiry
 
+# Self-health degraded mode (ADR-0008): when a cluster-internal DNS
+# outage takes out the monitor's own resolver, *every* probe DNS-fails
+# and treating that as N service outages pages the wrong people. Instead
+# a burst of DNS failures across >= minMonitors distinct monitors (with
+# zero successes) within `window` is suppressed into a single
+# self-health notice. Omit the whole block to disable (individual DNS
+# failures commit immediately, as today).
+selfHealth:
+  window: 90s                                       # W — rolling detect/decide window
+  minMonitors: 3                                    # N_min — distinct DNS-failing monitors to trip (>= 2)
+  channel: ops-alerts                               # self-health notice channel; omit → metric + log only
+  mention: <!subteam^S02ABCDEF34>                   # optional @mention on the degraded notice
+
 # ── Anchor host (ignored by validator) ────────────────────────────────────────
 x-monitor-defaults: &staticDefaults
   httpMethod: GET

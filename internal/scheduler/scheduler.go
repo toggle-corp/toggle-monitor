@@ -150,6 +150,16 @@ type Metrics interface {
 	SetActiveIncident(typeLabel, monitor string, active bool)
 }
 
+// SelfHealthReporter is the seam the scheduler uses to feed the
+// self-health detector (ADR-0008). Every tick's outcome is reported;
+// Degraded lets Tick decide whether a DNS failure should be held
+// provisional (deferred, no alert/dispatch) rather than committed. nil
+// disables the feature (selfHealth block omitted): DNS failures commit
+// immediately, as before.
+type SelfHealthReporter interface {
+	Report(slug string, kind probe.FailKind, success bool, at time.Time)
+}
+
 // Scheduler drives the configured set of monitors.
 type Scheduler struct {
 	repo       *store.Repo
@@ -158,6 +168,7 @@ type Scheduler struct {
 	groupSink  GroupSink
 	pushPropag PushPropagation
 	metrics    Metrics
+	selfHealth SelfHealthReporter
 	log        *slog.Logger
 	now        func() time.Time
 
@@ -209,6 +220,14 @@ func WithPushPropagation(p PushPropagation) Option {
 // WithMetrics wires the Prometheus metrics sink. Defaults to a no-op
 // (tests that don't care about metrics need no setup).
 func WithMetrics(m Metrics) Option { return func(s *Scheduler) { s.metrics = m } }
+
+// WithSelfHealth wires the self-health detector (ADR-0008). When set, a
+// FailKindDNS tick is reported and held provisional — no alert.Apply, no
+// DB write, no dispatch — while the detector is (or may become)
+// degraded. nil disables the feature.
+func WithSelfHealth(r SelfHealthReporter) Option {
+	return func(s *Scheduler) { s.selfHealth = r }
+}
 
 // New constructs a Scheduler with sensible defaults.
 func New(repo *store.Repo, opts ...Option) *Scheduler {
@@ -405,6 +424,24 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 		}
 		s.metrics.ObserveCheck(p.Slug, status, time.Since(tickStart))
 		s.metrics.SetWorkerLastTick(float64(s.now().Unix()))
+	}
+
+	// Self-health defer-and-decide (ADR-0008). Report every outcome so
+	// the detector can track the zero-success veto and the DNS-burst
+	// count. A DNS-resolution failure is *not signal about the monitored
+	// service* while the monitor may be blind — hold it provisional and
+	// early-return before alert.Apply / dispatch, mirroring the SIGTERM
+	// "not signal" precedent above. The central evaluator later decides
+	// whether to commit (isolated blip) or discard (real blindness).
+	// Freeze is uniform — critical monitors included: a DNS failure while
+	// blind carries zero information about a critical service. Everything
+	// that is not a DNS failure (including application errors,
+	// Code!=0 / FailKindHTTP) falls through and transitions normally.
+	if s.selfHealth != nil {
+		s.selfHealth.Report(p.Slug, res.FailKind, res.Error == "", s.now())
+		if res.FailKind == probe.FailKindDNS {
+			return nil
+		}
 	}
 
 	row, err := s.repo.GetMonitor(ctx, p.Slug)

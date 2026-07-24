@@ -225,6 +225,111 @@ func makeOnDemandParentProbe(
 	}
 }
 
+// makeSelfHealthCommit builds the commit callback the self-health
+// evaluator invokes for an isolated DNS failure that did NOT trip
+// degraded mode (ADR-0008). Such a failure was held provisional by the
+// scheduler (no alert.Apply, no dispatch); committing re-probes the
+// monitor and, if still failing, drives alert.Apply + persists the
+// event, then routes it through the normal path (critical → per-monitor
+// notifier; non-critical → dispatcher) so it pages ~W late as a normal
+// EventOpen. A monitor that recovered in the meantime (probe now
+// succeeds) simply commits nothing.
+//
+// This mirrors makeOnDemandParentProbe's re-probe-and-apply shape but
+// without push-propagation — an isolated leaf failure has no children to
+// drain. Errors are logged best-effort; a failure here must never crash
+// the evaluator goroutine.
+func makeSelfHealthCommit(
+	repo *store.Repo,
+	mgr *coalesce.Manager,
+	plans planProvider,
+	push scheduler.PushPropagation,
+	notifier *slack.Notifier,
+	now func() time.Time,
+	log *slog.Logger,
+) commitFunc {
+	return func(ctx context.Context, slug string) {
+		var pl scheduler.Plan
+		var found bool
+		for _, p := range plans.CurrentPlans() {
+			if p.Slug == slug {
+				pl = p
+				found = true
+				break
+			}
+		}
+		if !found || pl.Prober == nil {
+			return
+		}
+
+		res := pl.Prober.Probe(ctx)
+		if ctx.Err() != nil || res.Error == "" {
+			return // recovered or cancelled — commit nothing
+		}
+
+		row, err := repo.GetMonitor(ctx, slug)
+		if err != nil {
+			log.Warn("self-health commit: get monitor", "slug", slug, "error", err)
+			return
+		}
+		prev := row.State()
+		if row.Status == alert.StatusTemporaryPaused {
+			if row.OpenedAt != nil {
+				prev.Status = alert.StatusDown
+			} else {
+				prev.Status = alert.StatusUp
+			}
+		}
+
+		at := now()
+		check := alert.Check{
+			Outcome:          alert.OutcomeFail,
+			At:               at,
+			StatusCode:       res.Code,
+			Error:            res.Error,
+			ReminderInterval: pl.ReminderInterval,
+		}
+		next, event := alert.Apply(prev, check)
+		if err := repo.ApplyCheck(ctx, slug, next, at, res.Code, res.Error, event); err != nil {
+			log.Warn("self-health commit: apply check", "slug", slug, "error", err)
+			return
+		}
+		if event == nil || pl.ChannelSlug == "" {
+			return
+		}
+		// Route the committed failure through the normal path.
+		switch {
+		case pl.Critical:
+			mv := monitorViewFromRow(row)
+			if event.StatusCode != 0 {
+				mv.StatusCode = event.StatusCode
+			}
+			if event.Error != "" {
+				mv.LastError = event.Error
+			}
+			if err := notifier.Notify(ctx, pl.ChannelSlug, pl.Mentions, mv, event); err != nil {
+				log.Warn("self-health commit: notify", "slug", slug, "error", err)
+			}
+		default:
+			mgr.Route(ctx, pl.ChannelSlug, coalesce.Entry{
+				Member: coalesce.MemberInfo{
+					Slug:         pl.Slug,
+					FriendlyName: pl.FriendlyName,
+					Mentions:     pl.Mentions,
+				},
+				Row:      row,
+				Event:    event,
+				Mentions: pl.Mentions,
+			})
+		}
+		// Push-propagation: a committed EventOpen may have children to
+		// pause, same as a normal tick's EventOpen.
+		if event.Type == alert.EventOpen && push != nil {
+			push(ctx, slug, at)
+		}
+	}
+}
+
 // makePushPropagation builds the parent-EventOpen → reverse-deps hook
 // described in ADR-0004. The closure rebuilds the depindex from a
 // fresh CurrentPlans snapshot on each invocation: kube discovery can

@@ -32,6 +32,8 @@ func TestMetrics_exposesAllDocumentedSeries(t *testing.T) {
 	m.AMLateResolve()
 	m.AMWebhookLatency(0.123)
 	m.AMBatchSize(3)
+	m.SetSelfDegraded(true)
+	m.SelfDegradedEntry()
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/metrics", nil)
@@ -58,6 +60,8 @@ func TestMetrics_exposesAllDocumentedSeries(t *testing.T) {
 		"toggle_monitor_am_late_resolve_total",
 		"toggle_monitor_am_webhook_latency_seconds",
 		"toggle_monitor_am_batch_size",
+		"toggle_monitor_self_degraded",
+		"toggle_monitor_self_degraded_entries_total",
 		"go_goroutines",             // Go runtime collector
 		"process_cpu_seconds_total", // process collector
 	} {

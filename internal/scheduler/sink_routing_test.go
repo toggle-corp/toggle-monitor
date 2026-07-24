@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/toggle-corp/toggle-monitor/internal/probe"
 	"github.com/toggle-corp/toggle-monitor/internal/slack"
 )
 
@@ -90,5 +92,47 @@ func TestLogSinkError_nonSlackErrorIsERROR(t *testing.T) {
 	logSinkError(log, "event sink", "api", "open", errors.New("some other failure"))
 	if !strings.Contains(buf.String(), `"level":"ERROR"`) {
 		t.Errorf("expected ERROR for non-SlackError; got:\n%s", buf.String())
+	}
+}
+
+// fakeReporter records self-health reports for assertions.
+type fakeReporter struct {
+	slugs []string
+	kinds []probe.FailKind
+	oks   []bool
+}
+
+func (f *fakeReporter) Report(slug string, kind probe.FailKind, success bool, _ time.Time) {
+	f.slugs = append(f.slugs, slug)
+	f.kinds = append(f.kinds, kind)
+	f.oks = append(f.oks, success)
+}
+
+// staticProber returns a fixed probe.Result each tick.
+type staticProber struct{ res probe.Result }
+
+func (p staticProber) Probe(context.Context) probe.Result { return p.res }
+
+// TestTick_dnsFailure_defersBeforeStore is the ADR-0008 defer: a
+// FailKindDNS tick reports the outcome to the self-health detector and
+// early-returns before any store access — hence a nil repo never panics.
+// Contrast with a non-DNS failure, which would reach GetMonitor and
+// panic on the nil repo.
+func TestTick_dnsFailure_defersBeforeStore(t *testing.T) {
+	fr := &fakeReporter{}
+	s := New(nil, WithSelfHealth(fr))
+	p := Plan{
+		Slug:   "blind-one",
+		Prober: staticProber{res: probe.Result{Error: "lookup x: i/o timeout", FailKind: probe.FailKindDNS}},
+	}
+
+	if err := s.Tick(context.Background(), p); err != nil {
+		t.Fatalf("Tick returned error: %v", err)
+	}
+	if len(fr.slugs) != 1 || fr.slugs[0] != "blind-one" {
+		t.Fatalf("expected one report for blind-one, got %v", fr.slugs)
+	}
+	if fr.kinds[0] != probe.FailKindDNS || fr.oks[0] {
+		t.Errorf("report: got kind=%q ok=%v, want dns/false", fr.kinds[0], fr.oks[0])
 	}
 }

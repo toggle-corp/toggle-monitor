@@ -45,6 +45,8 @@ There is **no authentication** in v1. Restrict access via:
 | `toggle_monitor_slack_fresh_parent_total` | counter | `kind="uptime|ssl"` | Fresh-parent fallbacks: a reminder fired with no parent thread ts on file (initial Open delivery had failed), so the notifier synthesized a new parent. Non-zero in a healthy cluster suggests the retry budget is too small. |
 | `toggle_monitor_ingress_reconcile_total` | counter | `result="added|skipped|removed"` | Registered; **not yet incremented in v0.1**. Tracked as a follow-up. |
 | `toggle_monitor_worker_last_tick_seconds` | gauge | — | Unix time of the most recent check completion (success or failure). Drives the heartbeat liveness criterion. |
+| `toggle_monitor_self_degraded` | gauge | — | `1` while the monitor considers itself blind (self-health degraded mode, ADR-0008), `0` otherwise. Emitted independently of Slack. |
+| `toggle_monitor_self_degraded_entries_total` | counter | — | Number of times the monitor entered self-health degraded mode. |
 
 Plus the Go runtime + process collectors via
 `promhttp` (`go_goroutines`, `go_gc_*`, `process_*`, etc.).
@@ -71,6 +73,40 @@ sum(rate(toggle_monitor_slack_post_total{reason="transient"}[15m]))
 # is too small for your link's failure profile.
 sum by (outcome) (rate(toggle_monitor_slack_retry_total[15m]))
 ```
+
+### Dead-man's-switch rules (self-health, ADR-0008)
+
+When a cluster-internal DNS/network outage blinds the monitor, its
+self-health Slack notice usually cannot be delivered (Slack needs DNS
+too) until connectivity returns. Prometheus scrapes pods **by IP** (k8s
+service discovery) and therefore lives *outside* that DNS failure
+domain — it is the authoritative "the monitor can't tell anyone"
+signal. Configure **both** rules, covering the two failure modes:
+
+```promql
+# Pod alive but blind: self-health degraded mode is engaged.
+toggle_monitor_self_degraded == 1
+
+# Pod dead / unscrapeable / totally partitioned: either the target has
+# vanished from service discovery, or no worker tick has landed for
+# several minutes (adjust the threshold to a few probe intervals).
+absent(up{job="toggle-monitor"}) == 1
+or time() - toggle_monitor_worker_last_tick_seconds > 360
+```
+
+A push-heartbeat to a third party (healthchecks.io, Dead Man's Snitch)
+is an option for Prometheus-less operators, but it would itself need
+egress the outage may have killed — Prometheus's IP-based scrape is
+strictly more resilient. See [Heartbeat](#heartbeat) for the outbound
+option.
+
+**Note — residual Slack-only outage:** self-health suppresses the storm
+for the *network-blind* case. A pure Slack-only outage (probes fine,
+only Slack unreachable) is not blindness, so it does not trip degraded
+mode; the sub-threshold path can still emit up to `burstThreshold − 1`
+late fresh-parent messages *per channel* on recovery — bounded below
+your own burst line, and cross-channel coalescing was deferred in
+ADR-0004.
 
 ## Logs
 

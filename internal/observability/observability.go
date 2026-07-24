@@ -35,6 +35,14 @@ type Metrics struct {
 	IngressReconcileTotal *prometheus.CounterVec
 	WorkerLastTickSeconds prometheus.Gauge
 
+	// Self-health degraded mode (ADR-0008). SelfDegraded is 1 while the
+	// monitor considers itself blind, 0 otherwise; SelfDegradedEntries
+	// counts each entry into degraded mode. Emitted independently of
+	// Slack — Prometheus scrapes pods by IP so it lives outside the DNS
+	// failure domain the notice cannot escape.
+	SelfDegraded        prometheus.Gauge
+	SelfDegradedEntries prometheus.Counter
+
 	// AM-scoped counters (ADR-0005). Kept distinct from SlackPostTotal
 	// so dashboards can separate AM-driven volume from monitor-driven
 	// volume even though both ultimately hit the same Slack channel.
@@ -98,6 +106,15 @@ func New() *Metrics {
 			Name: "toggle_monitor_worker_last_tick_seconds",
 			Help: "Unix time of the most recent check completion (success or failure).",
 		}),
+		SelfDegraded: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "toggle_monitor_self_degraded",
+			Help: "1 while the monitor considers itself blind (self-health " +
+				"degraded mode, ADR-0008), 0 otherwise.",
+		}),
+		SelfDegradedEntries: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "toggle_monitor_self_degraded_entries_total",
+			Help: "Number of times the monitor entered self-health degraded mode.",
+		}),
 		AMWebhookRequestTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "toggle_monitor_am_webhook_request_total",
 			Help: "Alertmanager webhook deliveries, partitioned by result " +
@@ -147,6 +164,8 @@ func New() *Metrics {
 		m.SlackFreshParentTotal,
 		m.IngressReconcileTotal,
 		m.WorkerLastTickSeconds,
+		m.SelfDegraded,
+		m.SelfDegradedEntries,
 		m.AMWebhookRequestTotal,
 		m.AMAlertProcessedTotal,
 		m.AMSlackPostTotal,
@@ -201,6 +220,22 @@ func (m *Metrics) SetActiveIncident(typeLabel, monitor string, active bool) {
 		val = 1
 	}
 	m.ActiveIncidents.WithLabelValues(typeLabel, monitor).Set(val)
+}
+
+// SetSelfDegraded flips the self-health degraded-mode gauge (ADR-0008):
+// 1 while blind, 0 once connectivity is restored.
+func (m *Metrics) SetSelfDegraded(degraded bool) {
+	val := 0.0
+	if degraded {
+		val = 1
+	}
+	m.SelfDegraded.Set(val)
+}
+
+// SelfDegradedEntry increments the self-health entry counter, called
+// once each time the monitor enters degraded mode.
+func (m *Metrics) SelfDegradedEntry() {
+	m.SelfDegradedEntries.Inc()
 }
 
 // SlackPost increments the per-Notify outcome counter. Implements the

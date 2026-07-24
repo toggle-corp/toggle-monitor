@@ -202,6 +202,65 @@ startup, not the runtime tick.
 
 ---
 
+## 2c. Self-health degraded mode (optional) — ADR-0008
+
+When a cluster-internal DNS/network outage takes out the monitor's own
+resolver, *every* probe fails with a DNS-resolution error and Slack
+delivery fails too. Treating that as N service outages pages the wrong
+people under a wrong mental model. The self-health detector recognizes
+the pattern and emits **one** self-health notice instead.
+
+```yaml
+selfHealth:                                 # optional; omit to disable
+  window: 90s                               # W — rolling detect/decide window
+  minMonitors: 3                            # N_min — distinct DNS-failing monitors to trip (>= 2)
+  channel: ops-alerts                       # self-health notice channel; omit → metric + log only
+  mention: <!subteam^S02ABCDEF34>           # optional @mention on the degraded notice
+```
+
+| Field | Type | Required | Constraint | Notes |
+|---|---|---|---|---|
+| `selfHealth.window` | duration | — | default `90s` | Rolling detection/decision window `W`. A DNS failure is held provisional this long before it can page |
+| `selfHealth.minMonitors` | int | — | default `3`; `< 2` is rejected (pathological) | `N_min` — distinct monitors that must DNS-fail (with zero successes) within `W` to trip degraded mode |
+| `selfHealth.channel` | string | — | must resolve to a `slack.channels[]` slug when set | Self-health notice destination. Empty → metric + log only (no Slack). Never fanned out to per-service channels |
+| `selfHealth.mention` | string | — | raw Slack markup | Optional on-call escalation `@mention` on the degraded notice |
+
+**Trigger.** Degraded mode enters iff, within `W`: (1) `>= minMonitors`
+distinct monitors reported a **DNS-class** failure, **and** (2) zero
+probes succeeded. The DNS-class key separates "I'm blind" from "targets
+genuinely down" — a real total outage yields `connection refused` / dial
+timeouts (classified `dial`, not `dns`), so it does **not** trip and the
+burst dispatcher handles it as one grouped incident. A single success in
+`W` vetoes the trip (the monitor can reach *something*, so it is not
+network-isolated).
+
+**Mechanics (defer-and-decide).** A DNS-class tick does not call
+`alert.Apply` — it is held provisional (no DB write, no dispatch),
+mirroring the SIGTERM "not signal about the monitored service"
+precedent. Once per `W` the evaluator decides: **tripped** → discard the
+provisionals (fully silent, no phantom incident history); **not
+tripped** → commit the isolated failure and page it as a normal
+`EventOpen`, ~`W` late. Freeze is uniform — `critical` monitors
+included: a DNS failure while blind carries zero information about a
+critical service. Critical monitors keep their bypass for real signal
+(application errors during degraded mode, and anything once connectivity
+returns).
+
+**Notice + dead-man's-switch.** The notice is best-effort (Slack usually
+needs DNS too, so it normally lands as a single post-hoc summary once
+connectivity returns). The authoritative signal is Prometheus, which
+scrapes pods by IP and lives outside the DNS failure domain: the
+`toggle_monitor_self_degraded` gauge and `toggle_monitor_self_degraded_entries_total`
+counter are always emitted. See [operations.md](operations.md) for the
+alert rules.
+
+**Known gap (out of scope for v1):** egress loss *without* DNS loss (DNS
+cached, all dials time out) is `dial`, not `dns`, so it does not trip.
+Broadening to `dial` risks the total-outage false positive; kube-dns
+failure is the dominant real case.
+
+---
+
 ## 3. Groups
 
 ```yaml

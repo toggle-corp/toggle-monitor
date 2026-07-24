@@ -32,6 +32,7 @@ import (
 	"github.com/toggle-corp/toggle-monitor/internal/proxypool"
 	"github.com/toggle-corp/toggle-monitor/internal/scheduler"
 	"github.com/toggle-corp/toggle-monitor/internal/secret"
+	"github.com/toggle-corp/toggle-monitor/internal/selfhealth"
 	tmsentry "github.com/toggle-corp/toggle-monitor/internal/sentry"
 	"github.com/toggle-corp/toggle-monitor/internal/slack"
 	"github.com/toggle-corp/toggle-monitor/internal/smtpcheck"
@@ -392,14 +393,45 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		log,
 	))
 
-	sched := scheduler.New(repo,
+	// Self-health degraded mode (ADR-0008). When the selfHealth block is
+	// present, a shared detector aggregates every tick's outcome; a
+	// FailKindDNS tick is held provisional by the scheduler (no
+	// alert.Apply / dispatch) while the monitor may be blind. A dedicated
+	// evaluator loop (started below) decides once per window whether to
+	// commit isolated failures or suppress a real blindness storm behind
+	// one self-health notice. nil detector → feature disabled (DNS
+	// failures commit immediately, as before).
+	var selfHealthDet *selfhealth.Detector
+	var selfHealthN *selfHealthNotifier
+	if sh := opts.Config.SelfHealth; sh != nil {
+		selfHealthDet = selfhealth.New(selfhealth.Config{
+			Window:      sh.EffectiveWindow(),
+			MinMonitors: sh.EffectiveMinMonitors(),
+		})
+		commit := makeSelfHealthCommit(repo, groupMgr, planSource, pushPropagation, notifier, time.Now, log)
+		selfHealthN = newSelfHealthNotifier(
+			selfHealthDet,
+			&digestPoster{client: slackClient, channels: channelLookup},
+			sh.Channel,
+			sh.Mention,
+			metrics,
+			commit,
+			log,
+		)
+	}
+
+	schedOpts := []scheduler.Option{
 		scheduler.WithLogger(log),
 		scheduler.WithEventSink(buildSink(notifier)),
 		scheduler.WithSSLSink(buildSSLSink(notifier)),
 		scheduler.WithGroupSink(groupSinkAdapter{m: groupMgr}),
 		scheduler.WithPushPropagation(pushPropagation),
 		scheduler.WithMetrics(metrics),
-	)
+	}
+	if selfHealthDet != nil {
+		schedOpts = append(schedOpts, scheduler.WithSelfHealth(selfHealthDet))
+	}
+	sched := scheduler.New(repo, schedOpts...)
 	srv.SetMissingParentReader(&missingParentAdapter{s: sched})
 	staticPlans := buildPlans(opts.Config, proxies)
 	idToSlug := make(map[string]string, len(opts.Config.Slack.UserMapping))
@@ -456,6 +488,17 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		defer wg.Done()
 		groupMgr.RunEvaluator(ctx, 5*time.Second)
 	}()
+
+	// Self-health evaluator (ADR-0008): decides enter/exit once per
+	// window and drives the single self-health notice. Only started when
+	// the selfHealth block is configured.
+	if selfHealthN != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			selfHealthN.run(ctx, opts.Config.SelfHealth.EffectiveWindow())
+		}()
+	}
 
 	// Hourly workspace re-check.
 	wg.Add(1)

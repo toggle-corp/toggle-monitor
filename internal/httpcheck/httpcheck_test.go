@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/toggle-corp/toggle-monitor/internal/httpcheck"
+	"github.com/toggle-corp/toggle-monitor/internal/probe"
 )
 
 // recordingDialer is a proxy.Dialer that records how many times it was
@@ -208,6 +209,70 @@ func TestCheck_ProxyDialer_routesThroughDialer(t *testing.T) {
 	}
 	if res.Error == "" {
 		t.Errorf("expected probe to fail (dialer refuses); got no error")
+	}
+}
+
+// TestProbe_classifiesDNSFailure confirms the prober tags an
+// unresolvable host as probe.FailKindDNS from the real *net.DNSError
+// chain — the signal the self-health detector (ADR-0008) keys off. The
+// .invalid TLD is guaranteed by RFC 6761 never to resolve.
+func TestProbe_classifiesDNSFailure(t *testing.T) {
+	res := httpcheck.Config{
+		URL:                 "https://nonexistent.invalid/",
+		Method:              "GET",
+		AcceptedStatusCodes: []int{200},
+		Timeout:             2 * time.Second,
+	}.Probe(context.Background())
+
+	if res.Error == "" {
+		t.Fatal("expected a DNS resolution error, got success")
+	}
+	if res.FailKind != probe.FailKindDNS {
+		t.Errorf("FailKind: got %q, want %q", res.FailKind, probe.FailKindDNS)
+	}
+}
+
+// TestProbe_classifiesHTTPFailure confirms an unaccepted status code
+// (a real service answering) is probe.FailKindHTTP — never DNS — so it
+// does not trip degraded mode.
+func TestProbe_classifiesHTTPFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	res := httpcheck.Config{
+		URL:                 srv.URL,
+		Method:              "GET",
+		AcceptedStatusCodes: []int{200},
+		Timeout:             2 * time.Second,
+	}.Probe(context.Background())
+
+	if res.FailKind != probe.FailKindHTTP {
+		t.Errorf("FailKind: got %q, want %q", res.FailKind, probe.FailKindHTTP)
+	}
+}
+
+// TestProbe_successHasNoFailKind confirms a successful probe carries
+// probe.FailKindNone.
+func TestProbe_successHasNoFailKind(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	res := httpcheck.Config{
+		URL:                 srv.URL,
+		Method:              "GET",
+		AcceptedStatusCodes: []int{200},
+		Timeout:             2 * time.Second,
+	}.Probe(context.Background())
+
+	if res.Error != "" {
+		t.Fatalf("expected success, got error: %q", res.Error)
+	}
+	if res.FailKind != probe.FailKindNone {
+		t.Errorf("FailKind: got %q, want none", res.FailKind)
 	}
 }
 
