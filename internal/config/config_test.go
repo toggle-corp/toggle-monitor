@@ -1899,3 +1899,51 @@ func TestLoad_coalesce_defaultsWhenOmitted(t *testing.T) {
 		t.Errorf("EffectiveOnDemandProbeTimeout default: got %s, want 5s", got)
 	}
 }
+
+// kubeBlock builds a minimal valid kube: block with the given extra
+// top-level kube keys spliced in, so watchDebounce cases stay one line.
+func kubeBlock(extra string) []byte {
+	return []byte(validMinimal + `
+kube:
+  resyncInterval: 30m
+  ` + extra + `
+  match:
+` + kubeRootBaseline)
+}
+
+func TestLoad_kube_watchDebounceDefaultsWhenOmitted(t *testing.T) {
+	cfg, err := config.Load(kubeBlock(""))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Kube.EffectiveWatchDebounce(); got != 5*time.Second {
+		t.Errorf("EffectiveWatchDebounce default: got %s, want 5s", got)
+	}
+}
+
+func TestLoad_kube_watchDebounceExplicitZeroDisables(t *testing.T) {
+	cfg, err := config.Load(kubeBlock("watchDebounce: 0s"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Kube.EffectiveWatchDebounce(); got != 0 {
+		t.Errorf("explicit 0s must stay zero (watch-driven reconciles off): got %s", got)
+	}
+}
+
+func TestLoad_kube_watchDebounceOutOfRangeRejected(t *testing.T) {
+	for _, tc := range []struct{ name, value string }{
+		{"below minimum", "500ms"},
+		{"above maximum", "5m"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := config.Load(kubeBlock("watchDebounce: " + tc.value))
+			if err == nil {
+				t.Fatalf("watchDebounce %s should be rejected", tc.value)
+			}
+			if !strings.Contains(err.Error(), "kube.watchDebounce") {
+				t.Errorf("error should name the field, got: %v", err)
+			}
+		})
+	}
+}

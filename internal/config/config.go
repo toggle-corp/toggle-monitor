@@ -97,6 +97,20 @@ type Kube struct {
 	ResyncInterval Duration        `yaml:"resyncInterval"`
 	Match          []KubeMatchRule `yaml:"match,omitempty"`
 
+	// WatchDebounce is how long the watcher waits after the first Ingress
+	// event of a burst before reconciling, so a removed Ingress is torn
+	// down within seconds rather than at the next resyncInterval — before
+	// the burst dispatcher's pendingWait elapses and reports the resulting
+	// 404 as a fresh incident. It also caps the added reconcile rate at
+	// one pass per window during churn (a rolling deploy), and acts as a
+	// settle window: a delete followed by a recreate inside the window
+	// changes nothing.
+	//
+	// A pointer so an explicit `0s` (disable watch-driven reconciles;
+	// resyncInterval becomes the only trigger) is distinguishable from an
+	// omitted key (DefaultKubeWatchDebounce).
+	WatchDebounce *Duration `yaml:"watchDebounce,omitempty"`
+
 	// FriendlyName picks the auto-generated monitor name style. One of:
 	//   "plain"   — `(ns) ingress-name` (host appended)
 	//   "compact" — same, with the `-ingress` suffix stripped (default)
@@ -114,6 +128,27 @@ const (
 	KubeFriendlyNameDedupe  = "dedupe"
 	KubeFriendlyNameTitle   = "title"
 )
+
+// Documented bounds and default for kube.watchDebounce. The upper bound
+// keeps the window under the dispatcher's default pendingWait, which is
+// the whole point of the knob: teardown has to land before the burst
+// dispatcher decides what to say about the resulting 404. The lower bound
+// stops a config typo turning cluster churn into a reconcile hot loop.
+const (
+	DefaultKubeWatchDebounce = 5 * time.Second
+	MinKubeWatchDebounce     = time.Second
+	MaxKubeWatchDebounce     = time.Minute
+)
+
+// EffectiveWatchDebounce returns the configured watchDebounce, or
+// DefaultKubeWatchDebounce when the key is omitted. An explicit `0s`
+// is returned as zero, which disables watch-driven reconciles.
+func (k Kube) EffectiveWatchDebounce() time.Duration {
+	if k.WatchDebounce == nil {
+		return DefaultKubeWatchDebounce
+	}
+	return k.WatchDebounce.AsDuration()
+}
 
 // KubeFriendlyNameStyles is the canonical, declaration-ordered list
 // of allowed kube.friendlyName values. Both the validator and the
@@ -1763,6 +1798,16 @@ func (c *checker) validateKube(cfg *Config, slackChannels, proxies map[string]st
 	if k.ResyncInterval.AsDuration() < time.Minute {
 		c.errf([]any{"kube", "resyncInterval"},
 			"must be >= 1m, got %s", k.ResyncInterval)
+	}
+
+	// watchDebounce bounds. Zero is the documented "disabled" value, so
+	// only non-zero values are range-checked.
+	if k.WatchDebounce != nil {
+		if d := k.WatchDebounce.AsDuration(); d != 0 && (d < MinKubeWatchDebounce || d > MaxKubeWatchDebounce) {
+			c.errf([]any{"kube", "watchDebounce"},
+				"must be 0s (disabled) or between %s and %s, got %s",
+				MinKubeWatchDebounce, MaxKubeWatchDebounce, *k.WatchDebounce)
+		}
 	}
 
 	// Match list must be non-empty and the first entry must be the

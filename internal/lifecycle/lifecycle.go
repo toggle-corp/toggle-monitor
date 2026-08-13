@@ -589,6 +589,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		removalSink := &kubeRemovalSink{repo: repo, notifier: notifier, log: log}
 		kubeOpts := kube.Options{
 			ResyncInterval: kc.ResyncInterval.AsDuration(),
+			WatchDebounce:  kc.EffectiveWatchDebounce(),
 			Materializer:   materializer,
 			RemovalSink:    removalSink,
 			Logger:         log,
