@@ -196,6 +196,14 @@ need shared baseline lift it to a common ancestor or duplicate it.
 
 ### Annotations: removed
 
+> **Amendment proposed:** [ADR-0009](0009-from-value-sources-for-kube-discovery.md)
+> reverses this sub-section, narrowly, via `*From` value sources. Its
+> context records that this section's premise — app team and monitoring
+> team being the same humans — does not match the live cluster, which
+> already carries chart-emitted `app.example.com/health-check`
+> annotations. Everything else in this record stands. Flip this
+> sub-section's disposition when ADR-0009 is accepted.
+
 All ingress annotations (`/kube.preset`, `/kube.path`,
 `/config.enabled`, `/config.group`, `/config.tags`,
 `/config.dependsOn`, `/config.notify`) are deleted. The
