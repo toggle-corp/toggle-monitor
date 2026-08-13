@@ -16,6 +16,9 @@ tailwind_in    := "internal/web/tailwind/input.css"
 tailwind_cfg   := "internal/web/tailwind/tailwind.config.js"
 tailwind_out   := "internal/web/static/css/app.css"
 golangci_lint  := bin_dir / "golangci-lint"
+# Pinned to the version .github/workflows/ci.yml installs, so a local
+# `just lint` and CI agree on which checks run.
+golangci_ver   := "v2.12.2"
 templ_bin      := bin_dir / "templ"
 
 go             := env_var_or_default("GO", "go")
@@ -53,6 +56,15 @@ test-integration:
     {{go}} test -tags=integration ./...
 
 # Run golangci-lint over the whole tree.
+#
+# staticcheck analyses the stdlib source of whichever Go toolchain is
+# active, so a patched toolchain can change the findings. Custom builds
+# (e.g. `go1.26.5-X:nodwarf5`) lose the `t.Fatal` -> `FailNow` ->
+# `runtime.Goexit` termination fact and report SA5011 "possible nil
+# pointer dereference" on every `if x == nil { t.Fatal(...) }` guard in
+# the test suite. Those are false positives; CI runs an official
+# toolchain and sees none. Reproduce CI locally with
+# `GOTOOLCHAIN=go1.26.5 just lint`.
 lint: install-golangci-lint
     {{golangci_lint}} run ./...
 
@@ -74,9 +86,9 @@ clean:
 # --- Tool installers (run on demand by the recipes above) -------------
 
 install-golangci-lint:
-    @if [ ! -x "{{golangci_lint}}" ]; then \
+    @if [ ! -x "{{golangci_lint}}" ] || ! {{golangci_lint}} --version | grep -q "{{ replace(golangci_ver, 'v', '') }}"; then \
         mkdir -p {{bin_dir}}; \
-        GOBIN="$PWD/{{bin_dir}}" {{go}} install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest; \
+        GOBIN="$PWD/{{bin_dir}}" {{go}} install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{golangci_ver}}; \
     fi
 
 install-templ:
