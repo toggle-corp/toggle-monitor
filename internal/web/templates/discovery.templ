@@ -14,6 +14,7 @@ import (
 type DiscoveryStatus struct {
 	KubeEnabled    bool          // cfg.Kube != nil
 	ResyncInterval time.Duration // 0 when disabled
+	WatchDebounce  time.Duration // 0 when watch-driven reconciles are off
 }
 
 // DiscoveryFilter is the slim shape the listing handler passes to the
@@ -104,8 +105,10 @@ templ DiscoveryListing(rows []store.DiscoverySnapshotRow, filter DiscoveryFilter
 // discoveryEmptyState picks one of three messages: kube block absent,
 // kube enabled but reconcile pending, or kube enabled + nothing to
 // see (real cluster, zero ingresses). The "pending" vs. "nothing"
-// distinction is heuristic — there's no startup timestamp here, so
-// we lean on resyncInterval to phrase the wait honestly.
+// distinction is heuristic — there's no startup timestamp here, so we
+// lean on the reconcile triggers to phrase the wait honestly: a new
+// Ingress lands one watchDebounce after its watch event, and
+// resyncInterval is the ceiling when watch-driven reconciles are off.
 templ discoveryEmptyState(s DiscoveryStatus) {
 	if !s.KubeEnabled {
 		<div class="rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 text-sm">
@@ -116,7 +119,12 @@ templ discoveryEmptyState(s DiscoveryStatus) {
 		<div class="rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 text-sm">
 			<p class="font-medium text-slate-700 dark:text-slate-200 mb-1">Auto-discovery is enabled — no ingresses observed yet.</p>
 			<p class="text-slate-500 dark:text-slate-400">
-				The watcher reconciles every { humanInterval(s.ResyncInterval) }. If your cluster has Ingress resources and this stays empty, check the app logs for <code class="text-xs">kube reconcile failed</code> or RBAC errors on <code class="text-xs">networking.k8s.io/ingresses</code>.
+				if s.WatchDebounce > 0 {
+					The watcher picks up a new Ingress about { humanInterval(s.WatchDebounce) } after it appears, and re-reconciles every { humanInterval(s.ResyncInterval) } regardless.
+				} else {
+					The watcher reconciles every { humanInterval(s.ResyncInterval) }.
+				}
+				If your cluster has Ingress resources and this stays empty, check the app logs for <code class="text-xs">kube reconcile failed</code> or RBAC errors on <code class="text-xs">networking.k8s.io/ingresses</code>.
 			</p>
 		</div>
 	}

@@ -129,11 +129,13 @@ const (
 	KubeFriendlyNameTitle   = "title"
 )
 
-// Documented bounds and default for kube.watchDebounce. The upper bound
-// keeps the window under the dispatcher's default pendingWait, which is
-// the whole point of the knob: teardown has to land before the burst
-// dispatcher decides what to say about the resulting 404. The lower bound
-// stops a config typo turning cluster churn into a reconcile hot loop.
+// Documented bounds and default for kube.watchDebounce. The default sits
+// well inside the dispatcher's default pendingWait (30s), which is the
+// point of the knob: teardown has to land before the burst dispatcher
+// decides what to say about the resulting 404. The bounds are only sanity
+// rails — a window at the upper end outlives a default pendingWait and
+// gives up that ordering, while the lower one stops a config typo turning
+// cluster churn into a reconcile hot loop.
 const (
 	DefaultKubeWatchDebounce = 5 * time.Second
 	MinKubeWatchDebounce     = time.Second

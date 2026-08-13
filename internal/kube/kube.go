@@ -487,9 +487,10 @@ func NewWithCluster(ctx context.Context, s SnapshotStore, opts Options, kubeconf
 // client-go replays the whole cache as synthetic Adds; those carry
 // isInInitialList and are dropped, which is what keeps startup from
 // queueing a redundant pass behind Run's own first reconcile. Update is
-// deliberately not handled: the informer emits one per object per resync,
-// and a host change already reaches teardown through the vacated-slug
-// path on the next pass.
+// not handled: the informer emits one per object per resync, so
+// subscribing would let a resync drive reconciles, and a host change
+// already reaches teardown through the vacated-slug path on the next
+// pass.
 //
 // Handlers only enqueue. Informer events are delivered to a handler
 // sequentially, so doing real work here would stall delivery; a panic

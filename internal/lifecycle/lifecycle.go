@@ -263,6 +263,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		ds := templates.DiscoveryStatus{KubeEnabled: opts.Config.Kube != nil}
 		if ds.KubeEnabled {
 			ds.ResyncInterval = opts.Config.Kube.ResyncInterval.AsDuration()
+			ds.WatchDebounce = opts.Config.Kube.EffectiveWatchDebounce()
 		}
 		srv.SetDiscoveryStatus(ds)
 	}
