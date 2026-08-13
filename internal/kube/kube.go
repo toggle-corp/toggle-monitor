@@ -16,6 +16,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	networkingv1listers "k8s.io/client-go/listers/networking/v1"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 
 	tmsentry "github.com/toggle-corp/toggle-monitor/internal/sentry"
@@ -94,6 +95,14 @@ type Watcher struct {
 	// IngressLister; namespaceAnnotation-scoped value sources then
 	// resolve to their defaults.
 	namespaces NamespaceAnnotationLister
+
+	// nudge carries watch-driven reconcile requests from the informer's
+	// event handlers into Run's loop. Capacity 1, so a burst of cluster
+	// events collapses into a single pending request. Nil when
+	// watchDebounce is zero, which leaves Run's nudge arm permanently
+	// blocked and the resync ticker as the only trigger.
+	nudge         chan struct{}
+	watchDebounce time.Duration
 }
 
 // Materializer is the seam Issue-9 plugs in to do the real
@@ -125,6 +134,14 @@ type Options struct {
 	// assert clock-independent behaviour (e.g. the observed-set prune
 	// surviving extreme Go-vs-Postgres skew) inject a fake here.
 	Now func() time.Time
+	// WatchDebounce is how long Run waits after the first cluster event
+	// of a burst before reconciling. It bounds the extra reconcile rate
+	// to one pass per window no matter how many events arrive, and
+	// doubles as a settle window: the pass re-lists the informer cache,
+	// so an Ingress deleted and recreated inside the window is a no-op.
+	// Zero disables watch-driven reconciles entirely, leaving the resync
+	// ticker as the only trigger.
+	WatchDebounce time.Duration
 }
 
 // New constructs a Watcher against a SnapshotStore + IngressLister.
@@ -141,7 +158,7 @@ func New(s SnapshotStore, lister IngressLister, opts Options) *Watcher {
 	if now == nil {
 		now = time.Now
 	}
-	return &Watcher{
+	w := &Watcher{
 		store:          s,
 		lister:         lister,
 		resyncInterval: opts.ResyncInterval,
@@ -149,6 +166,29 @@ func New(s SnapshotStore, lister IngressLister, opts Options) *Watcher {
 		now:            now,
 		materialize:    opts.Materializer,
 		onRemoval:      opts.RemovalSink,
+		watchDebounce:  opts.WatchDebounce,
+	}
+	if opts.WatchDebounce > 0 {
+		w.nudge = make(chan struct{}, 1)
+	}
+	return w
+}
+
+// Nudge asks Run to reconcile once the debounce window elapses. Safe to
+// call from an informer event handler: it never blocks and never does
+// work on the caller's goroutine, because informer handlers are invoked
+// sequentially and anything slow here would stall event delivery for
+// every other handler on that informer.
+//
+// A no-op when watch-driven reconciles are disabled.
+func (w *Watcher) Nudge() {
+	if w.nudge == nil {
+		return
+	}
+	select {
+	case w.nudge <- struct{}{}:
+	default:
+		// A request is already queued; this event joins it.
 	}
 }
 
@@ -158,8 +198,17 @@ func New(s SnapshotStore, lister IngressLister, opts Options) *Watcher {
 // cascade against fresh data without owning its own informer.
 func (w *Watcher) Lister() IngressLister { return w.lister }
 
-// Run performs an initial reconcile and then re-reconciles every
-// resyncInterval until ctx is cancelled.
+// Run performs an initial reconcile, then re-reconciles on two
+// triggers until ctx is cancelled: the resyncInterval ticker, and
+// watch-driven nudges from the informer's event handlers.
+//
+// Every reconcile runs on this one goroutine, so the pass keeps its
+// existing invariants (observed-set prune, vacated-slug routing, the
+// empty-list guard) without any locking — a nudge can never overlap a
+// tick. Nudges are debounced: the first event of a burst arms the
+// window and later events join it rather than extending it, which caps
+// the added reconcile rate at one pass per watchDebounce however many
+// events the cluster produces.
 //
 // Each reconcile runs inside a panic-recovery wrapper: a panic in
 // one pass must not kill the informer goroutine. WARN (not ERROR) on
@@ -167,24 +216,52 @@ func (w *Watcher) Lister() IngressLister { return w.lister }
 // next tick retries; flooding Sentry on apiserver hiccups would
 // drown the actually-actionable events.
 func (w *Watcher) Run(ctx context.Context) {
-	reconcile := func() {
+	reconcile := func(trigger string) {
 		defer tmsentry.RecoverPanic(w.log, "kube.reconcile")
-		if err := w.Reconcile(ctx); err != nil {
-			w.log.Warn("kube reconcile failed", "error", err)
+		if err := w.reconcile(ctx, trigger); err != nil {
+			w.log.Warn("kube reconcile failed", "trigger", trigger, "error", err)
 		}
 	}
-	reconcile()
+	reconcile(triggerStartup)
 	t := time.NewTicker(w.resyncInterval)
 	defer t.Stop()
+
+	// debounceC is non-nil only while a watch-driven pass is pending.
+	var debounce *time.Timer
+	var debounceC <-chan time.Time
+	defer func() {
+		if debounce != nil {
+			debounce.Stop()
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			reconcile()
+			reconcile(triggerTicker)
+		case <-w.nudge:
+			if debounceC == nil {
+				debounce = time.NewTimer(w.watchDebounce)
+				debounceC = debounce.C
+			}
+		case <-debounceC:
+			debounce, debounceC = nil, nil
+			reconcile(triggerWatch)
 		}
 	}
 }
+
+// Reconcile triggers used in the reconcile log line so an operator can
+// tell a routine resync apart from a cluster-event-driven pass (and spot
+// a nudge storm).
+const (
+	triggerStartup = "startup"
+	triggerTicker  = "ticker"
+	triggerWatch   = "watch"
+	triggerManual  = "manual"
+)
 
 // Reconcile walks every observed Ingress + host, upserts the
 // resulting snapshot row, then prunes rows that weren't touched.
@@ -198,6 +275,11 @@ func (w *Watcher) Run(ctx context.Context) {
 // slightly behind startedAt under normal NTP drift between the
 // toggle-monitor pod and the Postgres pod.
 func (w *Watcher) Reconcile(ctx context.Context) error {
+	return w.reconcile(ctx, triggerManual)
+}
+
+// reconcile is Reconcile plus the trigger label for the log line.
+func (w *Watcher) reconcile(ctx context.Context, trigger string) error {
 	ingresses, err := w.lister.List()
 	if err != nil {
 		return fmt.Errorf("list ingresses: %w", err)
@@ -208,9 +290,9 @@ func (w *Watcher) Reconcile(ctx context.Context) error {
 	// but the empty-state UI can't tell that apart from "watcher
 	// never ran" without this line in the log.
 	if len(ingresses) == 0 {
-		w.log.Info("kube reconcile: no ingresses observed in cluster")
+		w.log.Info("kube reconcile: no ingresses observed in cluster", "trigger", trigger)
 	} else {
-		w.log.Info("kube reconcile", "ingresses", len(ingresses))
+		w.log.Info("kube reconcile", "ingresses", len(ingresses), "trigger", trigger)
 	}
 
 	observedKeys := make([]store.DiscoverySnapshotKey, 0)
@@ -385,7 +467,52 @@ func NewWithCluster(ctx context.Context, s SnapshotStore, opts Options, kubeconf
 
 	w := New(s, &ingressInformerLister{lister: ingInformer.Lister()}, opts)
 	w.namespaces = &namespaceInformerLister{lister: nsInformer.Lister()}
+	if w.nudge != nil {
+		if err := w.watchIngressEvents(ingInformer.Informer(), log); err != nil {
+			return nil, err
+		}
+		log.Info("kube watch-driven reconcile enabled", "debounce", opts.WatchDebounce)
+	}
 	return w, nil
+}
+
+// watchIngressEvents subscribes the watcher to the Ingress events that
+// change the discovery snapshot, so a reconcile follows a cluster change
+// by one debounce window instead of by up to resyncInterval. Delete is
+// the case that matters — it stops a deleted Ingress from alerting as a
+// 404/502 before the removal is noticed — and Add is what lets a
+// recreated Ingress re-materialize just as promptly.
+//
+// Registration happens after the factory has started and synced, so
+// client-go replays the whole cache as synthetic Adds; those carry
+// isInInitialList and are dropped, which is what keeps startup from
+// queueing a redundant pass behind Run's own first reconcile. Update is
+// deliberately not handled: the informer emits one per object per resync,
+// and a host change already reaches teardown through the vacated-slug
+// path on the next pass.
+//
+// Handlers only enqueue. Informer events are delivered to a handler
+// sequentially, so doing real work here would stall delivery; a panic
+// here would kill the shared processor and leave the watcher blind, hence
+// the recover.
+func (w *Watcher) watchIngressEvents(informer cache.SharedIndexInformer, log *slog.Logger) error {
+	_, err := informer.AddEventHandler(cache.ResourceEventHandlerDetailedFuncs{
+		AddFunc: func(_ any, isInInitialList bool) {
+			defer tmsentry.RecoverPanic(log, "kube.onIngressAdd")
+			if isInInitialList {
+				return
+			}
+			w.Nudge()
+		},
+		DeleteFunc: func(any) {
+			defer tmsentry.RecoverPanic(log, "kube.onIngressDelete")
+			w.Nudge()
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("watch ingress events: %w", err)
+	}
+	return nil
 }
 
 // ingressInformerLister wraps the client-go informer's typed lister
