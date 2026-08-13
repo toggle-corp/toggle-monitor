@@ -146,7 +146,54 @@ templ DiscoveryDetail(view DiscoveryDetailView) {
 				}
 			</dl>
 		</section>
+		@annotationSources(view)
 		@cascadeSection(view)
+	}
+}
+
+// annotationSources renders the ADR-0009 inputs: which fields an
+// annotation supplied, and which annotation values were rejected.
+// Rendered above the cascade because it answers the question the
+// cascade alone cannot — the tree shows a value landing at a rule, not
+// that the value came from outside reviewed config. Suppressed
+// entirely for a literals-only cascade.
+templ annotationSources(view DiscoveryDetailView) {
+	if len(view.Provenance) > 0 || len(view.Warnings) > 0 {
+		<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6">
+			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Annotation sources</h2>
+			if len(view.Provenance) > 0 {
+				<ul class="text-sm divide-y divide-slate-100 dark:divide-slate-800 mb-2">
+					for _, p := range view.Provenance {
+						<li class="py-1.5 flex flex-wrap gap-2 items-baseline">
+							<span class="font-medium">{ p.Field }</span>
+							<span class="text-slate-700 dark:text-slate-300">{ p.Value }</span>
+							<span class="text-slate-400 dark:text-slate-500">←</span>
+							<span class="text-slate-500 dark:text-slate-400">{ p.Scope }</span>
+							<code class="font-mono text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">{ p.Key }</code>
+							<span class="ml-auto text-xs text-slate-400 dark:text-slate-500">{ p.Rule }</span>
+						</li>
+					}
+				</ul>
+			}
+			if len(view.Warnings) > 0 {
+				<div class="rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 p-3">
+					<p class="text-sm font-medium text-amber-900 dark:text-amber-200 mb-1">Rejected annotation values</p>
+					<p class="text-xs text-amber-800 dark:text-amber-300 mb-2">The monitor still probes on its cascade value. Fix the annotation to make it take effect.</p>
+					<ul class="text-sm space-y-1">
+						for _, w := range view.Warnings {
+							<li class="flex flex-wrap gap-2 items-baseline">
+								<span class="font-medium">{ w.Field }</span>
+								<span class="text-slate-500 dark:text-slate-400">{ w.Scope }</span>
+								<code class="font-mono text-xs px-1.5 py-0.5 rounded bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300">{ w.Key }</code>
+								<span class="font-medium text-amber-900 dark:text-amber-200">{ w.Value }</span>
+								<span class="text-slate-600 dark:text-slate-400">{ w.Reason }</span>
+								<span class="ml-auto text-xs text-slate-400 dark:text-slate-500">{ w.Rule }</span>
+							</li>
+						}
+					</ul>
+				</div>
+			}
+		</section>
 	}
 }
 
