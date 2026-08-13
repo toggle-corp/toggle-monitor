@@ -6,6 +6,8 @@ import (
 
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/toggle-corp/toggle-monitor/internal/scheduler"
 )
 
 // ADR-0009 — a rule may declare that a field's value comes from an
@@ -336,4 +338,28 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// The warning map must be swept by the same observed-set prune that
+// sweeps plans. A monitor that stops materializing — its ingress is
+// gone, or it flipped to kube-invalid — never reaches the success path
+// that would clear its warnings, so without the sweep /issues and the
+// toggle_monitor_issues gauge over-report forever and an alert on that
+// series can never resolve.
+func TestPrune_dropsWarningsForMonitorsThatNoLongerMaterialize(t *testing.T) {
+	m := &Materializer{
+		kubePlans: map[string]scheduler.Plan{},
+		annotationWarnings: map[string]MonitorWarnings{
+			"kube-live":  {Slug: "kube-live", Warnings: []Warning{{Field: "notify"}}},
+			"kube-gone":  {Slug: "kube-gone", Warnings: []Warning{{Field: "notify"}}},
+			"kube-inval": {Slug: "kube-inval", Warnings: []Warning{{Field: "path"}}},
+		},
+	}
+
+	m.Prune(map[string]struct{}{"kube-live": {}})
+
+	got := m.AnnotationWarnings()
+	if len(got) != 1 || got[0].Slug != "kube-live" {
+		t.Errorf("AnnotationWarnings() = %+v, want only kube-live to survive", got)
+	}
 }

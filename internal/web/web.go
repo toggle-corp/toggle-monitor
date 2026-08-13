@@ -479,10 +479,11 @@ func (s *Server) navWrap(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// issueCount sums the two issue sources the /issues page surfaces:
-// failed Slack mapping entries (in-memory, free) + kube-invalid
-// discovery rows (one COUNT query). DB errors are swallowed so the
-// nav still renders the mapping-side count when Postgres is sick.
+// issueCount sums every issue source the /issues page surfaces: failed
+// Slack mapping entries, kube-invalid discovery rows (one COUNT query),
+// unresolved dependsOn parents, and rejected annotation values. All but
+// the discovery rows are in-memory and free. DB errors are swallowed so
+// the nav still renders the in-memory counts when Postgres is sick.
 func (s *Server) issueCount(ctx context.Context) int {
 	count := 0
 	if s.mapping != nil {

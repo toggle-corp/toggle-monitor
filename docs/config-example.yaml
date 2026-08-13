@@ -127,9 +127,8 @@ kube:
     # `path` is ingress-scoped — it genuinely varies within a
     # namespace (one ingress wants /livez, its neighbour wants
     # /minio/health/live). `notify` and `slack` are namespace-scoped:
-    # they never vary within a namespace, and the Namespace is the
-    # only scope `alertmanager.match` can also read, so one annotation
-    # states the ownership map once for both trees.
+    # they do not vary within a namespace, so one annotation on the
+    # Namespace states the ownership map once for every ingress in it.
     #
     # A bad annotation value never costs monitoring: it is dropped
     # with a warning on /issues and the cascade value stands.

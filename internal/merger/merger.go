@@ -75,8 +75,9 @@ type Materializer struct {
 	kubePlans map[string]scheduler.Plan
 	// annotationWarnings holds the last pass's rejected annotation
 	// values per materialized monitor, for /issues and the issues
-	// gauge. Keyed by monitor slug so a reconcile overwrites rather
-	// than accumulates.
+	// gauge. Keyed by monitor slug: a reconcile overwrites the entry
+	// for a monitor it materializes, and Prune drops the entries for
+	// monitors it did not.
 	annotationWarnings map[string]MonitorWarnings
 }
 
@@ -792,7 +793,8 @@ func (m *Materializer) CurrentPlans() []scheduler.Plan {
 	return out
 }
 
-// Prune drops every cached plan whose slug is NOT in `observed`. The
+// Prune drops every cached plan and warning set whose slug is NOT in
+// `observed`. The
 // kube.Watcher calls this at the end of every reconcile pass with the
 // set of slugs that materialized successfully, so disappeared (or
 // newly kube-ignored / kube-invalid) ingresses stop being scheduled.
@@ -806,6 +808,15 @@ func (m *Materializer) Prune(observed map[string]struct{}) {
 	for slug := range m.kubePlans {
 		if _, ok := observed[slug]; !ok {
 			delete(m.kubePlans, slug)
+		}
+	}
+	// Warnings are recorded on the materialize success path only, so a
+	// monitor that disappears or flips to kube-invalid would otherwise
+	// keep reporting its last rejection forever — and an alert on
+	// toggle_monitor_issues{source="annotation"} could never resolve.
+	for slug := range m.annotationWarnings {
+		if _, ok := observed[slug]; !ok {
+			delete(m.annotationWarnings, slug)
 		}
 	}
 }

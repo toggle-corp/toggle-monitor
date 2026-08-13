@@ -960,9 +960,9 @@ func (a *annotationIssueAdapter) AnnotationIssues() []web.AnnotationIssue {
 type cascadeSource struct {
 	lister kube.IngressLister
 	rules  []config.KubeMatchRule
-	// mat supplies the annotation environment. Nil when the kube block
-	// parsed but no materializer could be built, in which case the
-	// recompute falls back to literals-only resolution.
+	// mat supplies the annotation environment. Nil only in tests that
+	// construct a cascadeSource directly; the recompute then resolves
+	// against literals alone.
 	mat *merger.Materializer
 }
 

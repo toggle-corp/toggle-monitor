@@ -40,10 +40,11 @@ type issuesReporter struct {
 	log    *slog.Logger
 }
 
-// refresh recomputes every source. Sources are always written, zero
-// included: a gauge that stops emitting a series leaves any alert on it
-// stuck firing, because the expression has nothing left to evaluate to
-// false.
+// refresh recomputes every source. A source that reports a count writes
+// it even when the count is zero — a gauge that stops emitting a series
+// leaves any alert on it stuck firing, because the expression has
+// nothing left to evaluate to false. A source that cannot read its
+// input reports no count at all and its series is left untouched.
 func (r *issuesReporter) refresh(ctx context.Context) {
 	for source, count := range r.counts {
 		n, ok := count(ctx)

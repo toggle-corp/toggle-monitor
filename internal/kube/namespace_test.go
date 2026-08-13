@@ -10,8 +10,8 @@ import (
 )
 
 // ADR-0009 routes namespace-scoped `*From` blocks through a Namespace
-// informer, so one Namespace annotation can serve both the kube tree
-// and alertmanager.match.
+// informer. Namespace is the scope an ownership map can be stated at
+// once, rather than repeated per ingress.
 
 func TestNamespaceInformerLister_returnsAnnotations(t *testing.T) {
 	client := fake.NewSimpleClientset(&corev1.Namespace{

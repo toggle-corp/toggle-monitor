@@ -54,10 +54,10 @@ spec:
               a parent outage will not suppress their alerts. See /issues.
         {{- end }}
         {{- if .annotation.enabled }}
-        # ADR-0009. Deliberately the mildest of the four: the monitor
-        # keeps probing on its cascade value, so this is a
-        # fix-it-this-week misconfiguration, not an outage. A longer
-        # `for` also lets a chart rollout settle before it pages anyone.
+        # ADR-0009. The mildest of the four: the monitor keeps probing
+        # on its cascade value, so this is a fix-it-this-week
+        # misconfiguration, not an outage. The longer `for` lets a chart
+        # rollout settle before it pages anyone.
         - alert: ToggleMonitorAnnotationValuesRejected
           expr: toggle_monitor_issues{source="annotation"} > 0
           for: {{ .annotation.for }}
