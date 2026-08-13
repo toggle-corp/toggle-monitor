@@ -854,3 +854,41 @@ func TestHomepage_dbUnavailable_returns503WithFallback(t *testing.T) {
 		t.Errorf("body missing fallback message, got: %q", firstN(body, 200))
 	}
 }
+
+// fakeAnnotationWarnings is a stand-in for the merger's per-monitor
+// record of rejected annotation values (ADR-0009).
+type fakeAnnotationWarnings []web.AnnotationIssue
+
+func (f fakeAnnotationWarnings) AnnotationIssues() []web.AnnotationIssue { return f }
+
+// An annotation a chart got wrong is a misconfiguration the operator
+// owns, and the monitor keeps probing meanwhile — so it belongs on
+// /issues rather than in a log line nobody reads.
+func TestIssuesPage_annotationWarningsSection(t *testing.T) {
+	srv, _ := newServer(t)
+	srv.SetAnnotationIssueReader(fakeAnnotationWarnings{{
+		Slug:        "kube-acme-api-1__api__api-example-test",
+		Namespace:   "acme-api-1",
+		IngressName: "api",
+		Host:        "api.example.test",
+		Field:       "notify",
+		Key:         "app.example.test/notify",
+		Scope:       "namespaceAnnotation",
+		Value:       "zed",
+		Reason:      "is not a slack.userMapping slug",
+	}})
+	_, body := get(t, srv.Routes(), "/issues")
+	for _, want := range []string{
+		"Rejected annotation values",
+		"app.example.test/notify",
+		">zed<",
+		"is not a slack.userMapping slug",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q; first 900:\n%s", want, firstN(body, 900))
+		}
+	}
+	if !strings.Contains(body, "bg-rose-100") {
+		t.Errorf("nav should show the issue chip when annotations were rejected; first 600:\n%s", firstN(body, 600))
+	}
+}

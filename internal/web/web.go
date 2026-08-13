@@ -54,19 +54,20 @@ var DefaultPageSizes = PageSizes{
 // Server wires the HTTP surface for the read-only UI plus the
 // k8s probe endpoints.
 type Server struct {
-	repo            *store.Repo
-	log             *slog.Logger
-	metrics         http.Handler // /metrics handler; nil → endpoint is omitted
-	pageSizes       PageSizes
-	mapping         MappingHealthReader
-	missingParents  MissingParentReader
-	configLookup    ConfigLookup
-	cascadeSource   CascadeSource
-	statusConfigs   []*templates.StatusConfig
-	statusBySlug    map[string]*templates.StatusConfig
-	discoveryStatus templates.DiscoveryStatus
-	customRoutes    []customRoute
-	ready           atomic.Bool
+	repo             *store.Repo
+	log              *slog.Logger
+	metrics          http.Handler // /metrics handler; nil → endpoint is omitted
+	pageSizes        PageSizes
+	mapping          MappingHealthReader
+	missingParents   MissingParentReader
+	configLookup     ConfigLookup
+	cascadeSource    CascadeSource
+	annotationIssues AnnotationIssueReader
+	statusConfigs    []*templates.StatusConfig
+	statusBySlug     map[string]*templates.StatusConfig
+	discoveryStatus  templates.DiscoveryStatus
+	customRoutes     []customRoute
+	ready            atomic.Bool
 }
 
 // customRoute is an externally-registered handler installed on the mux
@@ -138,6 +139,33 @@ type MappingEntry struct {
 // SetMappingReader plugs in the userMapping validator. When nil
 // (tests), the homepage panel is suppressed.
 func (s *Server) SetMappingReader(r MappingHealthReader) { s.mapping = r }
+
+// AnnotationIssue is one rejected annotation value, flattened from the
+// merger's per-monitor record so /issues can list them one line each.
+// The monitor is still probing — a bad annotation degrades to the
+// cascade value and never costs availability monitoring — so this is a
+// misconfiguration to fix, not an outage.
+type AnnotationIssue struct {
+	Slug        string
+	Namespace   string
+	IngressName string
+	Host        string
+	Field       string
+	Key         string
+	Scope       string
+	Value       string
+	Reason      string
+}
+
+// AnnotationIssueReader is the seam the merger fills. Nil when kube
+// auto-discovery is disabled.
+type AnnotationIssueReader interface {
+	AnnotationIssues() []AnnotationIssue
+}
+
+// SetAnnotationIssueReader plugs in the materializer so /issues and the
+// nav badge can surface rejected annotation values.
+func (s *Server) SetAnnotationIssueReader(r AnnotationIssueReader) { s.annotationIssues = r }
 
 // SetMissingParentReader plugs in the scheduler so /issues can list
 // dependsOn references that didn't resolve to a known monitor.
@@ -471,6 +499,9 @@ func (s *Server) issueCount(ctx context.Context) int {
 	if s.missingParents != nil {
 		count += len(s.missingParents.MissingParents())
 	}
+	if s.annotationIssues != nil {
+		count += len(s.annotationIssues.AnnotationIssues())
+	}
 	return count
 }
 
@@ -596,8 +627,23 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+	var annotations []templates.AnnotationIssue
+	if s.annotationIssues != nil {
+		for _, ai := range s.annotationIssues.AnnotationIssues() {
+			annotations = append(annotations, templates.AnnotationIssue{
+				Slug: ai.Slug, Namespace: ai.Namespace, IngressName: ai.IngressName,
+				Host: ai.Host, Field: ai.Field, Key: ai.Key, Scope: ai.Scope,
+				Value: ai.Value, Reason: ai.Reason,
+			})
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.IssuesPage(mapping, invalidDiscovery, missing).Render(ctx, w)
+	_ = templates.IssuesPage(templates.IssuesView{
+		Mapping:          mapping,
+		InvalidDiscovery: invalidDiscovery,
+		MissingParents:   missing,
+		Annotations:      annotations,
+	}).Render(ctx, w)
 }
 
 func (s *Server) handleDiscoveryListing(w http.ResponseWriter, r *http.Request) {

@@ -213,6 +213,37 @@ type MappingHealth struct {
 	LastRun time.Time
 }
 
+// AnnotationIssue is one rejected annotation value (ADR-0009). The
+// monitor it belongs to is still probing on the cascade value; this is
+// a misconfiguration for the app team to fix, not an outage.
+type AnnotationIssue struct {
+	Slug        string
+	Namespace   string
+	IngressName string
+	Host        string
+	Field       string
+	Key         string
+	Scope       string
+	Value       string
+	Reason      string
+}
+
+// IssuesView bundles every source the /issues page renders. A struct
+// rather than positional parameters so a fifth source can't silently
+// land in the wrong argument slot.
+type IssuesView struct {
+	Mapping          MappingHealth
+	InvalidDiscovery []store.DiscoverySnapshotRow
+	MissingParents   []MissingParent
+	Annotations      []AnnotationIssue
+}
+
+// Total is the issue count the nav badge and the page heading share.
+func (v IssuesView) Total() int {
+	return len(v.Mapping.Invalid) + len(v.InvalidDiscovery) +
+		len(v.MissingParents) + len(v.Annotations)
+}
+
 // MissingParent is one dependsOn reference that didn't resolve to a
 // known monitor at lookup time. Surfaced on the /issues page so a
 // typo or post-startup drift between config and DB doesn't stay
@@ -300,15 +331,18 @@ templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page
 // stuck at "kube-invalid". Neither requires new storage; each links
 // out to the page where the operator already acts on that class of
 // problem (the homepage mapping panel / the /discovery listing).
-templ IssuesPage(mapping MappingHealth, invalidDiscovery []store.DiscoverySnapshotRow, missingParents []MissingParent) {
+templ IssuesPage(view IssuesView) {
+	{{ mapping := view.Mapping }}
+	{{ invalidDiscovery := view.InvalidDiscovery }}
+	{{ missingParents := view.MissingParents }}
 	@Layout("Issues") {
 		<h1 class="text-xl font-semibold mb-4 inline-flex items-center gap-2">
 			Issues
-			if total := len(mapping.Invalid) + len(invalidDiscovery) + len(missingParents); total > 0 {
+			if total := view.Total(); total > 0 {
 				<span class="inline-flex items-center justify-center min-w-[1.5rem] px-2 py-0.5 rounded-full text-sm font-medium bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300 tabular-nums">{ fmt.Sprint(total) }</span>
 			}
 		</h1>
-		if len(mapping.Invalid) == 0 && len(invalidDiscovery) == 0 && len(missingParents) == 0 {
+		if view.Total() == 0 {
 			<div class="bg-white dark:bg-slate-900 rounded border border-emerald-200 dark:border-emerald-800 p-6 text-center text-sm text-slate-500 dark:text-slate-400">
 				<p>No issues detected.</p>
 				<p class="text-xs mt-1">Slack mapping is healthy and no kube ingresses are in an invalid state.</p>
@@ -355,6 +389,32 @@ templ IssuesPage(mapping MappingHealth, invalidDiscovery []store.DiscoverySnapsh
 								if row.Reason != nil {
 									<span class="text-rose-700 dark:text-rose-400">{ *row.Reason }</span>
 								}
+							</li>
+						}
+					</ul>
+				</div>
+			</section>
+		}
+		if len(view.Annotations) > 0 {
+			<section class="mb-6">
+				<h2 class="text-lg font-semibold mb-2 text-amber-700 dark:text-amber-400">
+					Rejected annotation values ({ fmt.Sprint(len(view.Annotations)) })
+				</h2>
+				<div class="bg-white dark:bg-slate-900 rounded border border-amber-200 dark:border-amber-800 p-4">
+					<p class="text-sm text-slate-500 dark:text-slate-400 mb-2">
+						Values an app team's chart put in an annotation that toggle-monitor could not use. Each monitor still probes on its cascade value, so this is a misconfiguration to fix — not an outage. Fix the annotation on the Ingress or Namespace.
+					</p>
+					<ul class="text-sm divide-y divide-slate-100 dark:divide-slate-800">
+						for _, ai := range view.Annotations {
+							<li class="py-2 flex flex-wrap gap-3 items-baseline">
+								<code class="font-mono text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">{ ai.Namespace }</code>
+								<a class="font-medium text-blue-700 dark:text-blue-400 hover:underline" href={ templ.SafeURL("/discovery/" + ai.Namespace + "/" + ai.IngressName + "/" + ai.Host) }>{ ai.IngressName }</a>
+								<span class="text-slate-500 dark:text-slate-400">{ ai.Host }</span>
+								<span class="text-slate-500 dark:text-slate-400">{ ai.Scope }</span>
+								<code class="font-mono text-xs text-slate-700 dark:text-slate-300">{ ai.Key }</code>
+								<span class="font-medium text-amber-800 dark:text-amber-300">{ ai.Value }</span>
+								<span class="text-slate-600 dark:text-slate-400">{ ai.Reason }</span>
+								<span class="ml-auto text-xs text-slate-400 dark:text-slate-500">→ { ai.Field }</span>
 							</li>
 						}
 					</ul>

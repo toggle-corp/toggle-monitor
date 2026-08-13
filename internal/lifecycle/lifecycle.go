@@ -434,6 +434,9 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	}
 	sched := scheduler.New(repo, schedOpts...)
 	srv.SetMissingParentReader(&missingParentAdapter{s: sched})
+	if materializer != nil {
+		srv.SetAnnotationIssueReader(&annotationIssueAdapter{m: materializer})
+	}
 	staticPlans := buildPlans(opts.Config, proxies)
 	idToSlug := make(map[string]string, len(opts.Config.Slack.UserMapping))
 	for slug, id := range opts.Config.Slack.UserMapping {
@@ -868,6 +871,33 @@ func (a *missingParentAdapter) MissingParents() []web.MissingParent {
 		out = append(out, web.MissingParent{
 			Parent: mp.Parent, Children: mp.Children, LastSeen: mp.LastSeen,
 		})
+	}
+	return out
+}
+
+// annotationIssueAdapter flattens the materializer's per-monitor record
+// of rejected annotation values into the one-line-per-value shape
+// /issues renders.
+type annotationIssueAdapter struct {
+	m *merger.Materializer
+}
+
+func (a *annotationIssueAdapter) AnnotationIssues() []web.AnnotationIssue {
+	var out []web.AnnotationIssue
+	for _, mw := range a.m.AnnotationWarnings() {
+		for _, w := range mw.Warnings {
+			out = append(out, web.AnnotationIssue{
+				Slug:        mw.Slug,
+				Namespace:   mw.Namespace,
+				IngressName: mw.IngressName,
+				Host:        mw.Host,
+				Field:       w.Field,
+				Key:         w.Key,
+				Scope:       w.Scope,
+				Value:       w.Value,
+				Reason:      w.Reason,
+			})
+		}
 	}
 	return out
 }
