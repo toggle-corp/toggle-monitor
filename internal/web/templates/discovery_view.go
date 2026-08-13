@@ -53,6 +53,13 @@ type DiscoveryDetailView struct {
 	// template to highlight the row in the Resolved card. Empty when
 	// the error doesn't map cleanly to one key.
 	InvalidField string
+
+	// Provenance and Warnings cover the ADR-0009 annotation inputs:
+	// which fields came from an annotation rather than the tree, and
+	// which annotation values were rejected. Both empty for a cascade
+	// that uses only literals.
+	Provenance []merger.Provenance
+	Warnings   []merger.Warning
 }
 
 // PopulateCascadeView runs merger.ResolveWithTrace and fills view's
@@ -60,22 +67,25 @@ type DiscoveryDetailView struct {
 // template package owns the mapping between merger outcomes and
 // DiscoveryDetailView shape — the handler just passes the view to
 // the template.
-func PopulateCascadeView(view *DiscoveryDetailView, rules []config.KubeMatchRule, ing *networkingv1.Ingress, host string) {
-	resolved, traces, _, ignored, matched, resolvedErr := merger.ResolveWithTrace(rules, ing, host)
+func PopulateCascadeView(view *DiscoveryDetailView, rules []config.KubeMatchRule, ing *networkingv1.Ingress, host string, env merger.Env) {
+	res, traces := merger.ResolveWithTrace(rules, ing, host, env)
+	resolved := res.Config
 	view.Trace = traces
+	view.Provenance = res.Provenance
+	view.Warnings = res.Warnings
 	switch {
-	case !matched:
+	case !res.Matched:
 		view.Outcome = DiscoveryOutcomeNoMatch
-	case ignored:
+	case res.Ignored:
 		view.Outcome = DiscoveryOutcomeIgnored
 		// Keep the resolved block so the "would-have-been" panel can
 		// render it collapsed.
 		r := resolved
 		view.Resolved = &r
-	case resolvedErr != nil:
+	case res.Err != nil:
 		view.Outcome = DiscoveryOutcomeInvalid
-		view.InvalidError = resolvedErr.Error()
-		view.InvalidField = invalidFieldFromError(resolvedErr.Error())
+		view.InvalidError = res.Err.Error()
+		view.InvalidField = invalidFieldFromError(res.Err.Error())
 		r := resolved
 		view.Resolved = &r
 	default:

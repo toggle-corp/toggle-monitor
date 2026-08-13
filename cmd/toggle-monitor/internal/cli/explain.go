@@ -149,7 +149,7 @@ func runExplainHypothetical(cfg *config.Config, opts explainOpts) error {
 			Rules: []networkingv1.IngressRule{{Host: opts.host}},
 		},
 	}
-	return writeExplainReport(opts.out, cfg, ing, opts.host)
+	return writeExplainReport(opts.out, cfg, ing, opts.host, nil)
 }
 
 // runExplainLive fetches the named Ingress from the live cluster and
@@ -192,13 +192,25 @@ func runExplainLive(ctx context.Context, cfg *config.Config, opts explainOpts) e
 		return fmt.Errorf("ingress %s/%s has no rule with a non-empty host", ns, name)
 	}
 
+	// Namespace annotations feed namespaceAnnotation-scoped *From
+	// blocks. A failed read is not fatal: those blocks fall back to
+	// their defaults, which is also what the daemon does when its
+	// informer has no entry, and the rest of the report is still
+	// worth printing.
+	var nsAnnotations map[string]string
+	if nsObj, nerr := cs.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{}); nerr == nil {
+		nsAnnotations = nsObj.Annotations
+	} else {
+		fmt.Fprintf(os.Stderr, "warning: could not read namespace %q annotations (%v); namespaceAnnotation sources will use their defaults\n", ns, nerr)
+	}
+
 	for i, h := range hosts {
 		if i > 0 {
 			if _, err := io.WriteString(opts.out, "---\n"); err != nil {
 				return err
 			}
 		}
-		if err := writeExplainReport(opts.out, cfg, ing, h); err != nil {
+		if err := writeExplainReport(opts.out, cfg, ing, h, nsAnnotations); err != nil {
 			return err
 		}
 	}
@@ -300,6 +312,14 @@ type explainReport struct {
 	Outcome   string             `yaml:"outcome"`
 	Slug      string             `yaml:"slug,omitempty"`
 	Invalid   string             `yaml:"invalid,omitempty"`
+
+	// Provenance names every field an annotation supplied, and
+	// Warnings every annotation value that was rejected. Both are
+	// omitted for a cascade that used only literals — ADR-0009 makes
+	// them required output, because without them "why does this
+	// monitor have these settings?" has an invisible second input.
+	Provenance []string `yaml:"provenance,omitempty"`
+	Warnings   []string `yaml:"warnings,omitempty"`
 }
 
 // explainIngress is the identity block at the top of the report.
@@ -322,8 +342,9 @@ type explainIngress struct {
 //   - invalid: resolved config failed checkResolved (e.g. timeout >=
 //     interval, sslAlertThreshold <= escalation).
 //   - materialized: would produce the named monitor slug.
-func writeExplainReport(out io.Writer, cfg *config.Config, ing *networkingv1.Ingress, host string) error {
-	resolved, chain, ignored, matched, resolveErr := merger.Resolve(cfg.Kube.Match, ing, host)
+func writeExplainReport(out io.Writer, cfg *config.Config, ing *networkingv1.Ingress, host string, nsAnnotations map[string]string) error {
+	res := merger.Resolve(cfg.Kube.Match, ing, host, explainEnv(cfg, nsAnnotations))
+	resolved := res.Config
 
 	report := explainReport{
 		Ingress: explainIngress{
@@ -332,17 +353,23 @@ func writeExplainReport(out io.Writer, cfg *config.Config, ing *networkingv1.Ing
 			Host:      host,
 			Labels:    sortedLabels(ing.Labels),
 		},
-		RuleChain: chain,
+		RuleChain: res.Chain,
+	}
+	for _, p := range res.Provenance {
+		report.Provenance = append(report.Provenance, p.String())
+	}
+	for _, w := range res.Warnings {
+		report.Warnings = append(report.Warnings, w.String())
 	}
 
 	switch {
-	case !matched:
+	case !res.Matched:
 		report.Outcome = "no-match"
-	case ignored:
+	case res.Ignored:
 		report.Outcome = "ignored"
-	case resolveErr != nil:
+	case res.Err != nil:
 		report.Outcome = "invalid"
-		report.Invalid = resolveErr.Error()
+		report.Invalid = res.Err.Error()
 		// Show the resolved (but invalid) config too — operators
 		// usually want to see *which* field went out of bounds, not
 		// just the error message.
@@ -367,6 +394,23 @@ func writeExplainReport(out io.Writer, cfg *config.Config, ing *networkingv1.Ing
 	enc.SetIndent(2)
 	defer func() { _ = enc.Close() }()
 	return enc.Encode(report)
+}
+
+// explainEnv assembles the annotation environment from the loaded
+// config plus the namespace annotations the caller fetched. Hypothetical
+// mode passes nil annotations — a *From block then resolves to its
+// default, which is exactly what the daemon would do for a namespace
+// carrying no annotations.
+func explainEnv(cfg *config.Config, nsAnnotations map[string]string) merger.Env {
+	channels := make(map[string]struct{}, len(cfg.Slack.Channels))
+	for _, ch := range cfg.Slack.Channels {
+		channels[ch.Slug] = struct{}{}
+	}
+	return merger.Env{
+		NamespaceAnnotations: nsAnnotations,
+		UserMapping:          cfg.Slack.UserMapping,
+		SlackChannels:        channels,
+	}
 }
 
 // sortedLabels copies the input map with keys in stable order so the

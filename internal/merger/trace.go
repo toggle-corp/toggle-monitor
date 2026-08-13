@@ -71,37 +71,35 @@ type RuleTrace struct {
 // The materializer hot path stays on the untraced Resolve / walk
 // pair — building trace events allocates per matched (rule, key)
 // touch, which we don't want on every reconcile.
-func ResolveWithTrace(rules []config.KubeMatchRule, ing *networkingv1.Ingress, host string) (
-	resolved config.KubeConfig,
-	rules2 []RuleTrace,
-	chain []string,
-	ignored bool,
-	matched bool,
-	resolvedErr error,
-) {
-	stack, traces, ch := walkRulesTraced(rules, ing, host)
-	chain = append([]string(nil), ch.steps...)
-	rules2 = traces
-	if len(stack) == 0 {
-		return config.KubeConfig{}, rules2, chain, false, false, nil
+func ResolveWithTrace(rules []config.KubeMatchRule, ing *networkingv1.Ingress, host string, env Env) (Resolution, []RuleTrace) {
+	vr := newValueResolver(ing.Annotations, env)
+	stack, traces, ch := walkRulesTraced(rules, ing, host, vr)
+	out := Resolution{
+		Chain:      append([]string(nil), ch.steps...),
+		Provenance: vr.provenance,
+		Warnings:   vr.warnings,
 	}
+	if len(stack) == 0 {
+		return out, traces
+	}
+	out.Matched = true
 	for _, layer := range stack {
 		if layer.ignore != nil {
-			ignored = *layer.ignore
+			out.Ignored = *layer.ignore
 		}
 	}
-	resolved = resolveStack(stack)
-	if !ignored {
-		resolvedErr = checkResolved(resolved)
+	out.Config = resolveStack(stack)
+	if !out.Ignored {
+		out.Err = checkResolved(out.Config)
 	}
-	return resolved, rules2, chain, ignored, true, resolvedErr
+	return out, traces
 }
 
 // walkRulesTraced mirrors walkRules but accumulates a RuleTrace per
 // matched rule alongside the merge stack. The traversal order +
 // final-rule halt semantics are identical so the trace stays in
 // lockstep with the chain that Resolve / Materialize emit.
-func walkRulesTraced(rules []config.KubeMatchRule, ing *networkingv1.Ingress, host string) (
+func walkRulesTraced(rules []config.KubeMatchRule, ing *networkingv1.Ingress, host string, vr *valueResolver) (
 	[]stackEntry, []RuleTrace, ruleChain,
 ) {
 	var stack []stackEntry
@@ -113,7 +111,7 @@ func walkRulesTraced(rules []config.KubeMatchRule, ing *networkingv1.Ingress, ho
 		if halted {
 			break
 		}
-		halted = visitRuleTraced(&rules[i], ing, host, fmt.Sprintf("match[%d]", i), &stack, &traces, &chain, acc)
+		halted = visitRuleTraced(&rules[i], ing, host, fmt.Sprintf("match[%d]", i), &stack, &traces, &chain, acc, vr)
 	}
 	return stack, traces, chain
 }
@@ -132,6 +130,7 @@ func visitRuleTraced(
 	traces *[]RuleTrace,
 	chain *ruleChain,
 	acc *traceAccumulator,
+	vr *valueResolver,
 ) bool {
 	if !whenMatches(r.When, ing, host) {
 		return false
@@ -143,14 +142,18 @@ func visitRuleTraced(
 	}
 	chain.push(step)
 
+	// Trace the lowered config, not the authored one: the operator
+	// needs to see the value the annotation actually contributed at
+	// this position, which is what the merge stack receives.
+	effective := vr.apply(label, r.Config)
 	rt := RuleTrace{Label: label, When: when, Final: r.Final}
-	rt.Events = acc.applyConfig(r.Config, r.Ignore)
+	rt.Events = acc.applyConfig(effective, r.Ignore)
 	*traces = append(*traces, rt)
-	*stack = append(*stack, stackEntry{cfg: r.Config, ignore: r.Ignore})
+	*stack = append(*stack, stackEntry{cfg: effective, ignore: r.Ignore})
 
 	for j := range r.Nested {
 		nestedLabel := fmt.Sprintf("%s.nested[%d]", label, j)
-		if visitRuleTraced(&r.Nested[j], ing, host, nestedLabel, stack, traces, chain, acc) {
+		if visitRuleTraced(&r.Nested[j], ing, host, nestedLabel, stack, traces, chain, acc, vr) {
 			return true
 		}
 	}

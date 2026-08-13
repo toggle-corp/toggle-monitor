@@ -553,7 +553,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		}
 		// Wire the cascade source so the discovery detail page can
 		// re-run merger.ResolveWithTrace against the live cache.
-		srv.SetCascadeSource(&cascadeSource{lister: lister, rules: kc.Match})
+		srv.SetCascadeSource(&cascadeSource{lister: lister, rules: kc.Match, mat: materializer})
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -873,6 +873,10 @@ func (a *missingParentAdapter) MissingParents() []web.MissingParent {
 type cascadeSource struct {
 	lister kube.IngressLister
 	rules  []config.KubeMatchRule
+	// mat supplies the annotation environment. Nil when the kube block
+	// parsed but no materializer could be built, in which case the
+	// recompute falls back to literals-only resolution.
+	mat *merger.Materializer
 }
 
 func (c *cascadeSource) GetIngress(namespace, name string) (*networkingv1.Ingress, error) {
@@ -887,6 +891,13 @@ func (c *cascadeSource) GetIngress(namespace, name string) (*networkingv1.Ingres
 }
 
 func (c *cascadeSource) MatchRules() []config.KubeMatchRule { return c.rules }
+
+func (c *cascadeSource) ResolveEnv(namespace string) merger.Env {
+	if c.mat == nil {
+		return merger.Env{}
+	}
+	return c.mat.ResolveEnv(namespace)
+}
 
 // kubeRemovalSink dispatches the same soft-delete + Slack closeout +
 // warning flow used for static removals, against monitors materialized

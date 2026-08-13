@@ -19,6 +19,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 
 	"github.com/toggle-corp/toggle-monitor/internal/config"
+	"github.com/toggle-corp/toggle-monitor/internal/merger"
 	"github.com/toggle-corp/toggle-monitor/internal/store"
 	"github.com/toggle-corp/toggle-monitor/internal/web/templates"
 )
@@ -185,9 +186,14 @@ func (s *Server) SetConfigLookup(c ConfigLookup) { s.configLookup = c }
 //
 // Wired only when cfg.Kube != nil. nil = kube disabled; the handler
 // falls through to the existing "auto-discovery is disabled" path.
+//   - ResolveEnv returns the annotation environment for a namespace —
+//     the Namespace annotations plus the rosters an annotation value is
+//     validated against — so the live recompute sees exactly the inputs
+//     the daemon's materializer would.
 type CascadeSource interface {
 	GetIngress(namespace, name string) (*networkingv1.Ingress, error)
 	MatchRules() []config.KubeMatchRule
+	ResolveEnv(namespace string) merger.Env
 }
 
 // ErrIngressNotInCascadeSource signals "the live cache has no Ingress
@@ -676,7 +682,7 @@ func (s *Server) handleDiscoveryDetail(w http.ResponseWriter, r *http.Request) {
 			s.log.Warn("cascade ingress lookup", "ns", ns, "name", name, "error", ierr)
 			view.Outcome = templates.DiscoveryOutcomeStale
 		default:
-			templates.PopulateCascadeView(&view, s.cascadeSource.MatchRules(), ing, host)
+			templates.PopulateCascadeView(&view, s.cascadeSource.MatchRules(), ing, host, s.cascadeSource.ResolveEnv(ns))
 		}
 	}
 

@@ -14,6 +14,7 @@ package merger
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"path"
 	"regexp"
 	"sort"
@@ -61,8 +62,40 @@ type Materializer struct {
 	bodyMaxBase int
 	proxies     *proxypool.Pool
 
+	// slackChannels is the roster an annotation-sourced `slack` value
+	// must select from; nsSource reads Namespace annotations for
+	// namespaceAnnotation-scoped sources (nil until the watcher's
+	// informer is wired, and harmless — those sources fall back to
+	// their defaults).
+	slackChannels map[string]struct{}
+	nsSource      NamespaceAnnotationSource
+	log           *slog.Logger
+
 	mu        sync.RWMutex
 	kubePlans map[string]scheduler.Plan
+	// annotationWarnings holds the last pass's rejected annotation
+	// values per materialized monitor, for /issues and the issues
+	// gauge. Keyed by monitor slug so a reconcile overwrites rather
+	// than accumulates.
+	annotationWarnings map[string]MonitorWarnings
+}
+
+// NamespaceAnnotationSource resolves a namespace's annotations.
+// Production wires the kube watcher's Namespace informer; a nil source
+// means namespaceAnnotation-scoped values simply resolve to their
+// defaults.
+type NamespaceAnnotationSource interface {
+	NamespaceAnnotations(namespace string) map[string]string
+}
+
+// MonitorWarnings is one monitor's rejected annotation values, with
+// enough identity to link back to the discovery row.
+type MonitorWarnings struct {
+	Slug        string
+	Namespace   string
+	IngressName string
+	Host        string
+	Warnings    []Warning
 }
 
 // New builds a Materializer from the loaded YAML. staticSlugs is the
@@ -81,17 +114,123 @@ func New(s MonitorStore, cfg config.Config, proxies *proxypool.Pool) *Materializ
 	if style == "" {
 		style = config.KubeFriendlyNameCompact
 	}
-	return &Materializer{
-		store:             s,
-		match:             cfg.Kube.Match,
-		staticSlugs:       statics,
-		friendlyNameStyle: style,
-		userAgent:         cfg.HTTPClient.UserAgent,
-		userMapping:       cfg.Slack.UserMapping,
-		bodyMaxBase:       cfg.Slack.BodyMaxChars,
-		proxies:           proxies,
-		kubePlans:         map[string]scheduler.Plan{},
+	channels := make(map[string]struct{}, len(cfg.Slack.Channels))
+	for _, ch := range cfg.Slack.Channels {
+		channels[ch.Slug] = struct{}{}
 	}
+	return &Materializer{
+		store:              s,
+		match:              cfg.Kube.Match,
+		staticSlugs:        statics,
+		friendlyNameStyle:  style,
+		userAgent:          cfg.HTTPClient.UserAgent,
+		userMapping:        cfg.Slack.UserMapping,
+		bodyMaxBase:        cfg.Slack.BodyMaxChars,
+		proxies:            proxies,
+		slackChannels:      channels,
+		log:                slog.Default(),
+		kubePlans:          map[string]scheduler.Plan{},
+		annotationWarnings: map[string]MonitorWarnings{},
+	}
+}
+
+// SetNamespaceAnnotationSource plugs in the Namespace informer. The
+// watcher owns the informer and is constructed after the materializer,
+// so this is a setter rather than a New parameter.
+func (m *Materializer) SetNamespaceAnnotationSource(src NamespaceAnnotationSource) {
+	m.nsSource = src
+}
+
+// SetLogger overrides the destination for annotation-rejection WARN
+// lines. Production passes the lifecycle's logger.
+func (m *Materializer) SetLogger(l *slog.Logger) {
+	if l != nil {
+		m.log = l
+	}
+}
+
+// ResolveEnv builds the annotation environment for one namespace. The
+// discovery detail page uses it to re-run the cascade against exactly
+// the inputs the daemon would see.
+func (m *Materializer) ResolveEnv(namespace string) Env {
+	var nsAnnotations map[string]string
+	if m.nsSource != nil {
+		nsAnnotations = m.nsSource.NamespaceAnnotations(namespace)
+	}
+	return Env{
+		NamespaceAnnotations: nsAnnotations,
+		UserMapping:          m.userMapping,
+		SlackChannels:        m.slackChannels,
+	}
+}
+
+// recordWarnings stores this pass's rejected annotation values for the
+// monitor and logs each one. WARN, not Sentry — a bad annotation is app
+// team input error, not a toggle-monitor fault.
+func (m *Materializer) recordWarnings(ing *networkingv1.Ingress, host, monSlug string, warnings []Warning) {
+	m.mu.Lock()
+	if len(warnings) == 0 {
+		delete(m.annotationWarnings, monSlug)
+	} else {
+		m.annotationWarnings[monSlug] = MonitorWarnings{
+			Slug:        monSlug,
+			Namespace:   ing.Namespace,
+			IngressName: ing.Name,
+			Host:        host,
+			Warnings:    warnings,
+		}
+	}
+	m.mu.Unlock()
+
+	for _, w := range warnings {
+		m.log.Warn("kube annotation value rejected",
+			"ns", ing.Namespace, "ingress", ing.Name, "host", host,
+			"field", w.Field, "scope", w.Scope, "annotation", w.Key,
+			"value", w.Value, "reason", w.Reason)
+	}
+}
+
+// AnnotationWarnings returns the rejected annotation values from the
+// last reconcile, one entry per affected monitor. Read by /issues and
+// by the issues gauge.
+func (m *Materializer) AnnotationWarnings() []MonitorWarnings {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]MonitorWarnings, 0, len(m.annotationWarnings))
+	for _, mw := range m.annotationWarnings {
+		out = append(out, mw)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
+	return out
+}
+
+// Resolution is everything one cascade walk produces for a single
+// (Ingress, host) pair.
+//
+// Chain is in match-order (root → leaf), with the same formatting
+// Materialize emits in the discovery reason field (one step per matched
+// rule, with selectorSummary appended and a trailing " [final]" when
+// the rule halted the cascade).
+//
+// Ignored is the deepest-wins resolution of rule-level ignore:
+// directives across the matched stack. Err is the resolved-value
+// validation error (interval > timeout, sslAlert > escalation > 0,
+// required-at-root fields not regressed) — non-nil means the resolved
+// config would emit a kube-invalid discovery row rather than
+// materialize. Matched is false when no rule in the tree fired (only
+// possible against a hand-constructed tree without a root rule;
+// production configs always carry a matching root).
+//
+// Provenance and Warnings cover the ADR-0009 annotation inputs and are
+// empty for a tree that uses only literals.
+type Resolution struct {
+	Config     config.KubeConfig
+	Chain      []string
+	Provenance []Provenance
+	Warnings   []Warning
+	Ignored    bool
+	Matched    bool
+	Err        error
 }
 
 // Resolve walks the cascading kube.match[] tree against (ing, host)
@@ -100,36 +239,28 @@ func New(s MonitorStore, cfg config.Config, proxies *proxypool.Pool) *Materializ
 // behind Materializer.Materialize and the `toggle-monitor explain`
 // CLI subcommand — keep them in lockstep by routing every consumer
 // through this helper rather than re-implementing the tree walk.
-//
-// The returned chain is in match-order (root → leaf), with the same
-// formatting Materialize emits in the discovery reason field (one
-// step per matched rule, with selectorSummary appended and a
-// trailing " [final]" when the rule halted the cascade).
-//
-// `ignored` is the deepest-wins resolution of rule-level ignore:
-// directives across the matched stack. `resolvedErr` is the
-// resolved-value validation error (interval > timeout, sslAlert >
-// escalation > 0, required-at-root fields not regressed) — non-nil
-// means the resolved config would emit a kube-invalid discovery row
-// rather than materialize. `matched` is false when no rule in the
-// tree fired (only possible against a hand-constructed tree without
-// a root rule; production configs always carry a matching root).
-func Resolve(rules []config.KubeMatchRule, ing *networkingv1.Ingress, host string) (resolved config.KubeConfig, chain []string, ignored bool, matched bool, resolvedErr error) {
-	stack, ch := walkRules(rules, ing, host)
-	chain = append([]string(nil), ch.steps...)
-	if len(stack) == 0 {
-		return config.KubeConfig{}, chain, false, false, nil
+func Resolve(rules []config.KubeMatchRule, ing *networkingv1.Ingress, host string, env Env) Resolution {
+	vr := newValueResolver(ing.Annotations, env)
+	stack, ch := walkRules(rules, ing, host, vr)
+	out := Resolution{
+		Chain:      append([]string(nil), ch.steps...),
+		Provenance: vr.provenance,
+		Warnings:   vr.warnings,
 	}
+	if len(stack) == 0 {
+		return out
+	}
+	out.Matched = true
 	for _, layer := range stack {
 		if layer.ignore != nil {
-			ignored = *layer.ignore
+			out.Ignored = *layer.ignore
 		}
 	}
-	resolved = resolveStack(stack)
-	if !ignored {
-		resolvedErr = checkResolved(resolved)
+	out.Config = resolveStack(stack)
+	if !out.Ignored {
+		out.Err = checkResolved(out.Config)
 	}
-	return resolved, chain, ignored, true, resolvedErr
+	return out
 }
 
 // Materialize implements kube.Materializer. For one (Ingress, host)
@@ -159,40 +290,37 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 		return base, nil
 	}
 
-	stack, chain := m.walk(ing, host)
-	chainStr := chain.String()
+	res := Resolve(m.match, ing, host, m.ResolveEnv(ing.Namespace))
+	chainStr := strings.Join(res.Chain, " → ")
 	// The root rule always matches (validator enforces an empty
 	// when: at index 0), so stack is never empty in production. Guard
 	// regardless — tests can pass an empty match[].
-	if len(stack) == 0 {
+	if !res.Matched {
 		reason := "no matching kube.match rule"
 		base.Status, base.Reason = "kube-invalid", &reason
 		return base, nil
 	}
 
-	// Resolve ignore tri-state: deepest *bool wins; nil layers
-	// inherit. Track ignore status independently of the config
-	// merge because it lives at rule level, not inside config:.
-	ignored := false
-	for _, layer := range stack {
-		if layer.ignore != nil {
-			ignored = *layer.ignore
-		}
-	}
-	if ignored {
-		reason := "kube-ignored: " + chainStr
+	// Annotation warnings ride along on every subsequent reason so the
+	// operator sees a rejected value wherever the row surfaces, and the
+	// monitor still materializes as `added` — a typo in an app team's
+	// chart must not cost availability monitoring.
+	suffix := annotationSuffix(res)
+
+	if res.Ignored {
+		reason := "kube-ignored: " + chainStr + suffix
 		base.Status, base.Reason = "kube-ignored", &reason
 		return base, nil
 	}
 
-	resolved := resolveStack(stack)
+	resolved := res.Config
 
 	// Resolved-value validation per ADR-0002 §Validation. Children may
 	// have overridden a root-required field to something invalid — the
 	// merger catches that at materialization time and emits a
 	// kube-invalid row instead of silently materializing garbage.
-	if err := checkResolved(resolved); err != nil {
-		reason := "kube-invalid: " + err.Error() + " (" + chainStr + ")"
+	if res.Err != nil {
+		reason := "kube-invalid: " + res.Err.Error() + " (" + chainStr + ")" + suffix
 		base.Status, base.Reason = "kube-invalid", &reason
 		return base, nil
 	}
@@ -269,9 +397,27 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 	m.kubePlans[monSlug] = plan
 	m.mu.Unlock()
 
-	reason := "added: " + chainStr
+	m.recordWarnings(ing, host, monSlug, res.Warnings)
+
+	reason := "added: " + chainStr + suffix
 	base.Status, base.Reason, base.MonitorSlug = "added", &reason, &monSlug
 	return base, nil
+}
+
+// annotationSuffix renders the provenance and warning tails appended to
+// a discovery row's reason. Empty when the resolved monitor used no
+// annotation input.
+func annotationSuffix(res Resolution) string {
+	var sb strings.Builder
+	for _, p := range res.Provenance {
+		sb.WriteString(" | ")
+		sb.WriteString(p.String())
+	}
+	for _, w := range res.Warnings {
+		sb.WriteString(" | warn: ")
+		sb.WriteString(w.String())
+	}
+	return sb.String()
 }
 
 // stackEntry is one layer in the merge stack: the rule's config and
@@ -292,20 +438,16 @@ type ruleChain struct {
 func (c *ruleChain) push(s string) { c.steps = append(c.steps, s) }
 func (c ruleChain) String() string { return strings.Join(c.steps, " → ") }
 
-// walk traverses the Materializer's configured kube.match[] tree. It
-// is a thin wrapper around walkRules so the standalone Resolve helper
-// and the materialization path share the same depth-first traversal.
-func (m *Materializer) walk(ing *networkingv1.Ingress, host string) ([]stackEntry, ruleChain) {
-	return walkRules(m.match, ing, host)
-}
-
 // walkRules traverses the given kube.match[] tree depth-first in
 // document order, collecting every rule whose `when:` matches the
 // (Ingress, host) pair into the merge stack. `final: true` halts the
 // traversal after descending into its own nested children. Returns
 // the merge stack in match order plus the rule-chain summary for the
 // discovery reason.
-func walkRules(rules []config.KubeMatchRule, ing *networkingv1.Ingress, host string) ([]stackEntry, ruleChain) {
+//
+// vr lowers each matched rule's `*From` blocks before its config
+// reaches the stack, so the stack carries literals only.
+func walkRules(rules []config.KubeMatchRule, ing *networkingv1.Ingress, host string, vr *valueResolver) ([]stackEntry, ruleChain) {
 	var stack []stackEntry
 	var chain ruleChain
 	halted := false
@@ -313,7 +455,7 @@ func walkRules(rules []config.KubeMatchRule, ing *networkingv1.Ingress, host str
 		if halted {
 			break
 		}
-		halted = visitRule(&rules[i], ing, host, fmt.Sprintf("match[%d]", i), &stack, &chain)
+		halted = visitRule(&rules[i], ing, host, fmt.Sprintf("match[%d]", i), &stack, &chain, vr)
 	}
 	return stack, chain
 }
@@ -330,6 +472,7 @@ func visitRule(
 	label string,
 	stack *[]stackEntry,
 	chain *ruleChain,
+	vr *valueResolver,
 ) (halt bool) {
 	if !whenMatches(r.When, ing, host) {
 		return false
@@ -339,11 +482,11 @@ func visitRule(
 		step += " [final]"
 	}
 	chain.push(step)
-	*stack = append(*stack, stackEntry{cfg: r.Config, ignore: r.Ignore})
+	*stack = append(*stack, stackEntry{cfg: vr.apply(label, r.Config), ignore: r.Ignore})
 
 	for j := range r.Nested {
 		nestedLabel := fmt.Sprintf("%s.nested[%d]", label, j)
-		if visitRule(&r.Nested[j], ing, host, nestedLabel, stack, chain) {
+		if visitRule(&r.Nested[j], ing, host, nestedLabel, stack, chain, vr) {
 			// A descendant fired final:true → halt the whole walk.
 			return true
 		}

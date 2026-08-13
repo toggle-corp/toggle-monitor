@@ -82,8 +82,8 @@ func eventByKey(rt RuleTrace, key string) (TraceEvent, bool) {
 
 func TestResolveWithTrace_materializedHappyPath(t *testing.T) {
 	rules := parseRules(t, traceFixtureYAML)
-	resolved, traces, chain, ignored, matched, err :=
-		ResolveWithTrace(rules, ing("acme-eoapi-3", "x", map[string]string{"app.kubernetes.io/name": "minio"}, "api.example.com"), "api.example.com")
+	res, traces := ResolveWithTrace(rules, ing("acme-eoapi-3", "x", map[string]string{"app.kubernetes.io/name": "minio"}, "api.example.com"), "api.example.com", Env{})
+	resolved, chain, ignored, matched, err := res.Config, res.Chain, res.Ignored, res.Matched, res.Err
 	if err != nil {
 		t.Fatalf("unexpected resolved-validation error: %v", err)
 	}
@@ -158,8 +158,8 @@ func TestResolveWithTrace_materializedHappyPath(t *testing.T) {
 
 func TestResolveWithTrace_overrideListDiscardsPrior(t *testing.T) {
 	rules := parseRules(t, traceFixtureYAML)
-	_, traces, _, _, matched, _ :=
-		ResolveWithTrace(rules, ing("override-foo", "x", nil, "h.example.com"), "h.example.com")
+	res, traces := ResolveWithTrace(rules, ing("override-foo", "x", nil, "h.example.com"), "h.example.com", Env{})
+	matched := res.Matched
 	if !matched {
 		t.Fatalf("expected matched, got false")
 	}
@@ -192,8 +192,8 @@ func TestResolveWithTrace_overrideListDiscardsPrior(t *testing.T) {
 
 func TestResolveWithTrace_ignoredEmitsIgnoreEvent(t *testing.T) {
 	rules := parseRules(t, traceFixtureYAML)
-	resolved, traces, _, ignored, matched, err :=
-		ResolveWithTrace(rules, ing("ignored-foo", "x", nil, "h.example.com"), "h.example.com")
+	res, traces := ResolveWithTrace(rules, ing("ignored-foo", "x", nil, "h.example.com"), "h.example.com", Env{})
+	resolved, ignored, matched, err := res.Config, res.Ignored, res.Matched, res.Err
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -221,7 +221,8 @@ func TestResolveWithTrace_ignoredEmitsIgnoreEvent(t *testing.T) {
 
 func TestResolveWithTrace_noMatch(t *testing.T) {
 	// Empty rule list → no rule fires.
-	_, traces, chain, ignored, matched, err := ResolveWithTrace(nil, ing("any", "x", nil, "h"), "h")
+	res, traces := ResolveWithTrace(nil, ing("any", "x", nil, "h"), "h", Env{})
+	chain, ignored, matched, err := res.Chain, res.Ignored, res.Matched, res.Err
 	if err != nil || ignored || matched {
 		t.Errorf("unexpected outputs: err=%v ignored=%v matched=%v", err, ignored, matched)
 	}
@@ -253,7 +254,8 @@ func TestResolveWithTrace_invalidEmitsResolvedErr(t *testing.T) {
     slack: ops-alerts
 `
 	rules := parseRules(t, src)
-	_, _, _, ignored, matched, err := ResolveWithTrace(rules, ing("ns", "x", nil, "h"), "h")
+	res := Resolve(rules, ing("ns", "x", nil, "h"), "h", Env{})
+	ignored, matched, err := res.Ignored, res.Matched, res.Err
 	if !matched || ignored {
 		t.Fatalf("expected matched/!ignored, got matched=%v ignored=%v", matched, ignored)
 	}
