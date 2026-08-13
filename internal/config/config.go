@@ -280,6 +280,175 @@ func collectMappingKeys(node *yaml.Node, set map[string]bool) {
 	}
 }
 
+// ValueSource points one kube config field at an annotation instead of
+// a literal value (ADR-0009). Exactly one of Annotation (read from the
+// Ingress) or NamespaceAnnotation (read from the Ingress's Namespace
+// object) is set; Default supplies the value when the annotation is
+// absent, empty, or whitespace-only.
+//
+// Annotation values are unreviewed runtime input, so they are validated
+// at materialize time rather than here — a rejected value degrades to
+// the cascade value and warns; it never costs availability monitoring.
+// The Default, by contrast, lives in reviewed config and is validated
+// at load.
+type ValueSource struct {
+	Annotation          string `yaml:"annotation,omitempty"`
+	NamespaceAnnotation string `yaml:"namespaceAnnotation,omitempty"`
+
+	// Default carries the value as written — a string or a []string.
+	// UnmarshalYAML parses it into the two typed views below; this
+	// field exists so the reflection-driven unknown-key walker admits
+	// `default:` and so `explain` can echo it back.
+	Default any `yaml:"default,omitempty"`
+
+	// DefaultScalar is the default as written, for the scalar fields
+	// (pathFrom, slackFrom).
+	DefaultScalar string `yaml:"-"`
+	// DefaultList is the default for the list fields (notifyFrom,
+	// tagsFrom and their Override twins): a YAML sequence entry-wise,
+	// or a scalar split on commas.
+	DefaultList []string `yaml:"-"`
+	// HasDefault distinguishes "default: """ from an absent default.
+	HasDefault bool `yaml:"-"`
+}
+
+// UnmarshalYAML decodes a *From block. `default:` accepts either a
+// scalar or a sequence: a chart emitting `notify: {{ .Values.notify |
+// join "," }}` and an operator writing `default: [alice, bob]` should
+// both work, and the field's kind decides which form is read.
+func (v *ValueSource) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: a *From value source must be a mapping", node.Line)
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, val := node.Content[i], node.Content[i+1]
+		if key.Kind != yaml.ScalarNode {
+			continue
+		}
+		switch key.Value {
+		case "annotation":
+			v.Annotation = val.Value
+		case "namespaceAnnotation":
+			v.NamespaceAnnotation = val.Value
+		case "default":
+			v.HasDefault = true
+			switch val.Kind {
+			case yaml.ScalarNode:
+				v.DefaultScalar = val.Value
+				v.DefaultList = SplitAnnotationList(val.Value)
+				v.Default = val.Value
+			case yaml.SequenceNode:
+				for j, child := range val.Content {
+					if child.Kind != yaml.ScalarNode {
+						return fmt.Errorf("line %d: default entry %d must be a scalar string", child.Line, j)
+					}
+					v.DefaultList = append(v.DefaultList, child.Value)
+				}
+				v.Default = append([]string(nil), v.DefaultList...)
+			default:
+				return fmt.Errorf("line %d: default must be a scalar or a sequence", val.Line)
+			}
+		default:
+			return fmt.Errorf("line %d: unknown key %q in a *From value source (want annotation, namespaceAnnotation, default)", key.Line, key.Value)
+		}
+	}
+	return nil
+}
+
+// KubeValueKind distinguishes how a *From block's resolved value joins
+// the merge: as a scalar (the deepest layer that set the field wins) or
+// as an entry list (union, or replace-the-baseline for the Override
+// twins).
+type KubeValueKind int
+
+const (
+	// KubeValueScalar merges like path / slack.
+	KubeValueScalar KubeValueKind = iota
+	// KubeValueList merges like notify / tags.
+	KubeValueList
+)
+
+// KubeValueSource pairs one set *From block with the literal field it
+// supplies and the merge semantics it inherits from that field.
+type KubeValueSource struct {
+	// Key is the YAML key, e.g. "notifyOverrideFrom".
+	Key string
+	// Field is the literal field it supplies, e.g. "notify".
+	Field string
+	Kind  KubeValueKind
+	// Override marks the replace-the-baseline-at-this-position twins,
+	// mirroring the !override YAML tag on the literal list.
+	Override bool
+	Source   *ValueSource
+}
+
+// ValueSources returns every *From block set on this config block,
+// paired with the field it supplies. The order is fixed so error
+// messages and provenance lines are reproducible.
+//
+// This table is the single place the six keys are enumerated: the
+// validator and the merger both read it rather than re-deriving the
+// mapping, so a seventh key cannot land in one and be forgotten in the
+// other.
+func (k *KubeConfig) ValueSources() []KubeValueSource {
+	if k == nil {
+		return nil
+	}
+	all := []KubeValueSource{
+		{Key: "pathFrom", Field: "path", Kind: KubeValueScalar, Source: k.PathFrom},
+		{Key: "slackFrom", Field: "slack", Kind: KubeValueScalar, Source: k.SlackFrom},
+		{Key: "notifyFrom", Field: "notify", Kind: KubeValueList, Source: k.NotifyFrom},
+		{Key: "notifyOverrideFrom", Field: "notify", Kind: KubeValueList, Override: true, Source: k.NotifyOverrideFrom},
+		{Key: "tagsFrom", Field: "tags", Kind: KubeValueList, Source: k.TagsFrom},
+		{Key: "tagsOverrideFrom", Field: "tags", Kind: KubeValueList, Override: true, Source: k.TagsOverrideFrom},
+	}
+	out := make([]KubeValueSource, 0, len(all))
+	for _, vs := range all {
+		if vs.Source != nil {
+			out = append(out, vs)
+		}
+	}
+	return out
+}
+
+// Clone returns a copy of k whose setFields map is independent of the
+// original's. The merger lowers *From blocks into literal fields on a
+// per-(Ingress, host) copy; without the deep copy those writes would
+// leak across every host that walks the same rule.
+func (k KubeConfig) Clone() KubeConfig {
+	out := k
+	out.setFields = make(map[string]bool, len(k.setFields))
+	for key, v := range k.setFields {
+		out.setFields[key] = v
+	}
+	return out
+}
+
+// MarkSet records field as present, as if the source YAML had carried
+// that key. Used by the merger when a *From value source supplies the
+// field at merge time.
+func (k *KubeConfig) MarkSet(field string) {
+	if k.setFields == nil {
+		k.setFields = map[string]bool{}
+	}
+	k.setFields[field] = true
+}
+
+// SplitAnnotationList parses a comma-separated annotation value into
+// entries, trimming surrounding whitespace and dropping empties.
+// Shared by the config loader (scalar defaults) and the merger
+// (annotation values) so both read a chart's `join ","` output the
+// same way.
+func SplitAnnotationList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
 // StatusCodeList is the list type for acceptedStatusCodes. It's a
 // distinct named type (rather than a bare []int) so the parsing
 // surface stays symmetrical with the other typed list wrappers
@@ -1637,8 +1806,22 @@ func kubeWhenIsEmpty(w KubeMatchWhen) bool {
 // for fields like followRedirects where the zero value (false) is a
 // legitimate explicit choice.
 func (c *checker) checkKubeRequiredAtRoot(k *KubeConfig, base []any) {
+	// A *From block carrying a default satisfies the requirement: every
+	// host whose annotation is absent still inherits a usable value
+	// (ADR-0009). A defaultless one does not — it would leave hosts
+	// without the annotation with nothing at all.
+	defaulted := map[string]bool{}
+	for _, vs := range k.ValueSources() {
+		if vs.Source.HasDefault {
+			defaulted[vs.Field] = true
+		}
+	}
+
 	for _, key := range KubeRequiredAtRoot {
 		if !k.IsSet(key) {
+			if defaulted[key] {
+				continue
+			}
 			c.errf(append(append([]any{}, base...), key),
 				"required at the root rule (every materialized monitor inherits this)")
 			continue
@@ -1846,9 +2029,100 @@ func (c *checker) validateKubeConfig(
 			}
 		}
 	}
+	c.validateKubeValueSources(k, base, slackChannels, userMapping)
+
 	// dependsOn cross-references with static monitors are resolved in
 	// a second pass once the monitor slug set is fully built — see
 	// validateKubeDependsOnRefs called from validate().
+}
+
+// validateKubeValueSources enforces the structural rules for ADR-0009
+// `*From` blocks on one config block: a *From and the literal it
+// supplies are mutually exclusive, so are a list's From/OverrideFrom
+// pair, exactly one annotation scope is required, and the `default:`
+// (reviewed config, unlike the annotation value) must satisfy the same
+// constraints as the literal field.
+func (c *checker) validateKubeValueSources(
+	k *KubeConfig,
+	base []any,
+	slackChannels map[string]struct{},
+	userMapping map[string]string,
+) {
+	for _, vs := range k.ValueSources() {
+		vbase := append(append([]any{}, base...), vs.Key)
+
+		if k.IsSet(vs.Field) {
+			c.errf(vbase, "cannot be combined with %q in the same config block — set the field either literally or from an annotation", vs.Field)
+		}
+
+		switch {
+		case vs.Source.Annotation == "" && vs.Source.NamespaceAnnotation == "":
+			c.errf(vbase, "requires exactly one of annotation: or namespaceAnnotation:")
+		case vs.Source.Annotation != "" && vs.Source.NamespaceAnnotation != "":
+			c.errf(vbase, "annotation: and namespaceAnnotation: are mutually exclusive — one *From block reads one scope")
+		}
+
+		for _, key := range []string{vs.Source.Annotation, vs.Source.NamespaceAnnotation} {
+			if key == "" {
+				continue
+			}
+			if errs := validation.IsQualifiedName(key); len(errs) > 0 {
+				c.errf(vbase, "invalid k8s annotation key %q: %s", key, strings.Join(errs, "; "))
+			}
+		}
+
+		if vs.Source.HasDefault {
+			c.validateValueSourceDefault(vs, vbase, slackChannels, userMapping)
+		}
+	}
+
+	// notifyFrom + notifyOverrideFrom in one block would have the same
+	// layer both union and replace the baseline; the merge order
+	// between them is undefined by design rather than merely unstated.
+	if k.NotifyFrom != nil && k.NotifyOverrideFrom != nil {
+		c.errf(append(append([]any{}, base...), "notifyOverrideFrom"),
+			"cannot be combined with notifyFrom in the same config block")
+	}
+	if k.TagsFrom != nil && k.TagsOverrideFrom != nil {
+		c.errf(append(append([]any{}, base...), "tagsOverrideFrom"),
+			"cannot be combined with tagsFrom in the same config block")
+	}
+}
+
+// validateValueSourceDefault applies the literal field's own load-time
+// constraints to a *From block's `default:`. Defaults are reviewed
+// config, so they are hard errors here — unlike annotation values,
+// which degrade to a warning at materialize time.
+func (c *checker) validateValueSourceDefault(
+	vs KubeValueSource,
+	vbase []any,
+	slackChannels map[string]struct{},
+	userMapping map[string]string,
+) {
+	dbase := append(append([]any{}, vbase...), "default")
+	switch vs.Field {
+	case "path":
+		if !strings.HasPrefix(vs.Source.DefaultScalar, "/") {
+			c.errf(dbase, "must start with %q, got %q", "/", vs.Source.DefaultScalar)
+		}
+	case "slack":
+		if _, ok := slackChannels[vs.Source.DefaultScalar]; !ok {
+			c.errf(dbase, "unknown channel slug %q", vs.Source.DefaultScalar)
+		}
+	case "notify":
+		for i, n := range vs.Source.DefaultList {
+			if !c.isValidNotifyEntry(userMapping, n) {
+				c.errf(append(append([]any{}, dbase...), i),
+					"%q must be a userMapping slug or raw Slack markup wrapped in <…>", n)
+			}
+		}
+	case "tags":
+		for i, tag := range vs.Source.DefaultList {
+			if err := slug.ValidateTag(tag); err != nil {
+				c.errf(append(append([]any{}, dbase...), i), "%v", err)
+			}
+		}
+	}
 }
 
 // validateKubeDependsOnRefs walks the tree and verifies every entry in
