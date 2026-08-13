@@ -455,7 +455,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 				}
 				return n, true
 			},
-			issueSourceSlackMapping: func(context.Context) (int, bool) {
+			issueSourceSlackMapping: infallibleSource(func() int {
 				entries, _ := umValidator.Snapshot()
 				n := 0
 				for _, e := range entries {
@@ -463,21 +463,21 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 						n++
 					}
 				}
-				return n, true
-			},
-			issueSourceMissingParent: func(context.Context) (int, bool) {
-				return len(sched.MissingParents()), true
-			},
-			issueSourceAnnotation: func(context.Context) (int, bool) {
+				return n
+			}),
+			issueSourceMissingParent: infallibleSource(func() int {
+				return len(sched.MissingParents())
+			}),
+			issueSourceAnnotation: infallibleSource(func() int {
 				if materializer == nil {
-					return 0, true
+					return 0
 				}
 				n := 0
 				for _, mw := range materializer.AnnotationWarnings() {
 					n += len(mw.Warnings)
 				}
-				return n, true
-			},
+				return n
+			}),
 		},
 	}
 

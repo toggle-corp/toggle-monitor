@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"gopkg.in/yaml.v3"
 
 	"github.com/toggle-corp/toggle-monitor/internal/config"
 	"github.com/toggle-corp/toggle-monitor/internal/merger"

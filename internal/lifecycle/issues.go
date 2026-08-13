@@ -54,6 +54,14 @@ func (r *issuesReporter) refresh(ctx context.Context) {
 	}
 }
 
+// infallibleSource adapts a source that cannot fail to the counts
+// signature. Only kube-invalid reads through the DB and can come back
+// unreadable; wrapping the other three here keeps that asymmetry
+// visible instead of scattering `return n, true` across every closure.
+func infallibleSource(f func() int) func(context.Context) (int, bool) {
+	return func(context.Context) (int, bool) { return f(), true }
+}
+
 // run refreshes immediately and then on a ticker until ctx is done.
 func (r *issuesReporter) run(ctx context.Context) {
 	tick := func() {
