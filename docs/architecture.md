@@ -130,6 +130,13 @@ implicit recovery strategy.
 
 ## Data flow: a kube reconcile pass
 
+A pass runs on two triggers: the `kube.resyncInterval` ticker, and an
+Ingress add/delete watch event debounced by `kube.watchDebounce`
+(default 5s, `0s` disables). Both feed the same single goroutine, so
+passes never overlap. The watch trigger is what keeps a removed
+Ingress from alerting as a 404 for up to a full resync interval before
+the removal is noticed.
+
 1. The `client-go` informer's lister returns every Ingress in the
    cluster.
 2. The `kube.Watcher.Reconcile` loop walks every unique `host` in

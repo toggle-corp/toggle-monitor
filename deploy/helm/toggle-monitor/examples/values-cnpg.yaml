@@ -51,6 +51,7 @@ config:
 
     kube:
       resyncInterval: 30m
+      watchDebounce: 5s
       friendlyName: compact
       match:
         - when: {}

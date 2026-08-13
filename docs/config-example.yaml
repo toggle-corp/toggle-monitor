@@ -47,6 +47,14 @@ database:
 kube:
   resyncInterval: 30m
 
+  # Ingress add/delete events trigger a reconcile after this window
+  # instead of waiting out resyncInterval, so a removed ingress is torn
+  # down before its 404 is reported as a fresh incident. The window also
+  # collapses a burst (rolling deploy) into one pass and lets a
+  # delete+recreate settle. 0s leaves resyncInterval as the only
+  # trigger. Defaults to 5s when omitted; allowed range 1s-1m.
+  watchDebounce: 5s
+
   # Auto-generated friendly name style for kube-discovered monitors.
   # Defaults to "compact" when omitted. Options:
   #   plain   → (ns) ingress-name                              (no magic)

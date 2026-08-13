@@ -93,6 +93,7 @@ env:
 | `publicBaseURL` | string | — | valid URL | If set, Slack messages include a `[View details]` button |
 | `dbBodyMaxChars` | int | ✓ | >= `slack.bodyMaxChars` | Truncate stored body to this length |
 | `kube.resyncInterval` | duration | ✓ | >= 1m | k8s informer resync |
+| `kube.watchDebounce` | duration | — | `0s` or 1s–1m | Wait after the first Ingress event of a burst before reconciling. Default `5s`; `0s` disables watch-driven reconciles. |
 | `ui.pageSize.homepageAlerts` | int | ✓ | 1–`maxPerPage` | |
 | `ui.pageSize.monitorListing` | int | ✓ | 1–`maxPerPage` | |
 | `ui.pageSize.monitorHistory` | int | ✓ | 1–`maxPerPage` | |
@@ -304,6 +305,7 @@ Authoritative design: [ADR-0002 — `kube.match` as a cascading rule tree](./adr
 ```yaml
 kube:
   resyncInterval: 30m
+  watchDebounce: 5s                                  # reconcile this long after an Ingress add/delete; 0s disables (default: 5s)
   friendlyName: compact                              # compact | plain | dedupe | title (default: compact)
 
   # The match tree. Every (Ingress, host) pair traverses the entire
@@ -440,6 +442,7 @@ A resolved `ignore: true` means no monitor is created; a `status="kube-ignored"`
 | Field | Type | Req | Validation | Notes |
 |---|---|---|---|---|
 | `kube.resyncInterval` | duration | ✓ | >= 1m | k8s informer resync (also referenced in §1). |
+| `kube.watchDebounce` | duration | — | `0s` or 1s–1m | Debounce for watch-driven reconciles: Ingress add/delete events trigger a pass after this window instead of waiting for `resyncInterval`, so a removed Ingress is torn down before the burst dispatcher reports the resulting 404. Also the settle window — a delete followed by a recreate inside it changes nothing. Default `5s`; `0s` leaves `resyncInterval` as the only trigger. |
 | `kube.friendlyName` | enum | — | one of: `compact`, `plain`, `dedupe`, `title` (default `compact`) | Auto-generated display name style for kube-discovered monitors. |
 | `kube.match` | list | ✓ | non-empty; first top-level rule must have empty (`{}` or omitted) `when:` | The cascading rule tree. |
 | `kube.match[].when` | object | — | see selector table | Absent or `{}` means "match anything." |

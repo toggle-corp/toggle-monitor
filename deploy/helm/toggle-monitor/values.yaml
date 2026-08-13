@@ -119,6 +119,7 @@ config:
     # See docs/config-example.yaml and ADR-0002 for the full model.
     kube:
       resyncInterval: 30m
+      watchDebounce: 5s                       # reconcile after an ingress add/delete; 0s disables
       friendlyName: compact                   # plain | compact | dedupe | title
       match:
         - when: {}
