@@ -88,6 +88,12 @@ type Watcher struct {
 	// Optional removal sink: invoked once per materialized monitor
 	// whose snapshot row gets pruned. Nil disables the callback.
 	onRemoval RemovalSink
+
+	// Optional namespace annotation source, backed by a Namespace
+	// informer. Nil when the watcher was built with an injected
+	// IngressLister; namespaceAnnotation-scoped value sources then
+	// resolve to their defaults.
+	namespaces NamespaceAnnotationLister
 }
 
 // Materializer is the seam Issue-9 plugs in to do the real
@@ -363,6 +369,11 @@ func NewWithCluster(ctx context.Context, s SnapshotStore, opts Options, kubeconf
 	// empty forever, and List() silently returns []. (#kube-empty-bug)
 	ingInformer := factory.Networking().V1().Ingresses()
 	_ = ingInformer.Informer()
+	// Namespace annotations feed ADR-0009 namespaceAnnotation value
+	// sources. Registered the same way and for the same reason as the
+	// Ingress informer above.
+	nsInformer := factory.Core().V1().Namespaces()
+	_ = nsInformer.Informer()
 
 	factory.Start(ctx.Done())
 	synced := factory.WaitForCacheSync(ctx.Done())
@@ -373,6 +384,7 @@ func NewWithCluster(ctx context.Context, s SnapshotStore, opts Options, kubeconf
 	}
 
 	w := New(s, &ingressInformerLister{lister: ingInformer.Lister()}, opts)
+	w.namespaces = &namespaceInformerLister{lister: nsInformer.Lister()}
 	return w, nil
 }
 

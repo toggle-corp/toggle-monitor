@@ -328,6 +328,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	var materializer *merger.Materializer
 	if opts.Config.Kube != nil {
 		materializer = merger.New(repo, opts.Config, proxies)
+		materializer.SetLogger(log)
 	}
 
 	// Alert coalescing: non-critical uptime opens/resolves route into a
@@ -550,6 +551,12 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 				return fmt.Errorf("kube watcher: %w", err)
 			}
 			lister = watcher.Lister()
+		}
+		// Namespace annotations reach the cascade through the watcher's
+		// informer. Wired after construction because the watcher owns
+		// the informer and the materializer is built earlier.
+		if materializer != nil {
+			materializer.SetNamespaceAnnotationSource(watcher)
 		}
 		// Wire the cascade source so the discovery detail page can
 		// re-run merger.ResolveWithTrace against the live cache.
