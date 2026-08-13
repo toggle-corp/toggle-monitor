@@ -187,6 +187,18 @@ type KubeConfig struct {
 	Tags                   TagList        `yaml:"tags,omitempty"`
 	DependsOn              DependsOnList  `yaml:"dependsOn,omitempty"`
 
+	// *From blocks source a field's value from an Ingress or Namespace
+	// annotation instead of a literal (ADR-0009). Each one contributes
+	// at this rule's position in the cascade with exactly the merge
+	// semantics of the literal field it supplies, so the tree stays
+	// authoritative over *which* field is set where.
+	PathFrom           *ValueSource `yaml:"pathFrom,omitempty"`
+	SlackFrom          *ValueSource `yaml:"slackFrom,omitempty"`
+	NotifyFrom         *ValueSource `yaml:"notifyFrom,omitempty"`
+	NotifyOverrideFrom *ValueSource `yaml:"notifyOverrideFrom,omitempty"`
+	TagsFrom           *ValueSource `yaml:"tagsFrom,omitempty"`
+	TagsOverrideFrom   *ValueSource `yaml:"tagsOverrideFrom,omitempty"`
+
 	// setFields records which YAML keys were present in the input.
 	// Populated by UnmarshalYAML; consumed by the merger to tell
 	// "unset" apart from "explicitly set to the zero value".

@@ -2,6 +2,8 @@
 
 **Status:** Accepted
 **Date:** 2026-05-24
+**Amended by:** [ADR-0009](0009-from-value-sources-for-kube-discovery.md) —
+the `### Annotations: removed` sub-section only.
 **Supersedes:** the `kube.presets:` + flat `kube.match[]` design captured in
 [`config-schema.md`](../config-schema.md) and the per-ingress
 `/kube.*` / `/config.*` annotation layer described in
@@ -196,13 +198,15 @@ need shared baseline lift it to a common ancestor or duplicate it.
 
 ### Annotations: removed
 
-> **Amendment proposed:** [ADR-0009](0009-from-value-sources-for-kube-discovery.md)
-> reverses this sub-section, narrowly, via `*From` value sources. Its
-> context records that this section's premise — app team and monitoring
-> team being the same humans — does not match the live cluster, which
-> already carries chart-emitted `app.example.com/health-check`
-> annotations. Everything else in this record stands. Flip this
-> sub-section's disposition when ADR-0009 is accepted.
+> **Amended by:** [ADR-0009](0009-from-value-sources-for-kube-discovery.md)
+> (accepted 2026-08-13) reverses this sub-section, narrowly, via `*From`
+> value sources. Its context records that this section's premise — app
+> team and monitoring team being the same humans — does not match the
+> live cluster, which already carries chart-emitted
+> `app.example.com/health-check` annotations. A rule's `config:` block
+> may now declare that `path`, `slack`, `notify` or `tags` takes its
+> value from an ingress or namespace annotation; the tree still decides
+> *which* field is set where. Everything else in this record stands.
 
 All ingress annotations (`/kube.preset`, `/kube.path`,
 `/config.enabled`, `/config.group`, `/config.tags`,

@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-08-13
 deciders: [monitoring-team]
 amends:
@@ -8,7 +8,7 @@ amends:
 
 # ADR 0009 — `*From` value sources for kube discovery
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-13
 **Amends:** ADR-0002 (partial). The cascading `kube.match[]` tree, its
 merge rules, `final:`/`ignore:`, and the root-required constraint all
