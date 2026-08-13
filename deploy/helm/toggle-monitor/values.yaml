@@ -208,6 +208,55 @@ serviceMonitor:
   scrapeTimeout: 10s
   labels: {}
 
+# Optional PrometheusRule for kube-prometheus-stack. Off by default.
+#
+# These are the *self*-alerting rules: they alert on toggle-monitor's
+# own /issues page — the misconfigurations it notices at runtime but
+# cannot fix (kube ingresses it can't materialize, Slack mappings that
+# don't resolve, dependsOn typos, annotation values it had to reject).
+# Requires serviceMonitor.enabled (or your own scrape config) so the
+# toggle_monitor_issues gauge actually reaches Prometheus.
+#
+# Alerts route through your existing Alertmanager. If you point a
+# receiver at toggle-monitor's own webhook endpoint, they also land on
+# /alerts alongside every other alert it receives.
+prometheusRule:
+  enabled: false
+  labels: {}
+
+  # One toggle per /issues source. Severities are suggestions — the
+  # ordering reflects blast radius: kube-invalid means something is not
+  # being monitored at all, while a rejected annotation only means a
+  # monitor fell back to its config-tree value.
+  issues:
+    kubeInvalid:
+      enabled: true
+      for: 15m
+      severity: warning
+    slackMapping:
+      enabled: true
+      for: 30m
+      severity: warning
+    missingParent:
+      enabled: true
+      for: 30m
+      severity: info
+    annotation:
+      enabled: true
+      for: 1h
+      severity: info
+
+  # Catches "toggle-monitor itself is gone", which no /issues source can
+  # report — while this fires, none of the rules above can.
+  scrapeHealth:
+    enabled: true
+    for: 10m
+    severity: critical
+
+  # Appended verbatim to the rule group. Use for site-specific rules
+  # that belong next to these.
+  extraRules: []
+
 # Optional Grafana dashboard, shipped as a ConfigMap and discovered by
 # the kiwigrid k8s-sidecar (default in kube-prometheus-stack and the
 # Grafana community chart). Pairs with the ServiceMonitor above —

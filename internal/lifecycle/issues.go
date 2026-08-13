@@ -1,0 +1,75 @@
+package lifecycle
+
+import (
+	"context"
+	"log/slog"
+	"time"
+
+	"github.com/toggle-corp/toggle-monitor/internal/observability"
+	tmsentry "github.com/toggle-corp/toggle-monitor/internal/sentry"
+)
+
+// Sources of the toggle_monitor_issues gauge. These are the same four
+// the /issues page renders; the label values are part of the alerting
+// contract (deploy/helm/.../prometheusrule.yaml matches on them), so
+// renaming one is a breaking change for anyone's alert rules.
+const (
+	issueSourceKubeInvalid   = "kube-invalid"
+	issueSourceSlackMapping  = "slack-mapping"
+	issueSourceMissingParent = "missing-parent"
+	issueSourceAnnotation    = "annotation"
+)
+
+// issuesRefreshInterval is how often the gauge is recomputed. Issues
+// are slow-moving — a kube reconcile runs every resyncInterval (30m by
+// default) — so this only needs to be well inside a Prometheus scrape's
+// staleness window, not near-real-time.
+const issuesRefreshInterval = time.Minute
+
+// issuesReporter publishes the /issues sources as a Prometheus gauge so
+// they can be alerted on rather than only noticed by an operator who
+// happens to open the page. Each source is a closure over the same
+// reader the web handler uses, so the gauge and the page cannot drift.
+type issuesReporter struct {
+	metrics *observability.Metrics
+	// Each source reports its count and whether that count is
+	// trustworthy this tick. A source that cannot read its input (a DB
+	// blip, say) returns false and its series is left alone — writing a
+	// zero there would resolve a real alert on nothing more than a
+	// transient error.
+	counts map[string]func(context.Context) (int, bool)
+	log    *slog.Logger
+}
+
+// refresh recomputes every source. Sources are always written, zero
+// included: a gauge that stops emitting a series leaves any alert on it
+// stuck firing, because the expression has nothing left to evaluate to
+// false.
+func (r *issuesReporter) refresh(ctx context.Context) {
+	for source, count := range r.counts {
+		n, ok := count(ctx)
+		if !ok {
+			continue
+		}
+		r.metrics.Issues.WithLabelValues(source).Set(float64(n))
+	}
+}
+
+// run refreshes immediately and then on a ticker until ctx is done.
+func (r *issuesReporter) run(ctx context.Context) {
+	tick := func() {
+		defer tmsentry.RecoverPanic(r.log, "lifecycle.issuesReporter")
+		r.refresh(ctx)
+	}
+	tick()
+	t := time.NewTicker(issuesRefreshInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			tick()
+		}
+	}
+}

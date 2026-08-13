@@ -40,6 +40,7 @@ type Metrics struct {
 	// counts each entry into degraded mode. Emitted independently of
 	// Slack — Prometheus scrapes pods by IP so it lives outside the DNS
 	// failure domain the notice cannot escape.
+	Issues              *prometheus.GaugeVec
 	SelfDegraded        prometheus.Gauge
 	SelfDegradedEntries prometheus.Counter
 
@@ -106,6 +107,10 @@ func New() *Metrics {
 			Name: "toggle_monitor_worker_last_tick_seconds",
 			Help: "Unix time of the most recent check completion (success or failure).",
 		}),
+		Issues: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "toggle_monitor_issues",
+			Help: "Operator-actionable issues currently detected, partitioned by source. Mirrors the /issues page.",
+		}, []string{"source"}),
 		SelfDegraded: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "toggle_monitor_self_degraded",
 			Help: "1 while the monitor considers itself blind (self-health " +
@@ -164,6 +169,7 @@ func New() *Metrics {
 		m.SlackFreshParentTotal,
 		m.IngressReconcileTotal,
 		m.WorkerLastTickSeconds,
+		m.Issues,
 		m.SelfDegraded,
 		m.SelfDegradedEntries,
 		m.AMWebhookRequestTotal,

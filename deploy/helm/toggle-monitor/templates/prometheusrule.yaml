@@ -1,0 +1,93 @@
+{{- if .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "toggle-monitor.fullname" . }}
+  labels:
+    {{- include "toggle-monitor.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: {{ include "toggle-monitor.fullname" . }}.self
+      rules:
+        # toggle-monitor watches everything else; these rules are what
+        # watches toggle-monitor. Each mirrors one section of the
+        # /issues page, so an alert and the page always agree on what is
+        # wrong.
+        {{- with .Values.prometheusRule.issues }}
+        {{- if .kubeInvalid.enabled }}
+        - alert: ToggleMonitorKubeInvalidIngresses
+          expr: toggle_monitor_issues{source="kube-invalid"} > 0
+          for: {{ .kubeInvalid.for }}
+          labels:
+            severity: {{ .kubeInvalid.severity }}
+          annotations:
+            summary: "{{ `{{ $value }}` }} ingress host(s) cannot be materialized into a monitor"
+            description: >-
+              The kube watcher saw these ingresses but the resolved config failed
+              validation, so they are NOT being probed. See /issues and /discovery?status=kube-invalid.
+        {{- end }}
+        {{- if .slackMapping.enabled }}
+        - alert: ToggleMonitorSlackMappingInvalid
+          expr: toggle_monitor_issues{source="slack-mapping"} > 0
+          for: {{ .slackMapping.for }}
+          labels:
+            severity: {{ .slackMapping.severity }}
+          annotations:
+            summary: "{{ `{{ $value }}` }} slack.userMapping entr(ies) failed validation"
+            description: >-
+              Mentions for these users will not resolve, so an alert may reach nobody.
+              Fix the IDs in config.yaml or the Slack workspace. See /issues.
+        {{- end }}
+        {{- if .missingParent.enabled }}
+        - alert: ToggleMonitorMissingDependsOnParent
+          expr: toggle_monitor_issues{source="missing-parent"} > 0
+          for: {{ .missingParent.for }}
+          labels:
+            severity: {{ .missingParent.severity }}
+          annotations:
+            summary: "{{ `{{ $value }}` }} dependsOn reference(s) do not resolve to a monitor"
+            description: >-
+              The dependent monitors still run, but the dependency gate is skipped —
+              a parent outage will not suppress their alerts. See /issues.
+        {{- end }}
+        {{- if .annotation.enabled }}
+        # ADR-0009. Deliberately the mildest of the four: the monitor
+        # keeps probing on its cascade value, so this is a
+        # fix-it-this-week misconfiguration, not an outage. A longer
+        # `for` also lets a chart rollout settle before it pages anyone.
+        - alert: ToggleMonitorAnnotationValuesRejected
+          expr: toggle_monitor_issues{source="annotation"} > 0
+          for: {{ .annotation.for }}
+          labels:
+            severity: {{ .annotation.severity }}
+          annotations:
+            summary: "{{ `{{ $value }}` }} annotation value(s) rejected by toggle-monitor"
+            description: >-
+              An app team's chart set an annotation toggle-monitor could not use
+              (unknown notify slug, unknown slack channel, malformed path). The
+              affected monitors fall back to their config-tree values. See /issues.
+        {{- end }}
+        {{- end }}
+        {{- if .Values.prometheusRule.scrapeHealth.enabled }}
+        # The gauge above only alerts while toggle-monitor is up to
+        # publish it. This is the rule that catches "the watcher itself
+        # is gone", which none of the /issues sources can report.
+        - alert: ToggleMonitorDown
+          expr: up{job=~".*{{ include "toggle-monitor.fullname" . }}.*"} == 0
+          for: {{ .Values.prometheusRule.scrapeHealth.for }}
+          labels:
+            severity: {{ .Values.prometheusRule.scrapeHealth.severity }}
+          annotations:
+            summary: "toggle-monitor is not being scraped"
+            description: >-
+              Prometheus cannot scrape toggle-monitor. While this is firing, none of
+              the toggle_monitor_issues alerts can fire either — treat this as
+              covering all of them.
+        {{- end }}
+        {{- with .Values.prometheusRule.extraRules }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}

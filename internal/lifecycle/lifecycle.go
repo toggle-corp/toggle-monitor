@@ -437,6 +437,50 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	if materializer != nil {
 		srv.SetAnnotationIssueReader(&annotationIssueAdapter{m: materializer})
 	}
+
+	// Publish the /issues sources as a gauge so they are alertable
+	// through Prometheus rather than only visible to an operator with
+	// the page open. Each closure reads the same seam the web handler
+	// does, so the gauge and the page cannot drift apart.
+	issues := &issuesReporter{
+		metrics: metrics,
+		log:     log,
+		counts: map[string]func(context.Context) (int, bool){
+			issueSourceKubeInvalid: func(ctx context.Context) (int, bool) {
+				n, err := repo.CountKubeInvalid(ctx)
+				if err != nil {
+					// A DB blip must not zero the series and resolve a
+					// real alert. Skip the write; the last value stands.
+					return 0, false
+				}
+				return n, true
+			},
+			issueSourceSlackMapping: func(context.Context) (int, bool) {
+				entries, _ := umValidator.Snapshot()
+				n := 0
+				for _, e := range entries {
+					if !e.OK {
+						n++
+					}
+				}
+				return n, true
+			},
+			issueSourceMissingParent: func(context.Context) (int, bool) {
+				return len(sched.MissingParents()), true
+			},
+			issueSourceAnnotation: func(context.Context) (int, bool) {
+				if materializer == nil {
+					return 0, true
+				}
+				n := 0
+				for _, mw := range materializer.AnnotationWarnings() {
+					n += len(mw.Warnings)
+				}
+				return n, true
+			},
+		},
+	}
+
 	staticPlans := buildPlans(opts.Config, proxies)
 	idToSlug := make(map[string]string, len(opts.Config.Slack.UserMapping))
 	for slug, id := range opts.Config.Slack.UserMapping {
@@ -479,6 +523,12 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	go func() {
 		defer wg.Done()
 		sched.RunDynamic(ctx, planSource, refresh)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		issues.run(ctx)
 	}()
 
 	// Central coalescing evaluator: advances every live group on
