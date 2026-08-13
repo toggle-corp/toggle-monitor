@@ -6,6 +6,8 @@ The binary refuses to start if any required field is missing or fails validation
 
 > **Partially superseded by ADRs.** Treat the linked ADRs as authoritative where they conflict with the prose below:
 >
+> - **[ADR-0009](./adr/0009-from-value-sources-for-kube-discovery.md)** partially amends ADR-0002's "annotations contribute nothing": a `config:` block may now declare that `path`, `slack`, `notify` or `tags` takes its value from an Ingress or Namespace annotation via a `*From` block. The tree still decides *which* field is set where. See §"Annotation value sources (`*From`)" below.
+> - **[ADR-0010](./adr/0010-self-alerting-on-issues-via-prometheusrule.md)** exports the `/issues` sources as a `toggle_monitor_issues{source="…"}` gauge and ships an optional `PrometheusRule` in the Helm chart (`prometheusRule.enabled`).
 > - **[ADR-0002](./adr/0002-kube-match-tree-cascade.md)** rewrites `kube.*`: presets/pause/annotationDomain are gone; `kube.match[]` is now a cascading tree with `when:`/`config:`/`nested:`/`final:`/`ignore:`. The kube section below is the implementation reference for that ADR.
 > - **[ADR-0003](./adr/0003-statuspage-replaces-group.md)** deletes the `Group` entity entirely. `groups:`, `monitor.group`, `kube.config.group`, `theme` (and `theme.defaultGroupColor`), and `Group.Notify` are removed. `StatusPage` is the sole collection entity; sections use an `any:`/`all:` boolean predicate tree with `tags:` (AND-internally) and `hostRegex:` leaves. The `groups:`, `monitor.group`, `kube.config.group`, `theme.defaultGroupColor`, and the flat `statusPages[].sections[].match[]` shape described later in this doc are all gone — see ADR-0003 and `docs/config-example.yaml` for the canonical shape.
 
@@ -477,6 +479,54 @@ All monitor fields below are settable inside any `config:` block. The root must 
 | `group` | string | — | resolves to a `groups[].slug` | If unset across the entire cascade, falls back to `kube-discovered`. |
 | `tags` | list[string] | — | each: slug regex | Union across cascade by default; `kube` is always auto-added at materialization. |
 | `dependsOn` | list[string] | — | each: resolves to a **static** `monitors[].slug` (kube-discovered cannot be a parent) | Union across cascade; validator detects cycles. |
+| `pathFrom` | object | ✓ (with a `default:`) | see below | Sources `path` from an annotation. |
+| `slackFrom` | object | ✓ (with a `default:`) | see below | Sources `slack` from an annotation. |
+| `notifyFrom` | object | — | see below | Sources `notify`; unions like the literal. |
+| `notifyOverrideFrom` | object | — | see below | Sources `notify`; replaces the baseline at this rule's position. |
+| `tagsFrom` | object | — | see below | Sources `tags`; unions like the literal. |
+| `tagsOverrideFrom` | object | — | see below | Sources `tags`; replaces the baseline at this rule's position. |
+
+### Annotation value sources (`*From`)
+
+Authoritative design: [ADR-0009](./adr/0009-from-value-sources-for-kube-discovery.md).
+
+A `config:` block may set a field either literally or from an annotation:
+
+```yaml
+<field>From:
+  annotation: app.example.com/<key>          # read from the Ingress
+  namespaceAnnotation: app.example.com/<key> # read from the Ingress's Namespace
+  default: <value>                           # optional; used when the annotation is absent
+```
+
+Exactly one of `annotation:` / `namespaceAnnotation:` per block. `default:` accepts a scalar or, for the list fields, a YAML sequence; a scalar default for a list field is split on commas, matching what `{{ .Values.notify | join "," }}` renders.
+
+**Merge semantics are identical to the literal field.** `pathFrom` and `slackFrom` are scalars (deepest layer that set the field wins); `notifyFrom` / `tagsFrom` union; the `*OverrideFrom` twins replace the baseline **at that rule's position**, exactly as the `!override` YAML tag does, with later rules still unioning on top. No new merge concept is introduced.
+
+Namespace-scoped sources require `get/list/watch namespaces` RBAC — the chart adds it alongside the Ingress watch when `rbac.ingressWatch` is on.
+
+**Load-time errors** (refuse to start):
+
+- A `*From` block and the literal it supplies in the same `config:` block (e.g. `path` + `pathFrom`).
+- `notifyFrom` + `notifyOverrideFrom` (or the `tags` pair) in the same block.
+- Neither or both of `annotation:` / `namespaceAnnotation:`.
+- An annotation key that isn't a valid k8s qualified name.
+- A `default:` that fails the literal field's own validation. Defaults are reviewed config, so these are hard errors.
+
+**Runtime degradation.** Annotation values are unreviewed input, so a bad one never blocks monitoring — **the monitor always materializes and keeps probing**:
+
+| situation | behaviour |
+|---|---|
+| annotation absent, empty, or whitespace-only | treated as absent → `default:` if present, else the source contributes nothing and the cascade value stands |
+| `notify` entry not a `slack.userMapping` slug | that entry is dropped and warned; valid entries in the same value are kept |
+| `notify` entry is raw `<…>` Slack markup | rejected — the roster of who can be paged stays in reviewed config |
+| `slack` value not a configured channel slug | rejected; the cascade value stands |
+| `path` value not starting with `/` | rejected; the cascade value stands |
+| an `*OverrideFrom` yielding no valid entries | ignored entirely rather than replacing real recipients with nothing |
+
+Every rejected value produces a `WARN` log, a `warn:` note on the discovery row's reason, an entry in the "Rejected annotation values" section of `/issues`, and a point on `toggle_monitor_issues{source="annotation"}`. Not Sentry — it is app-team input error, not a toggle-monitor fault.
+
+Accepted values are recorded as provenance: the discovery row's reason and the discovery detail page both show `path=/livez ← annotation app.example.com/health-check`, and `toggle-monitor explain` emits `provenance:` and `warnings:` blocks.
 
 ### Validation
 

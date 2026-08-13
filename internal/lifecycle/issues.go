@@ -9,15 +9,14 @@ import (
 	tmsentry "github.com/toggle-corp/toggle-monitor/internal/sentry"
 )
 
-// Sources of the toggle_monitor_issues gauge. These are the same four
-// the /issues page renders; the label values are part of the alerting
-// contract (deploy/helm/.../prometheusrule.yaml matches on them), so
-// renaming one is a breaking change for anyone's alert rules.
+// Local aliases for the gauge's source labels. The constants live in
+// internal/observability because they are part of the metric's public
+// contract, not this file's private vocabulary.
 const (
-	issueSourceKubeInvalid   = "kube-invalid"
-	issueSourceSlackMapping  = "slack-mapping"
-	issueSourceMissingParent = "missing-parent"
-	issueSourceAnnotation    = "annotation"
+	issueSourceKubeInvalid   = observability.IssueSourceKubeInvalid
+	issueSourceSlackMapping  = observability.IssueSourceSlackMapping
+	issueSourceMissingParent = observability.IssueSourceMissingParent
+	issueSourceAnnotation    = observability.IssueSourceAnnotation
 )
 
 // issuesRefreshInterval is how often the gauge is recomputed. Issues

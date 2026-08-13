@@ -118,6 +118,31 @@ kube:
                 # project-specific `path` for this Ingress.
               final: true
 
+    # ── Annotation value sources (ADR-0009) ────────────────────────
+    # The cluster already declares some of its own monitoring data.
+    # A `*From` block says "take this field's value from an
+    # annotation"; the tree still decides *which* field is set where,
+    # and the merge semantics are identical to the literal field.
+    #
+    # `path` is ingress-scoped — it genuinely varies within a
+    # namespace (one ingress wants /livez, its neighbour wants
+    # /minio/health/live). `notify` and `slack` are namespace-scoped:
+    # they never vary within a namespace, and the Namespace is the
+    # only scope `alertmanager.match` can also read, so one annotation
+    # states the ownership map once for both trees.
+    #
+    # A bad annotation value never costs monitoring: it is dropped
+    # with a warning on /issues and the cascade value stands.
+    - when: { namespace: "acme-*" }
+      config:
+        pathFrom:
+          annotation: app.example.com/health-check
+          default: /                                 # used when the ingress has no such annotation
+        notifyOverrideFrom:
+          namespaceAnnotation: app.example.com/notify   # replaces inherited notify at this position
+        slackFrom:
+          namespaceAnnotation: app.example.com/slack
+
     # ── BETACO namespace family ──────────────────────────────────────
     - when: { namespace: "betaco-core-backend-*" }
       config:

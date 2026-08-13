@@ -47,6 +47,7 @@ There is **no authentication** in v1. Restrict access via:
 | `toggle_monitor_worker_last_tick_seconds` | gauge | — | Unix time of the most recent check completion (success or failure). Drives the heartbeat liveness criterion. |
 | `toggle_monitor_self_degraded` | gauge | — | `1` while the monitor considers itself blind (self-health degraded mode, ADR-0008), `0` otherwise. Emitted independently of Slack. |
 | `toggle_monitor_self_degraded_entries_total` | counter | — | Number of times the monitor entered self-health degraded mode. |
+| `toggle_monitor_issues` | gauge | `source="kube-invalid\|slack-mapping\|missing-parent\|annotation"` | Operator-actionable issues currently detected — the same four sections `/issues` renders (ADR-0010). Refreshed once a minute. Zero is published, not dropped, so an alert on it can resolve. A source that can't read its input holds its last value rather than writing a zero. |
 
 Plus the Go runtime + process collectors via
 `promhttp` (`go_goroutines`, `go_gc_*`, `process_*`, etc.).
@@ -72,6 +73,45 @@ sum(rate(toggle_monitor_slack_post_total{reason="transient"}[15m]))
 # Retry-loop effectiveness. If `exhausted` ≫ `recovered`, the budget
 # is too small for your link's failure profile.
 sum by (outcome) (rate(toggle_monitor_slack_retry_total[15m]))
+```
+
+### Self-alerting on `/issues` (ADR-0010)
+
+`/issues` only exists while someone is looking at it. The
+`toggle_monitor_issues` gauge is what makes those misconfigurations
+alertable — a `kube-invalid` row means an ingress host **is not being
+probed at all**, and nothing pages when that count leaves zero.
+
+The chart ships the rules, off by default:
+
+```yaml
+serviceMonitor:
+  enabled: true          # required — the rules need the gauge scraped
+prometheusRule:
+  enabled: true
+```
+
+Four alerts, one per source, each individually toggleable under
+`prometheusRule.issues.*` with its own `for` window and `severity`.
+The windows are tuned to blast radius: `kubeInvalid` after 15m (a host
+is unmonitored), a rejected `annotation` only after 1h (the monitor
+still probes on its cascade value, and a chart rollout should be
+allowed to settle). A fifth rule, `ToggleMonitorDown`, covers the case
+none of the others can — while toggle-monitor is down it publishes no
+gauge, so every rule above goes silent.
+
+If you point an Alertmanager receiver at toggle-monitor's own webhook
+endpoint (ADR-0005), these land on `/alerts` alongside every other
+alert it receives.
+
+To write your own rules instead, leave `prometheusRule.enabled: false`:
+
+```promql
+# Anything at all needing an operator:
+sum(toggle_monitor_issues) > 0
+
+# Only the one that means something is unmonitored:
+toggle_monitor_issues{source="kube-invalid"} > 0
 ```
 
 ### Dead-man's-switch rules (self-health, ADR-0008)
@@ -275,6 +315,33 @@ The next tick re-evaluates. If the parent's status flipped to `up`
 in the DB, the child's next scheduled tick will probe normally. If
 the child is stuck for > one `interval`, check whether its parent
 chain still has a down node somewhere (a transitive `dependsOn`).
+
+### An annotation on an Ingress or Namespace has no effect
+
+Check `/issues` → "Rejected annotation values", or the discovery detail
+page for that host. A `*From` value that fails validation is dropped
+with a warning and the monitor keeps probing on its cascade value
+(ADR-0009), so there is no outage to notice — only the warning.
+
+Common causes, in rough order of frequency:
+
+- The `notify` entry is not a `slack.userMapping` slug. Annotations may
+  only select from the reviewed roster; raw `<@U123>` markup is
+  rejected on purpose.
+- The `slack` value names a channel that isn't in `slack.channels[]`.
+- The `path` value doesn't start with `/`.
+- No rule in the tree reads that annotation key. The cluster carrying
+  an annotation does nothing on its own — a `config:` block has to
+  declare a `*From` for it. Run `toggle-monitor explain --ingress
+  ns/name` and look at the `provenance:` block.
+- The annotation renders empty (`{{ .Values.x | join "," }}` over an
+  empty list). Empty is treated as *absent*, so the `default:` or the
+  cascade value applies — deliberately, so a values typo can't resolve
+  to "notify nobody".
+- For `namespaceAnnotation:` sources, the pod lacks
+  `get/list/watch namespaces`. Check the ClusterRole.
+
+Changes take up to `kube.resyncInterval` (30m default) to be picked up.
 
 ### Ingresses don't appear under `/discovery`
 

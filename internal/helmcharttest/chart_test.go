@@ -20,6 +20,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/toggle-corp/toggle-monitor/internal/config"
+	"github.com/toggle-corp/toggle-monitor/internal/observability"
 )
 
 // chartDir resolves to deploy/helm/toggle-monitor relative to the repo
@@ -188,5 +189,67 @@ func extractChartConfigMap(t *testing.T, manifest string) (string, bool) {
 			return v, true
 		}
 		return "", true // ConfigMap with no data — odd but treat as found
+	}
+}
+
+// The alert expressions match on toggle_monitor_issues' `source` label
+// values, which internal/lifecycle owns. A rename on either side
+// silently stops the alert from ever firing — nothing else would catch
+// that, because a PromQL selector matching no series is not an error.
+func TestChart_PrometheusRuleMatchesTheGaugeSourceLabels(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH; skipping chart render test")
+	}
+
+	rendered, err := helmTemplate(t, chartDir(t), "", []string{"prometheusRule.enabled=true"}, nil)
+	if err != nil {
+		t.Fatalf("helm template failed: %v\n--- output ---\n%s", err, rendered)
+	}
+	if !strings.Contains(rendered, "kind: PrometheusRule") {
+		t.Fatalf("prometheusRule.enabled=true rendered no PrometheusRule\n--- rendered ---\n%s", rendered)
+	}
+	for _, source := range observability.IssueSources {
+		want := `toggle_monitor_issues{source="` + source + `"} > 0`
+		if !strings.Contains(rendered, want) {
+			t.Errorf("no alert expression for source %q (want %s)", source, want)
+		}
+	}
+	// The gauge is only published while the process is up, so the
+	// scrape-health rule is what covers every other rule's blind spot.
+	if !strings.Contains(rendered, "alert: ToggleMonitorDown") {
+		t.Error("scrape-health rule missing; nothing covers toggle-monitor being down")
+	}
+}
+
+// Shipping alert rules that fire by default in a deployment that never
+// asked for them would be hostile.
+func TestChart_PrometheusRuleIsOffByDefault(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH; skipping chart render test")
+	}
+
+	rendered, err := helmTemplate(t, chartDir(t), "", nil, nil)
+	if err != nil {
+		t.Fatalf("helm template failed: %v\n--- output ---\n%s", err, rendered)
+	}
+	if strings.Contains(rendered, "kind: PrometheusRule") {
+		t.Error("PrometheusRule rendered without prometheusRule.enabled")
+	}
+}
+
+// Namespace annotations feed namespaceAnnotation-scoped *From blocks
+// (ADR-0009); without this verb the informer cache never syncs and the
+// pod fails to start.
+func TestChart_ClusterRoleGrantsNamespaceRead(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH; skipping chart render test")
+	}
+
+	rendered, err := helmTemplate(t, chartDir(t), "", nil, nil)
+	if err != nil {
+		t.Fatalf("helm template failed: %v\n--- output ---\n%s", err, rendered)
+	}
+	if !strings.Contains(rendered, `resources: ["namespaces"]`) {
+		t.Errorf("ClusterRole does not grant namespaces read\n--- rendered ---\n%s", rendered)
 	}
 }

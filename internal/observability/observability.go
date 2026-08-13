@@ -58,6 +58,28 @@ type Metrics struct {
 	lastTickUnix atomic.Int64
 }
 
+// Issue sources of the toggle_monitor_issues gauge — the same four
+// sections the /issues page renders (ADR-0010). These label values are
+// a public contract: the shipped PrometheusRule and any operator's own
+// alert rules select on them, and a PromQL selector matching no series
+// is not an error, so a rename silently stops alerts from firing.
+const (
+	IssueSourceKubeInvalid   = "kube-invalid"
+	IssueSourceSlackMapping  = "slack-mapping"
+	IssueSourceMissingParent = "missing-parent"
+	IssueSourceAnnotation    = "annotation"
+)
+
+// IssueSources is the canonical list, for callers that must cover every
+// source (the reporter, and the chart test that checks the shipped
+// alert rules select on all of them).
+var IssueSources = []string{
+	IssueSourceKubeInvalid,
+	IssueSourceSlackMapping,
+	IssueSourceMissingParent,
+	IssueSourceAnnotation,
+}
+
 // New builds a Metrics with all series registered into a fresh
 // Registry plus the standard Go runtime + process collectors.
 func New() *Metrics {
