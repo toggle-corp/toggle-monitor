@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,6 +42,10 @@ type fakeSlack struct {
 type recordedSlackReq struct {
 	Method string
 	Body   map[string]any
+	// Token is the Bearer credential the call was made with. Per-channel
+	// tokens are configured separately, so this is what proves a post
+	// went out as the right channel's bot.
+	Token string
 }
 
 func newFakeSlack(t *testing.T) (*fakeSlack, *httptest.Server) {
@@ -65,8 +70,9 @@ func newFakeSlack(t *testing.T) (*fakeSlack, *httptest.Server) {
 		if len(raw) > 0 {
 			_ = json.Unmarshal(raw, &body)
 		}
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		f.mu.Lock()
-		f.requests = append(f.requests, recordedSlackReq{Method: method, Body: body})
+		f.requests = append(f.requests, recordedSlackReq{Method: method, Body: body, Token: token})
 		f.mu.Unlock()
 
 		code, resp := f.respond(method)
@@ -106,6 +112,8 @@ type recordingObserver struct {
 	late     int
 	latency  []float64
 	batches  []int
+	// valueRejections records (field, code) per ADR-0013 rejection.
+	valueRejections [][2]string
 }
 
 func (o *recordingObserver) AMWebhookRequest(result, reason string) {
@@ -142,6 +150,11 @@ func (o *recordingObserver) AMBatchSize(n int) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.batches = append(o.batches, n)
+}
+func (o *recordingObserver) AMValueSourceRejected(field, reason string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.valueRejections = append(o.valueRejections, [2]string{field, reason})
 }
 
 // fakeMentionResolver returns the input verbatim, allowing tests to
@@ -691,5 +704,213 @@ func TestHandler_concurrentBatchesIsolated(t *testing.T) {
 		if len(incs) != 1 {
 			t.Errorf("fp-conc-%d: expected 1 incident, got %d", i, len(incs))
 		}
+	}
+}
+
+// --- ADR-0013 value sources ---------------------------------------
+
+// nsAnnotations is an in-memory NamespaceAnnotationSource for the
+// handler-level value-source tests.
+type nsAnnotations map[string]map[string]string
+
+func (n nsAnnotations) NamespaceAnnotations(namespace string) map[string]string {
+	return n[namespace]
+}
+
+// namespacedFiringWebhook is firingWebhook with a namespace label, so an
+// annotation-sourced rule has something to key off.
+func namespacedFiringWebhook(fingerprint, namespace string) []byte {
+	body := map[string]any{
+		"version":     "4",
+		"groupKey":    "{}:{}",
+		"status":      "firing",
+		"receiver":    "toggle_monitor",
+		"externalURL": "https://am.prod.example.test",
+		"alerts": []map[string]any{{
+			"status":      "firing",
+			"labels":      map[string]string{"alertname": "HighCPU", "namespace": namespace},
+			"annotations": map[string]string{"summary": "CPU is on fire"},
+			"startsAt":    "2026-06-04T11:55:00Z",
+			"endsAt":      "0001-01-01T00:00:00Z",
+			"fingerprint": fingerprint,
+		}},
+	}
+	raw, _ := json.Marshal(body)
+	return raw
+}
+
+// amConfigWithSlackFrom routes every alert through a namespace-sourced
+// channel, falling back to the root's ops-alerts.
+func amConfigWithSlackFrom() *config.AlertmanagerConfig {
+	cfg := defaultAMConfig()
+	cfg.Match = []config.AlertmanagerMatchRule{
+		{Config: &config.AlertmanagerMatchConfig{Slack: "ops-alerts"}},
+		{Config: &config.AlertmanagerMatchConfig{
+			SlackFrom: &config.ValueSource{NamespaceAnnotation: "app.example.test/slack"},
+		}},
+	}
+	return cfg
+}
+
+func TestHandler_slackFrom_postsToTheNamespacesChannel(t *testing.T) {
+	h := newHandler(t, amConfigWithSlackFrom())
+	h.handler.SetNamespaceAnnotationSource(nsAnnotations{
+		"team-a": {"app.example.test/slack": "ops-critical"},
+	})
+
+	resp := h.do(t, http.MethodPost, "/webhooks/alertmanager", namespacedFiringWebhook("fp-vs1", "team-a"), true)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+	posts := h.slack.reqsOf("chat.postMessage")
+	if len(posts) != 1 {
+		t.Fatalf("posts: got %d, want 1", len(posts))
+	}
+	if posts[0].Body["channel"] != "C0CRIT" {
+		t.Errorf("channel: got %q, want C0CRIT (ops-critical, from the namespace annotation)", posts[0].Body["channel"])
+	}
+}
+
+func TestHandler_slackFrom_rejectedValue_countsAndStillPosts(t *testing.T) {
+	h := newHandler(t, amConfigWithSlackFrom())
+	h.handler.SetNamespaceAnnotationSource(nsAnnotations{
+		"team-a": {"app.example.test/slack": "no-such-channel"},
+	})
+
+	resp := h.do(t, http.MethodPost, "/webhooks/alertmanager", namespacedFiringWebhook("fp-vs2", "team-a"), true)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+	posts := h.slack.reqsOf("chat.postMessage")
+	if len(posts) != 1 {
+		t.Fatalf("posts: got %d, want 1 — a bad annotation must not drop the alert", len(posts))
+	}
+	if posts[0].Body["channel"] != "C0AAAA" {
+		t.Errorf("channel: got %q, want C0AAAA (the root's ops-alerts)", posts[0].Body["channel"])
+	}
+
+	h.observer.mu.Lock()
+	got := append([][2]string(nil), h.observer.valueRejections...)
+	h.observer.mu.Unlock()
+	want := [][2]string{{"slack", alertmanager.CodeValueRejected}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("value-source rejections: got %v, want %v", got, want)
+	}
+}
+
+func TestHandler_slackFrom_provenanceLandsInTheRuleChain(t *testing.T) {
+	h := newHandler(t, amConfigWithSlackFrom())
+	h.handler.SetNamespaceAnnotationSource(nsAnnotations{
+		"team-a": {"app.example.test/slack": "ops-critical"},
+	})
+
+	resp := h.do(t, http.MethodPost, "/webhooks/alertmanager", namespacedFiringWebhook("fp-vs3", "team-a"), true)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+	incidents, err := h.repo.ListAMIncidentsByFingerprint(context.Background(), "fp-vs3", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(incidents) != 1 {
+		t.Fatalf("incidents: got %d, want 1", len(incidents))
+	}
+	if !strings.Contains(incidents[0].RuleChain, "slack=ops-critical ← namespaceAnnotation app.example.test/slack") {
+		t.Errorf("rule_chain should carry the provenance, got %q", incidents[0].RuleChain)
+	}
+}
+
+// namespacedResolvedWebhook is the resolve twin of
+// namespacedFiringWebhook.
+func namespacedResolvedWebhook(fingerprint, namespace string) []byte {
+	body := map[string]any{
+		"version":     "4",
+		"groupKey":    "{}:{}",
+		"status":      "resolved",
+		"receiver":    "toggle_monitor",
+		"externalURL": "https://am.prod.example.test",
+		"alerts": []map[string]any{{
+			"status":      "resolved",
+			"labels":      map[string]string{"alertname": "HighCPU", "namespace": namespace},
+			"annotations": map[string]string{"summary": "CPU is on fire"},
+			"startsAt":    "2026-06-04T11:55:00Z",
+			"endsAt":      "2026-06-04T12:05:00Z",
+			"fingerprint": fingerprint,
+		}},
+	}
+	raw, _ := json.Marshal(body)
+	return raw
+}
+
+// Routing is now a function of mutable cluster state, so the channel an
+// alert resolves to can differ from the one its parent was posted in —
+// a namespace re-annotated mid-incident, or an informer that had not
+// synced when the alert opened. The edit and the thread reply must
+// follow the parent, not the new routing.
+func TestHandler_slackFrom_channelMovesMidIncident_editsTheOriginalMessage(t *testing.T) {
+	h := newHandler(t, amConfigWithSlackFrom())
+	ns := nsAnnotations{"team-a": {"app.example.test/slack": "ops-alerts"}}
+	h.handler.SetNamespaceAnnotationSource(ns)
+
+	resp := h.do(t, http.MethodPost, "/webhooks/alertmanager", namespacedFiringWebhook("fp-move", "team-a"), true)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("firing: %d", resp.StatusCode)
+	}
+	posts := h.slack.reqsOf("chat.postMessage")
+	if len(posts) != 1 || posts[0].Token != "xoxb-ops" {
+		t.Fatalf("firing should post as the ops-alerts bot, got %v", posts)
+	}
+
+	// The team re-points the namespace at another channel.
+	ns["team-a"]["app.example.test/slack"] = "ops-critical"
+
+	resp = h.do(t, http.MethodPost, "/webhooks/alertmanager", namespacedResolvedWebhook("fp-move", "team-a"), true)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("resolve: %d", resp.StatusCode)
+	}
+
+	updates := h.slack.reqsOf("chat.update")
+	if len(updates) != 1 {
+		t.Fatalf("chat.update: got %d, want 1", len(updates))
+	}
+	// The fake echoes one channel ID for every post, so the ID alone
+	// proves nothing; the per-channel bot token is what distinguishes
+	// "edited the parent" from "edited someone else's channel".
+	if updates[0].Token != "xoxb-ops" {
+		t.Errorf("edit token: got %q, want xoxb-ops (the parent's channel)", updates[0].Token)
+	}
+	replies := h.slack.reqsOf("chat.postMessage")
+	if len(replies) != 2 {
+		t.Fatalf("chat.postMessage: got %d, want 2 (parent + thread reply)", len(replies))
+	}
+	if replies[1].Token != "xoxb-ops" {
+		t.Errorf("reply token: got %q, want xoxb-ops", replies[1].Token)
+	}
+}
+
+// An ignored alert is routed nowhere, so a bad annotation on its
+// namespace changes nothing an operator can act on. Counting it would
+// keep the rejection alert firing over routing that never happened.
+func TestHandler_ignoredAlert_doesNotCountValueSourceRejections(t *testing.T) {
+	cfg := amConfigWithSlackFrom()
+	ignore := true
+	cfg.Match = append(cfg.Match, config.AlertmanagerMatchRule{
+		When:   &config.AlertmanagerMatchWhen{Alertname: "HighCPU"},
+		Ignore: &ignore,
+	})
+	h := newHandler(t, cfg)
+	h.handler.SetNamespaceAnnotationSource(nsAnnotations{
+		"team-a": {"app.example.test/slack": "no-such-channel"},
+	})
+
+	resp := h.do(t, http.MethodPost, "/webhooks/alertmanager", namespacedFiringWebhook("fp-ign", "team-a"), true)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+	h.observer.mu.Lock()
+	got := len(h.observer.valueRejections)
+	h.observer.mu.Unlock()
+	if got != 0 {
+		t.Errorf("value-source rejections: got %d, want 0 for an ignored alert", got)
 	}
 }

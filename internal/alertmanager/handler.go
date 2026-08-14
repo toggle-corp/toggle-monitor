@@ -64,6 +64,7 @@ type Observer interface {
 	AMLateResolve()
 	AMWebhookLatency(seconds float64)
 	AMBatchSize(n int)
+	AMValueSourceRejected(field, reason string)
 }
 
 // Handler is the AM webhook receiver. It does not register itself with
@@ -85,6 +86,33 @@ type Handler struct {
 	now              func() time.Time
 	log              *slog.Logger
 	observer         Observer
+
+	// valueEnv carries the ADR-0013 annotation inputs. Namespaces is
+	// filled after construction by SetNamespaceAnnotationSource, because
+	// the kube watcher that owns the informer is built later than the
+	// handler; nil until then, which lowering reads as "unreadable".
+	valueEnv Env
+	// envMu guards valueEnv.Namespaces, which is written once at startup
+	// and read by every inbound request.
+	envMu sync.RWMutex
+}
+
+// SetNamespaceAnnotationSource wires the source `*From` blocks under
+// alertmanager.match read namespace annotations from. Called by the
+// lifecycle after the kube watcher is built. Until it is called (or
+// when kube discovery is disabled) annotation-sourced fields degrade to
+// their `default:` or to the cascade value.
+func (h *Handler) SetNamespaceAnnotationSource(src NamespaceAnnotationSource) {
+	h.envMu.Lock()
+	defer h.envMu.Unlock()
+	h.valueEnv.Namespaces = src
+}
+
+// env returns the value-source environment for one evaluation.
+func (h *Handler) env() Env {
+	h.envMu.RLock()
+	defer h.envMu.RUnlock()
+	return h.valueEnv
 }
 
 // HandlerOptions configures a Handler. Required fields fail loudly via
@@ -99,6 +127,13 @@ type HandlerOptions struct {
 	Logger      *slog.Logger
 	Observer    Observer
 	PublicBase  string
+
+	// UserMapping is the reviewed-config roster an annotation-sourced
+	// notify entry is checked against (ADR-0013). Nil disables that
+	// check. The channel check needs no option — it runs through the
+	// Channels lookup above, so a slug this handler accepts from an
+	// annotation is always one it can post to.
+	UserMapping map[string]string
 }
 
 // NewHandler builds the handler. Resolves the bearer token from the env
@@ -153,7 +188,26 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 		now:              now,
 		log:              log,
 		observer:         opts.Observer,
+		valueEnv: Env{
+			KnownChannel: func(slug string) bool {
+				_, ok := opts.Channels(slug)
+				return ok
+			},
+			KnownHandle: knownHandle(opts.UserMapping),
+		},
 	}, nil
+}
+
+// knownHandle returns a membership predicate over the userMapping, or
+// nil when there is no mapping to check against.
+func knownHandle(userMapping map[string]string) func(string) bool {
+	if userMapping == nil {
+		return nil
+	}
+	return func(slug string) bool {
+		_, ok := userMapping[slug]
+		return ok
+	}
 }
 
 // ServeHTTP implements http.Handler. The body of the method walks the
@@ -345,7 +399,7 @@ type alertOutcome struct {
 // retry-on-5xx + our partial unique index keep the row count exactly
 // one per (fingerprint, incident).
 func (h *Handler) processAlert(ctx context.Context, alert Alert, env Envelope, rawBody []byte, log *slog.Logger) alertOutcome {
-	resolved := Evaluate(h.cfg.Match, alert, env)
+	resolved := Evaluate(h.cfg.Match, alert, env, h.env())
 	alog := log.With("fingerprint", alert.Fingerprint, "alertname", alert.Labels["alertname"])
 
 	if resolved.Ignored {
@@ -354,6 +408,20 @@ func (h *Handler) processAlert(ctx context.Context, alert Alert, env Envelope, r
 		}
 		alog.Info("am.alert.ignored", "rule_chain", resolved.RuleChain)
 		return alertOutcome{dropped: 1}
+	}
+
+	// A rejected annotation value has already degraded to the cascade
+	// value by this point (ADR-0013); reporting it is the whole remedy,
+	// since AM routing has no reconcile loop to list a current set on
+	// /issues. Reported below the ignore gate: an ignored alert was
+	// routed nowhere, so nothing about its routing is actionable.
+	for _, w := range resolved.Warnings {
+		alog.Warn("am.value_source.rejected",
+			"rule", w.Rule, "field", w.Field, "annotation", w.Key,
+			"value", w.Value, "code", w.Code, "reason", w.Reason)
+		if h.observer != nil {
+			h.observer.AMValueSourceRejected(w.Field, w.Code)
+		}
 	}
 
 	ch, ok := h.channels(resolved.Channel)
@@ -549,6 +617,26 @@ func (h *Handler) handleResolved(ctx context.Context, alert Alert, env Envelope,
 
 	if err := h.repo.AppendAMEvent(ctx, incident.ID, store.AMEventResolved, rawAlertOrEmpty(rawBody)); err != nil {
 		alog.Warn("am.alert.event_append", "error", err)
+	}
+
+	// The parent lives in the channel the firing delivery resolved to,
+	// and routing can move between firing and resolve — a namespace
+	// re-annotated mid-incident (ADR-0013), or an informer that had not
+	// synced when the alert opened. Edit and reply as the recorded
+	// channel's bot, not this delivery's.
+	if incident.ChannelSlug != "" && incident.ChannelSlug != resolved.Channel {
+		parentCh, ok := h.channels(incident.ChannelSlug)
+		if !ok {
+			if h.observer != nil {
+				h.observer.AMAlertProcessed("fail", "channel_unknown")
+			}
+			alog.Error("am.alert.parent_channel_unknown",
+				"parent_channel", incident.ChannelSlug, "resolved_channel", resolved.Channel)
+			return alertOutcome{failed: 1}
+		}
+		alog.Info("am.alert.channel_moved",
+			"parent_channel", incident.ChannelSlug, "resolved_channel", resolved.Channel)
+		ch = parentCh
 	}
 
 	mentions := h.mentionResolver.Resolve(resolved.Notify)

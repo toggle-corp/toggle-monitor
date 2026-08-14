@@ -607,12 +607,10 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 			}
 			lister = watcher.Lister()
 		}
-		// Namespace annotations reach the cascade through the watcher's
+		// Namespace annotations reach both cascades through the watcher's
 		// informer. Wired after construction because the watcher owns
-		// the informer and the materializer is built earlier.
-		if materializer != nil {
-			materializer.SetNamespaceAnnotationSource(watcher)
-		}
+		// the informer and its consumers are built earlier.
+		wireNamespaceAnnotations(watcher, materializer, amHandler)
 		// Wire the cascade source so the discovery detail page can
 		// re-run merger.ResolveWithTrace against the live cache.
 		srv.SetCascadeSource(&cascadeSource{lister: lister, rules: kc.Match, mat: materializer})

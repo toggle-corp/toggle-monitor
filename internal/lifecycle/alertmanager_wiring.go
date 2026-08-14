@@ -2,9 +2,12 @@ package lifecycle
 
 import (
 	"log/slog"
+	"reflect"
 
 	"github.com/toggle-corp/toggle-monitor/internal/alertmanager"
 	"github.com/toggle-corp/toggle-monitor/internal/config"
+	"github.com/toggle-corp/toggle-monitor/internal/kube"
+	"github.com/toggle-corp/toggle-monitor/internal/merger"
 	"github.com/toggle-corp/toggle-monitor/internal/observability"
 	"github.com/toggle-corp/toggle-monitor/internal/slack"
 	"github.com/toggle-corp/toggle-monitor/internal/store"
@@ -57,6 +60,7 @@ func buildAMHandler(
 		Logger:      log,
 		Observer:    metrics,
 		PublicBase:  publicBase,
+		UserMapping: userMapping,
 	})
 }
 
@@ -80,4 +84,38 @@ func buildAMSweeper(
 		// would dangle. Adding it is a one-line change when the
 		// counter lands.
 	})
+}
+
+// The two cascades that resolve namespaceAnnotation-scoped `*From`
+// blocks each declare their own source interface — the kube
+// materializer (ADR-0009) and the Alertmanager handler (ADR-0013) — so
+// wiring takes one narrow interface per consumer rather than a shared
+// one.
+type (
+	kubeAnnotationConsumer interface {
+		SetNamespaceAnnotationSource(src merger.NamespaceAnnotationSource)
+	}
+	amAnnotationConsumer interface {
+		SetNamespaceAnnotationSource(src alertmanager.NamespaceAnnotationSource)
+	}
+)
+
+// wireNamespaceAnnotations points every cascade that reads namespace
+// annotations at src, which the kube watcher owns. Both consumers are
+// constructed before the watcher, so both are wired by setter
+// afterwards — and both go through this one call, so neither can be
+// wired without the other being visible at the same place.
+//
+// A nil src or a nil consumer is skipped: a deployment with no
+// alertmanager: block wires the materializer unchanged, and vice versa.
+func wireNamespaceAnnotations(src *kube.Watcher, mat kubeAnnotationConsumer, am amAnnotationConsumer) {
+	if src == nil {
+		return
+	}
+	if mat != nil && !reflect.ValueOf(mat).IsNil() {
+		mat.SetNamespaceAnnotationSource(src)
+	}
+	if am != nil && !reflect.ValueOf(am).IsNil() {
+		am.SetNamespaceAnnotationSource(src)
+	}
 }
