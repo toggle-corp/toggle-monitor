@@ -879,15 +879,11 @@ func matchRegex(pattern, value string) bool {
 	re, ok := regexCache[pattern]
 	if !ok {
 		// Auto-anchor as ^...$ per ADR-0002 §Selector vocabulary —
-		// "acme-\d+" matches "acme-1" but not "acme-1-foo".
-		anchored := pattern
-		if !strings.HasPrefix(anchored, "^") {
-			anchored = "^" + anchored
-		}
-		if !strings.HasSuffix(anchored, "$") {
-			anchored += "$"
-		}
-		compiled, err := regexp.Compile(anchored)
+		// "acme-\d+" matches "acme-1" but not "acme-1-foo". The group
+		// keeps the anchors outside any top-level alternation, so
+		// "a\.test|b\.test" anchors both branches rather than compiling
+		// to "^a\.test" OR "b\.test$".
+		compiled, err := regexp.Compile("^(?:" + pattern + ")$")
 		if err != nil {
 			regexCacheMu.Unlock()
 			return false

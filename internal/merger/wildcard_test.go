@@ -93,3 +93,24 @@ func TestResolveWithTrace_wildcardMatchesResolve(t *testing.T) {
 		t.Errorf("traced Err: got %v, want ErrWildcardHost", traced.Err)
 	}
 }
+
+// The documented acknowledge rule leans on hostRegex auto-anchoring, so
+// the anchors must bind every alternation branch — "^a|b$" would leave
+// one side unanchored and silently over-match.
+func TestMatchRegex_anchorsEveryAlternationBranch(t *testing.T) {
+	const pattern = `a\.example\.test|b\.example\.test`
+	for _, host := range []string{"evil-b.example.test", "a.example.test-foo"} {
+		if matchRegex(pattern, host) {
+			t.Errorf("%q should not match anchored %q", host, pattern)
+		}
+	}
+	for _, host := range []string{"a.example.test", "b.example.test"} {
+		if !matchRegex(pattern, host) {
+			t.Errorf("%q should match anchored %q", host, pattern)
+		}
+	}
+	// An operator who anchors by hand still gets the same answer.
+	if !matchRegex(`^a\.example\.test$`, "a.example.test") {
+		t.Error("hand-anchored pattern should still match")
+	}
+}
