@@ -121,7 +121,7 @@ annotation:
 
 Exactly one of `annotation:` / `namespaceAnnotation:` per block.
 
-Six keys, no boolean flags:
+Seven keys, no boolean flags:
 
 | field | scalar form | list forms |
 | --- | --- | --- |
@@ -129,14 +129,17 @@ Six keys, no boolean flags:
 | `slack` | `slackFrom` | — |
 | `notify` | — | `notifyFrom`, `notifyOverrideFrom` |
 | `tags` | — | `tagsFrom`, `tagsOverrideFrom` |
+| `acceptedStatusCodes` | — | `acceptedStatusCodesFrom` |
 
 **Merge semantics are identical to the literal field.** `pathFrom` and
 `slackFrom` are scalars (the deepest layer that set the field wins);
 `notifyFrom` and `tagsFrom` union; `notifyOverrideFrom` and
 `tagsOverrideFrom` replace the baseline **at that rule's position**,
 exactly as the `!override` YAML tag does today, with later rules still
-unioning on top. No new merge concept is introduced, and no
-post-cascade special case exists.
+unioning on top; `acceptedStatusCodesFrom` replaces, because the
+literal `acceptedStatusCodes` is already replace-by-default across the
+cascade — which is also why it has no `Override` twin to add. No new
+merge concept is introduced, and no post-cascade special case exists.
 
 Override is positional rather than final-value-replacing because the
 tree's trailing host rules own environment tags:
@@ -237,12 +240,49 @@ like config — but a bad value must never cost availability monitoring.
   project to 5 recipients instead of today's 3.
 - **Revisit if** annotation-sourced fields expand past this set —
   particularly if `interval`, `dependsOn`, `critical` or
-  `tlsInsecureSkipVerify` are proposed. Those were deliberately excluded:
+  `tlsInsecureSkipVerify` are proposed. Those stay excluded:
   scheduling is cluster capacity rather than app knowledge, `dependsOn`
   references slugs the app cannot see and feeds the ADR-0004 dispatch
   graph where a bad edge suppresses real alerts, `critical` opts out of
   coalescing entirely, and `tlsInsecureSkipVerify` also bypasses SSL
   expiry tracking.
+
+## Amendment — 2026-08-14: `acceptedStatusCodesFrom`
+
+The "Revisit if" clause above fired, and the answer is a seventh key
+rather than a rewrite: `acceptedStatusCodes` may now be sourced from an
+annotation. The key table and merge-semantics paragraph in §The seam
+are updated accordingly; nothing else in this record changes.
+
+The trigger was migrating `tc/uptime-local` onto this mechanism. A
+before/after sweep of the resolved config over all 118 live
+ingress-hosts found six monitors whose deliberate non-200 expectation
+existed only as a hand-written rule, with nothing in the cluster to
+source it from once that rule was deleted:
+
+| monitors | expectation | why it is not 200 |
+| --- | --- | --- |
+| `test-nginx-errors` (3) | `[502]`, `[503]`, `[504]` | fixtures that exist to return 5xx; expecting 200 inverts them |
+| `toggle-serve` (3) | `[303]` | the service redirects by design |
+
+This satisfies the same test the original six keys did. The value is
+app knowledge, not cluster-capacity or alert-graph knowledge: which
+status code means "healthy" is a property of the endpoint, known to the
+chart that ships it and to nobody else. It is exactly the class of
+"re-deriving, in reviewed YAML, a value the cluster already carries"
+that this record exists to remove — and unlike `dependsOn` or
+`critical`, a wrong value degrades only its own monitor.
+
+Two consequences of the replace semantics are worth stating, because
+they differ from the union-list keys:
+
+- An annotation yielding **no** usable code contributes nothing, rather
+  than replacing the inherited list with an empty one. An empty
+  `acceptedStatusCodes` fails `checkResolved`, so the permissive
+  reading would cost the monitor entirely — the opposite of this
+  record's degradation rule.
+- Partial validity still applies: `"303,teapot"` resolves to `[303]`
+  and warns about `teapot`.
 
 ## References
 

@@ -489,6 +489,7 @@ All monitor fields below are settable inside any `config:` block. The root must 
 | `notifyOverrideFrom` | object | — | see below | Sources `notify`; replaces the baseline at this rule's position. |
 | `tagsFrom` | object | — | see below | Sources `tags`; unions like the literal. |
 | `tagsOverrideFrom` | object | — | see below | Sources `tags`; replaces the baseline at this rule's position. |
+| `acceptedStatusCodesFrom` | object | ✓ (with a `default:`) | see below | Sources `acceptedStatusCodes`. No `Override` twin — the literal is already replace-by-default. |
 
 ### Annotation value sources (`*From`)
 
@@ -505,7 +506,9 @@ A `config:` block may set a field either literally or from an annotation:
 
 Exactly one of `annotation:` / `namespaceAnnotation:` per block. `default:` accepts a scalar or, for the list fields, a YAML sequence; a scalar default for a list field is split on commas, matching what `{{ .Values.notify | join "," }}` renders.
 
-**Merge semantics are identical to the literal field.** `pathFrom` and `slackFrom` are scalars (deepest layer that set the field wins); `notifyFrom` / `tagsFrom` union; the `*OverrideFrom` twins replace the baseline **at that rule's position**, exactly as the `!override` YAML tag does, with later rules still unioning on top. No new merge concept is introduced.
+**Merge semantics are identical to the literal field.** `pathFrom` and `slackFrom` are scalars (deepest layer that set the field wins); `notifyFrom` / `tagsFrom` union; the `*OverrideFrom` twins replace the baseline **at that rule's position**, exactly as the `!override` YAML tag does, with later rules still unioning on top. `acceptedStatusCodesFrom` replaces, matching the literal field's replace-by-default behaviour — which is why it has no `Override` twin. No new merge concept is introduced.
+
+`acceptedStatusCodesFrom` reads a comma-separated list of HTTP status codes (`"303"`, `"200,303"`). Its `default:` accepts a YAML sequence of ints (`default: [200, 303]`) or the same CSV scalar.
 
 Namespace-scoped sources require `get/list/watch namespaces` RBAC — the chart adds it alongside the Ingress watch when `rbac.ingressWatch` is on.
 
@@ -515,7 +518,7 @@ Namespace-scoped sources require `get/list/watch namespaces` RBAC — the chart 
 - `notifyFrom` + `notifyOverrideFrom` (or the `tags` pair) in the same block.
 - Neither or both of `annotation:` / `namespaceAnnotation:`.
 - An annotation key that isn't a valid k8s qualified name.
-- A `default:` that fails the literal field's own validation. Defaults are reviewed config, so these are hard errors.
+- A `default:` that fails the literal field's own validation. Defaults are reviewed config, so these are hard errors. For `acceptedStatusCodesFrom` that means a non-empty list of integers in 100..599.
 
 **Runtime degradation.** Annotation values are unreviewed input, so a bad one never blocks monitoring — **the monitor always materializes and keeps probing**:
 
@@ -527,6 +530,8 @@ Namespace-scoped sources require `get/list/watch namespaces` RBAC — the chart 
 | `slack` value not a configured channel slug | rejected; the cascade value stands |
 | `path` value not starting with `/` | rejected; the cascade value stands |
 | an `*OverrideFrom` yielding no valid entries | ignored entirely rather than replacing real recipients with nothing |
+| `acceptedStatusCodes` entry not an integer in 100..599 | that entry is dropped and warned; the rest are kept |
+| `acceptedStatusCodesFrom` yielding no valid code | ignored entirely — an empty list fails resolved-value validation and would cost the monitor |
 
 Every rejected value produces a `WARN` log, a `warn:` note on the discovery row's reason, an entry in the "Rejected annotation values" section of `/issues`, and a point on `toggle_monitor_issues{source="annotation"}`. Not Sentry — it is app-team input error, not a toggle-monitor fault.
 
