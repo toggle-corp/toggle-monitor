@@ -51,6 +51,42 @@ runtime constant-time-compares against the inbound `Authorization`
 header. The receiver fails to start if the env var is unset or
 empty.
 
+### Routing from namespace annotations
+
+If your namespaces already declare who owns them — the same
+annotations `kube.match` reads — an `alertmanager.match` rule can
+source `slack` / `notify` from them instead of duplicating the
+ownership tree ([ADR-0013](./adr/0013-from-value-sources-for-alertmanager-routing.md)):
+
+```yaml
+    - when: {}
+      config:
+        # A root slackFrom needs a default: — it stands in for the
+        # root's required slack:, and an unannotated namespace would
+        # otherwise resolve to no channel at all.
+        slackFrom:
+          namespaceAnnotation: app.example.com/slack
+          default: ops-alerts
+        notifyFrom:
+          namespaceAnnotation: app.example.com/notify
+```
+
+Put this rule near the top of the tree. Document order is precedence, so
+a `when: {}` rule placed last overrides every `slack:` a more specific
+rule set above it.
+
+The namespace name comes from the alert's `namespace` label; set
+`namespaceLabel:` on the source if your exporter relabels it
+(`exported_namespace`, `kubernetes_namespace`). This requires the
+`kube:` block — the Namespace informer belongs to the kube watcher —
+and only the namespace scope is available, because an alert's own
+annotations are written by whoever authored the alerting rule.
+
+A value that cannot be used never costs you the alert: it routes to the
+cascade's channel, logs `am.value_source.rejected`, and increments
+`toggle_monitor_am_value_source_rejections_total`. The resolved
+provenance is appended to the `am_alerts.rule_chain` column.
+
 ## kube-prometheus-stack — full helm values
 
 Drop-in replacement for a typical `pagerduty_configs` setup. The

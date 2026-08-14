@@ -100,6 +100,16 @@ allowed to settle). A fifth rule, `ToggleMonitorDown`, covers the case
 none of the others can — while toggle-monitor is down it publishes no
 gauge, so every rule above goes silent.
 
+A sixth rule, `ToggleMonitorAMValueSourceRejections`
+(`prometheusRule.amValueSources.*`), is not an `/issues` source. It
+alerts on `toggle_monitor_am_value_source_rejections_total`, the counter
+for namespace annotations an `alertmanager.match` rule could not use
+(ADR-0013). Those are events, not a current set — an AM rule is
+evaluated once per inbound alert — so the rule uses
+`increase(…[window]) > 0` rather than a gauge threshold: `window` is how
+long one rejection keeps the alert up, and `for` must stay well below it
+or the alert can never trip.
+
 If you point an Alertmanager receiver at toggle-monitor's own webhook
 endpoint (ADR-0005), these land on `/alerts` alongside every other
 alert it receives.

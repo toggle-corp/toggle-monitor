@@ -354,6 +354,25 @@ alertmanager:
         slack: ops-alerts
         notify: [ops-team]
 
+    # ── Ownership from the namespace (ADR-0013) ────────────────────
+    # The same annotations kube.match reads, keyed off the alert's
+    # `namespace` label. Namespace scope only, and this needs the
+    # `kube:` block above — the Namespace informer is the watcher's.
+    # `notifyFrom` unions with the root's notify; use
+    # `notifyOverrideFrom` to replace it instead.
+    #
+    # Placed directly under the root on purpose: document order is
+    # precedence, so a `when: {}` rule this far up is a baseline the
+    # specific rules below (critical severity, staging externalURL)
+    # still override. Last in the list it would silently beat them.
+    - when: {}
+      config:
+        slackFrom:
+          namespaceAnnotation: app.example.com/slack
+        notifyFrom:
+          namespaceAnnotation: app.example.com/notify
+          # namespaceLabel: exported_namespace   # when an exporter relabels
+
     # ── Watchdog: ignore Prometheus's keep-alive rule ──────────────
     # `final: true` prevents any later rule (e.g., a catch-all
     # critical-severity branch) from un-ignoring it.

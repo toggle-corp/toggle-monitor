@@ -7,6 +7,7 @@ The binary refuses to start if any required field is missing or fails validation
 > **Partially superseded by ADRs.** Treat the linked ADRs as authoritative where they conflict with the prose below:
 >
 > - **[ADR-0009](./adr/0009-from-value-sources-for-kube-discovery.md)** partially amends ADR-0002's "annotations contribute nothing": a `config:` block may now declare that `path`, `slack`, `notify` or `tags` takes its value from an Ingress or Namespace annotation via a `*From` block. The tree still decides *which* field is set where. See §"Annotation value sources (`*From`)" below.
+> - **[ADR-0013](./adr/0013-from-value-sources-for-alertmanager-routing.md)** carries the same `*From` mechanism into `alertmanager.match`: a rule's `config:` may source `slack` / `notify` from a Namespace annotation, keyed off the alert's namespace label. Namespace scope only, and it requires a `kube:` block. See §"Annotation value sources under `alertmanager.match`" below.
 > - **[ADR-0010](./adr/0010-self-alerting-on-issues-via-prometheusrule.md)** exports the `/issues` sources as a `toggle_monitor_issues{source="…"}` gauge and ships an optional `PrometheusRule` in the Helm chart (`prometheusRule.enabled`).
 > - **[ADR-0011](./adr/0011-watch-driven-kube-removal-detection.md)** adds `kube.watchDebounce`: Ingress add/delete events trigger a debounced reconcile, so `kube.resyncInterval` is no longer the only thing that decides how late a removal is noticed.
 > - **[ADR-0002](./adr/0002-kube-match-tree-cascade.md)** rewrites `kube.*`: presets/pause/annotationDomain are gone; `kube.match[]` is now a cascading tree with `when:`/`config:`/`nested:`/`final:`/`ignore:`. The kube section below is the implementation reference for that ADR.
@@ -550,6 +551,8 @@ Every rejected value produces a `WARN` log, a `warn:` note on the discovery row'
 
 Accepted values are recorded as provenance: the discovery row's reason and the discovery detail page both show `path=/livez ← annotation app.example.com/health-check`, and `toggle-monitor explain` emits `provenance:` and `warnings:` blocks.
 
+`namespaceLabel:` is rejected under `kube.match` — a kube source reads the Ingress's own namespace. It exists only for `alertmanager.match`; see §"Annotation value sources under `alertmanager.match`".
+
 ### Validation
 
 **Structural errors** (refuse to start):
@@ -871,18 +874,68 @@ The receiver's pipeline is deliberately thin — it persists per-fingerprint, po
 | `alertmanager.rateLimit.perChannel` | int | — | `>= 0`; default `10` | Per-channel sliding-window flood detector. `0` disables the detector entirely. |
 | `alertmanager.rateLimit.window` | duration | — | `> 0` when `perChannel > 0`; default `30m` | Sliding-window size for the detector. |
 | `alertmanager.rateLimit.noticeEvery` | duration | — | `> 0` when `perChannel > 0`; default `1d` | Minimum gap between flood-notice messages on the same channel. |
-| `alertmanager.match` | list | ✓ (when block present) | non-empty; first top-level rule must have empty (`{}` or omitted) `when:` and set `config.slack` | The cascading rule tree. Mirrors `kube.match` grammar — see [ADR-0002](./adr/0002-kube-match-tree-cascade.md) for the merge / `!override` / `final` / `ignore` semantics. |
+| `alertmanager.match` | list | ✓ (when block present) | non-empty; first top-level rule must have empty (`{}` or omitted) `when:` and set `config.slack` (or a `slackFrom` with a `default:`) | The cascading rule tree. Mirrors `kube.match` grammar — see [ADR-0002](./adr/0002-kube-match-tree-cascade.md) for the merge / `!override` / `final` / `ignore` semantics. |
 | `alertmanager.match[].when` | object | — | see selector table below | Absent or `{}` means "match anything." |
 | `alertmanager.match[].when.alertname` | string | — | valid glob | Matched against the alert's `labels.alertname`. Mutually exclusive with `alertnameRegex` in the same `when:`. |
 | `alertmanager.match[].when.alertnameRegex` | string | — | valid Go regexp; auto-anchored `^…$` | Mutually exclusive with `alertname`. |
 | `alertmanager.match[].when.labels` | map[string]string | — | per-key twin convention (see below); each base key must satisfy k8s label-key syntax | A key suffixed `Regex` is the regex variant for the bare key; values are globs / regexes. All set keys AND together. |
 | `alertmanager.match[].when.receiver` | string | — | exact match | Matched against the AM webhook envelope's `receiver`. |
 | `alertmanager.match[].when.externalURL` | string | — | exact match | Matched against the AM webhook envelope's `externalURL`. Use to discriminate between multiple Alertmanagers feeding the same endpoint. |
-| `alertmanager.match[].config.slack` | string | ✓ at root | resolves to a `slack.channels[].slug` | Required at the root rule (every alert inherits it). Descendants override selectively. |
+| `alertmanager.match[].config.slack` | string | ✓ at root (or `slackFrom`) | resolves to a `slack.channels[].slug` | The root rule must set exactly one of `slack` or `slackFrom` (every alert inherits it). Descendants override selectively. |
 | `alertmanager.match[].config.notify` | list[string] | — | each entry: a `slack.userMapping` slug OR raw `<…>` Slack markup | Union across cascade by default; tag with `!override` to replace. |
+| `alertmanager.match[].config.slackFrom` | object | — (satisfies the root requirement only with a `default:`) | see below | Sources `slack` from a Namespace annotation. |
+| `alertmanager.match[].config.notifyFrom` | object | — | see below | Sources `notify`; unions like the literal. |
+| `alertmanager.match[].config.notifyOverrideFrom` | object | — | see below | Sources `notify`; replaces the baseline at this rule's position. |
 | `alertmanager.match[].nested` | list[rule] | — | each entry follows the same rule shape | Recursive. |
 | `alertmanager.match[].ignore` | bool | — | default unset | Cascades like a scalar; deepest matching rule wins. Resolved `true` → no Slack post, no `am_alerts` row. |
 | `alertmanager.match[].final` | bool | — | requires non-empty `when:` | Halts the tree walk after descending into this rule's `nested:`. |
+
+### Annotation value sources under `alertmanager.match`
+
+Authoritative design: [ADR-0013](./adr/0013-from-value-sources-for-alertmanager-routing.md).
+
+Ownership lives on the Namespace, and both cascades read it from there. An `alertmanager.match` rule sources a routing field the same way a `kube.match` rule does, with two differences: only the Namespace scope is available, and the namespace name comes from one of the alert's labels.
+
+```yaml
+alertmanager:
+  match:
+    - when: {}
+      config:
+        slackFrom:
+          namespaceAnnotation: app.example.com/slack
+          default: ops-alerts                 # required when slackFrom stands in for the root's slack:
+        notifyFrom:
+          namespaceAnnotation: app.example.com/notify
+          namespaceLabel: exported_namespace  # optional; default `namespace`
+```
+
+`namespaceLabel:` names the alert label carrying the namespace, defaulting to `namespace`. Set it when an exporter relabels (`exported_namespace`, `kubernetes_namespace`); different rules may read different label keys.
+
+Merge semantics and the degradation table above apply unchanged. `default:` parsing is the same except that a scalar source rejects a sequence `default:` here, rather than silently reading it as empty. Three keys exist here (`slackFrom`, `notifyFrom`, `notifyOverrideFrom`) because those are the two fields an AM rule carries.
+
+**Load-time errors** (refuse to start), in addition to the shared ones above:
+
+- `annotation:` — an alert's own annotations are written by whoever authored the alerting rule, not by the workload's owner, so they are not a routing source. Only `namespaceAnnotation:` is accepted.
+- `namespaceAnnotation:` with no `kube:` block. The Namespace informer belongs to the kube watcher; without it there is nothing to read through.
+- A root `slackFrom` with no `default:`. ADR-0005 requires the root to set a channel for every alert, and an unannotated namespace would otherwise resolve to none.
+- A `namespaceLabel:` that isn't a valid Prometheus label name (`^[a-zA-Z_][a-zA-Z0-9_]*$`). This is the alert's label grammar, not the k8s one: no dots, dashes or slashes, but a leading underscore is fine.
+- `notifyFrom` / `notifyOverrideFrom` with an empty `slack.userMapping`. An annotation may only select handles from the roster and may never set raw `<…>` markup, so such a source could never contribute a value.
+- A sequence `default:` on `slackFrom` (a scalar field takes one value).
+
+**Runtime degradation** is the same principle — an alert is never dropped and never routed to a channel that does not exist, because the fallback chain terminates at the root's literal. Four AM-specific cases:
+
+| situation | behaviour | reported? |
+|---|---|---|
+| the alert carries no `namespaceLabel` label | `default:` if present, else the cascade value stands | no — cluster-scoped rules (`Watchdog`, node pressure) have no namespace by nature |
+| the namespace carries no annotations, or is not in the informer cache | same | no — these are indistinguishable, and an unannotated namespace is ordinary |
+| kube discovery disabled, or the watcher not yet wired (the endpoint serves before the informer is attached at startup) | same — a webhook arriving in that window routes to the root channel | yes, `no_annotation_source` |
+| the annotation is present but its value is unusable | as in the shared table above | yes, `value_rejected` |
+
+Only the last two are reported, as a `WARN` `am.value_source.rejected` log line (with the alert fingerprint and reason) and a point on `toggle_monitor_am_value_source_rejections_total{field,reason}`. The first two are silent on purpose: they occur on ordinary traffic, and counting them would keep the counter permanently non-zero. The cost is that a misspelled `namespaceLabel:` is not flagged — diagnose it from the `am_alerts.rule_chain` column, which will show no provenance for that field.
+
+Rejections do **not** appear on `/issues`: that page lists a current set, and AM rules are evaluated once per inbound alert with no reconcile loop to define one. The shipped `PrometheusRule` (`prometheusRule.amValueSources`) alerts on `increase(…) > 0` over a long window, because rejections arrive only as often as Alertmanager re-delivers the offending alert. The counter counts deliveries, not broken namespaces — a busy namespace increments far more than a quiet one with the same mistake, so read it as a yes/no signal and go to the logs for the detail.
+
+Accepted values are appended to the `am_alerts.rule_chain` debug column as provenance — `match[0] → match[1] (labels.namespace=acme-*) | slack=acme-alerts ← namespaceAnnotation app.example.com/slack` — which is the AM tree's only debugging surface; there is no `explain` subcommand for it.
 
 ### `alertmanager.match[].when.labels` — per-key twin convention
 
