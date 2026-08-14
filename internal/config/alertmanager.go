@@ -9,6 +9,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
+// prometheusLabelNamePattern is the label-name grammar from the
+// Prometheus data model. It is narrower than a k8s qualified name in
+// one direction (no dots, dashes or slashes) and wider in another
+// (a leading underscore is legal), so neither validator substitutes for
+// the other.
+var prometheusLabelNamePattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
 // alertmanagerPathPattern is the validator for endpoint.path. The
 // `/webhooks/` prefix is hardcoded; the operator picks a single
 // lowercase-slug suffix. See ADR-0005 §"Endpoint, auth, body cap".
@@ -106,6 +113,70 @@ type AlertmanagerMatchWhen struct {
 type AlertmanagerMatchConfig struct {
 	Slack  string     `yaml:"slack,omitempty"`
 	Notify NotifyList `yaml:"notify,omitempty"`
+
+	// SlackFrom sources Slack from a Namespace annotation (ADR-0013).
+	// Only the namespaceAnnotation: scope is accepted here — an
+	// alert's own annotations are authored by the PrometheusRule that
+	// emitted it, not by the workload's owner.
+	SlackFrom *ValueSource `yaml:"slackFrom,omitempty"`
+	// NotifyFrom unions the annotation's handles onto the cascade;
+	// NotifyOverrideFrom replaces them, mirroring the !override tag on
+	// the literal list.
+	NotifyFrom         *ValueSource `yaml:"notifyFrom,omitempty"`
+	NotifyOverrideFrom *ValueSource `yaml:"notifyOverrideFrom,omitempty"`
+}
+
+// AlertmanagerValueKind distinguishes how a *From block's resolved
+// value joins the merge: as a scalar (deepest layer that set the field
+// wins) or as an entry list (union, or replace-the-baseline for the
+// Override twin).
+type AlertmanagerValueKind int
+
+const (
+	// AlertmanagerValueScalar merges like slack.
+	AlertmanagerValueScalar AlertmanagerValueKind = iota
+	// AlertmanagerValueList merges like notify.
+	AlertmanagerValueList
+)
+
+// AlertmanagerValueSource pairs one set *From block with the literal
+// field it supplies and the merge semantics it inherits from that
+// field. Mirrors KubeValueSource (ADR-0009) for the AM field set.
+type AlertmanagerValueSource struct {
+	// Key is the YAML key, e.g. "slackFrom".
+	Key string
+	// Field is the literal field it supplies, e.g. "slack".
+	Field string
+	Kind  AlertmanagerValueKind
+	// Override marks the replace-the-baseline twin, mirroring the
+	// !override YAML tag on the literal list.
+	Override bool
+	Source   *ValueSource
+}
+
+// ValueSources returns every *From block set on this config block,
+// paired with the field it supplies. Fixed order so error messages and
+// provenance lines are reproducible.
+//
+// This table is the single place the AM keys are enumerated: the
+// validator and the cascade's lowering pass both read it rather than
+// re-deriving the mapping.
+func (a *AlertmanagerMatchConfig) ValueSources() []AlertmanagerValueSource {
+	if a == nil {
+		return nil
+	}
+	all := []AlertmanagerValueSource{
+		{Key: "slackFrom", Field: "slack", Kind: AlertmanagerValueScalar, Source: a.SlackFrom},
+		{Key: "notifyFrom", Field: "notify", Kind: AlertmanagerValueList, Source: a.NotifyFrom},
+		{Key: "notifyOverrideFrom", Field: "notify", Kind: AlertmanagerValueList, Override: true, Source: a.NotifyOverrideFrom},
+	}
+	out := make([]AlertmanagerValueSource, 0, len(all))
+	for _, vs := range all {
+		if vs.Source != nil {
+			out = append(out, vs)
+		}
+	}
+	return out
 }
 
 // applyAlertmanagerDefaults fills in the documented defaults on c.Alertmanager
@@ -190,15 +261,26 @@ func (c *checker) validateAlertmanager(cfg *Config, slackChannels map[string]str
 	if !alertmanagerWhenIsEmpty(root.When) {
 		c.errf(append(append([]any{}, base...), "match", 0, "when"),
 			"the first rule must have an empty when: (the mandatory root baseline that sets config.slack for every alert)")
-	} else if root.Config == nil || root.Config.Slack == "" {
+	}
+	switch {
+	case root.Config == nil:
 		c.errf(append(append([]any{}, base...), "match", 0, "config", "slack"),
 			"required at the root rule (every alert inherits this channel)")
+	case root.Config.Slack == "" && root.Config.SlackFrom == nil:
+		c.errf(append(append([]any{}, base...), "match", 0, "config", "slack"),
+			"required at the root rule (every alert inherits this channel)")
+	case root.Config.Slack == "" && !root.Config.SlackFrom.HasDefault:
+		// A root slackFrom is only a baseline if it always yields a
+		// channel; without default: a namespace that omits the annotation
+		// resolves to none at all.
+		c.errf(append(append([]any{}, base...), "match", 0, "config", "slackFrom", "default"),
+			"required when slackFrom stands in for the root's slack: (an unannotated namespace would resolve to no channel)")
 	}
 
 	for i := range am.Match {
 		c.validateAlertmanagerRule(&am.Match[i],
 			append(append([]any{}, base...), "match", i),
-			slackChannels, cfg.Slack.UserMapping)
+			slackChannels, cfg.Slack.UserMapping, cfg.Kube != nil)
 	}
 }
 
@@ -220,6 +302,7 @@ func (c *checker) validateAlertmanagerRule(
 	base []any,
 	slackChannels map[string]struct{},
 	userMapping map[string]string,
+	kubeConfigured bool,
 ) {
 	if r.When != nil {
 		c.validateAlertmanagerWhen(r.When, append(append([]any{}, base...), "when"))
@@ -231,15 +314,130 @@ func (c *checker) validateAlertmanagerRule(
 	}
 
 	if r.Config != nil {
-		c.validateAlertmanagerConfig(r.Config,
-			append(append([]any{}, base...), "config"),
-			slackChannels, userMapping)
+		cbase := append(append([]any{}, base...), "config")
+		c.validateAlertmanagerConfig(r.Config, cbase, slackChannels, userMapping)
+		c.validateAlertmanagerValueSources(r.Config, cbase, slackChannels, userMapping, kubeConfigured)
 	}
 
 	for i := range r.Nested {
 		c.validateAlertmanagerRule(&r.Nested[i],
 			append(append([]any{}, base...), "nested", i),
-			slackChannels, userMapping)
+			slackChannels, userMapping, kubeConfigured)
+	}
+}
+
+// validateAlertmanagerValueSources enforces the structural rules for
+// ADR-0013 `*From` blocks on one config block: only the
+// namespaceAnnotation: scope is accepted, that scope needs a kube:
+// block to read through, a *From and the literal it supplies are
+// mutually exclusive, so are notifyFrom and its Override twin, and the
+// `default:` (reviewed config, unlike the annotation value) must satisfy
+// the same constraints as the literal field.
+func (c *checker) validateAlertmanagerValueSources(
+	a *AlertmanagerMatchConfig,
+	base []any,
+	slackChannels map[string]struct{},
+	userMapping map[string]string,
+	kubeConfigured bool,
+) {
+	for _, vs := range a.ValueSources() {
+		vbase := append(append([]any{}, base...), vs.Key)
+
+		if a.isSetLiterally(vs.Field) {
+			c.errf(vbase, "cannot be combined with %q in the same config block — set the field either literally or from an annotation", vs.Field)
+		}
+
+		if vs.Source.Annotation != "" {
+			c.errf(vbase, "annotation: is not accepted here — only namespaceAnnotation: is, because an alert's own annotations are written by the alerting rule rather than by the workload's owner")
+		}
+		if vs.Source.NamespaceAnnotation == "" {
+			c.errf(vbase, "requires namespaceAnnotation:")
+		} else {
+			if errs := validation.IsQualifiedName(vs.Source.NamespaceAnnotation); len(errs) > 0 {
+				c.errf(vbase, "invalid k8s annotation key %q: %s",
+					vs.Source.NamespaceAnnotation, strings.Join(errs, "; "))
+			}
+			if !kubeConfigured {
+				c.errf(vbase, "namespaceAnnotation: requires a kube: block — the Namespace informer it reads through belongs to the kube watcher")
+			}
+		}
+
+		if vs.Source.NamespaceLabel != "" && !prometheusLabelNamePattern.MatchString(vs.Source.NamespaceLabel) {
+			c.errf(append(append([]any{}, vbase...), "namespaceLabel"),
+				"%q is not a valid Prometheus label name (must match %s) — this names a label on the alert, not a k8s object key",
+				vs.Source.NamespaceLabel, prometheusLabelNamePattern.String())
+		}
+
+		// An annotation may not supply raw <…> markup, so a notify source
+		// with no roster to select from can never contribute a value.
+		if vs.Field == "notify" && len(userMapping) == 0 {
+			c.errf(vbase, "requires a non-empty slack.userMapping — an annotation may only select handles from it, never set raw Slack markup")
+		}
+
+		if vs.Source.HasDefault {
+			c.validateAlertmanagerValueSourceDefault(vs, vbase, slackChannels, userMapping)
+		}
+	}
+
+	// notifyFrom + notifyOverrideFrom in one block would have the same
+	// layer both union and replace the baseline; the merge order between
+	// them is undefined.
+	if a.NotifyFrom != nil && a.NotifyOverrideFrom != nil {
+		c.errf(append(append([]any{}, base...), "notifyOverrideFrom"),
+			"cannot be combined with notifyFrom in the same config block")
+	}
+}
+
+// isSetLiterally reports whether the block carries field as a literal.
+// AlertmanagerMatchConfig has no presence map, so this mirrors what
+// resolveStack treats as "set": a non-empty slack, and a notify list
+// that has entries or is explicitly !override.
+//
+// This is value-emptiness where KubeConfig.IsSet is key-presence, so
+// `slack: ""` alongside slackFrom: passes here and the equivalent under
+// kube.match does not. Both resolve to the sourced value, since
+// resolveStack skips an empty literal.
+func (a *AlertmanagerMatchConfig) isSetLiterally(field string) bool {
+	switch field {
+	case "slack":
+		return a.Slack != ""
+	case "notify":
+		return len(a.Notify.Values) > 0 || a.Notify.Override
+	}
+	return false
+}
+
+// validateAlertmanagerValueSourceDefault applies the literal field's own
+// load-time constraints to a *From block's `default:`. Defaults are
+// reviewed config, so they are hard errors here — unlike annotation
+// values, which degrade to a warning at evaluation time.
+func (c *checker) validateAlertmanagerValueSourceDefault(
+	vs AlertmanagerValueSource,
+	vbase []any,
+	slackChannels map[string]struct{},
+	userMapping map[string]string,
+) {
+	dbase := append(append([]any{}, vbase...), "default")
+	// A sequence default on a scalar field leaves DefaultScalar empty,
+	// which would otherwise surface as `unknown channel slug ""`.
+	if vs.Kind == AlertmanagerValueScalar {
+		if _, isList := vs.Source.Default.([]string); isList {
+			c.errf(dbase, "must be a single value for %q, not a list", vs.Field)
+			return
+		}
+	}
+	switch vs.Field {
+	case "slack":
+		if _, ok := slackChannels[vs.Source.DefaultScalar]; !ok {
+			c.errf(dbase, "unknown channel slug %q", vs.Source.DefaultScalar)
+		}
+	case "notify":
+		for i, n := range vs.Source.DefaultList {
+			if !c.isValidNotifyEntry(userMapping, n) {
+				c.errf(append(append([]any{}, dbase...), i),
+					"%q must be a userMapping slug or raw Slack markup wrapped in <…>", n)
+			}
+		}
 	}
 }
 

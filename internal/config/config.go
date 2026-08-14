@@ -338,6 +338,12 @@ type ValueSource struct {
 	Annotation          string `yaml:"annotation,omitempty"`
 	NamespaceAnnotation string `yaml:"namespaceAnnotation,omitempty"`
 
+	// NamespaceLabel names the alert label carrying the namespace name,
+	// for alertmanager.match sources (ADR-0013). Empty means the
+	// alertmanager.DefaultNamespaceLabel. Rejected under kube.match,
+	// where the namespace comes from the Ingress itself.
+	NamespaceLabel string `yaml:"namespaceLabel,omitempty"`
+
 	// Default carries the value as written — a string or a []string.
 	// UnmarshalYAML parses it into the two typed views below; this
 	// field exists so the reflection-driven unknown-key walker admits
@@ -373,6 +379,8 @@ func (v *ValueSource) UnmarshalYAML(node *yaml.Node) error {
 			v.Annotation = val.Value
 		case "namespaceAnnotation":
 			v.NamespaceAnnotation = val.Value
+		case "namespaceLabel":
+			v.NamespaceLabel = val.Value
 		case "default":
 			v.HasDefault = true
 			switch val.Kind {
@@ -392,7 +400,7 @@ func (v *ValueSource) UnmarshalYAML(node *yaml.Node) error {
 				return fmt.Errorf("line %d: default must be a scalar or a sequence", val.Line)
 			}
 		default:
-			return fmt.Errorf("line %d: unknown key %q in a *From value source (want annotation, namespaceAnnotation, default)", key.Line, key.Value)
+			return fmt.Errorf("line %d: unknown key %q in a *From value source (want annotation, namespaceAnnotation, namespaceLabel, default)", key.Line, key.Value)
 		}
 	}
 	return nil
@@ -2127,6 +2135,14 @@ func (c *checker) validateKubeValueSources(
 			if errs := validation.IsQualifiedName(key); len(errs) > 0 {
 				c.errf(vbase, "invalid k8s annotation key %q: %s", key, strings.Join(errs, "; "))
 			}
+		}
+
+		// namespaceLabel: names the alert label an alertmanager.match
+		// source reads the namespace from (ADR-0013). Under kube.match the
+		// namespace is the Ingress's own, so the key has no meaning here.
+		if vs.Source.NamespaceLabel != "" {
+			c.errf(append(append([]any{}, vbase...), "namespaceLabel"),
+				"is only valid under alertmanager.match; a kube.match source reads the Ingress's own namespace")
 		}
 
 		if vs.Source.HasDefault {
