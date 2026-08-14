@@ -109,6 +109,43 @@ func TestDiscoveryDetail_showsAnnotationProvenanceAndWarnings(t *testing.T) {
 	}
 }
 
+// ADR-0012 routes the wildcard host through Resolution.Err so the
+// daemon, `explain` and this page agree. The page must then say the host
+// is unprobeable rather than blaming the resolved config, which is fine.
+func TestDiscoveryDetail_wildcardHostIsUnprobeableNotInvalidConfig(t *testing.T) {
+	const host = "*.foo.example.test"
+	ing := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "acme-api-1", Name: "api"},
+		Spec: networkingv1.IngressSpec{
+			Rules: []networkingv1.IngressRule{{Host: host}},
+		},
+	}
+	view := templates.DiscoveryDetailView{
+		Row: store.DiscoverySnapshotRow{
+			Namespace: "acme-api-1", IngressName: "api", Host: host, Status: "kube-invalid",
+		},
+	}
+	templates.PopulateCascadeView(&view, detailRules(t), ing, host, merger.Env{})
+
+	if view.Outcome != templates.DiscoveryOutcomeInvalid {
+		t.Fatalf("outcome = %q, want invalid", view.Outcome)
+	}
+	if !view.WildcardHost {
+		t.Error("WildcardHost should be set for a wildcard host")
+	}
+	if !strings.Contains(view.InvalidError, "wildcard") {
+		t.Errorf("InvalidError = %q, want it to name the wildcard", view.InvalidError)
+	}
+
+	body := renderDetail(t, view)
+	if !strings.Contains(body, "Host is not probeable") {
+		t.Errorf("banner should say the host is not probeable; first 600:\n%s", body[:min(len(body), 600)])
+	}
+	if strings.Contains(body, "Resolved config is invalid") {
+		t.Error("wildcard host must not be reported as an invalid resolved config")
+	}
+}
+
 // A cascade built only from literals must not grow an empty panel.
 func TestDiscoveryDetail_noAnnotationPanelWithoutValueSources(t *testing.T) {
 	var rules []config.KubeMatchRule

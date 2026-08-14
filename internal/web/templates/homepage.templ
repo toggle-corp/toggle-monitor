@@ -236,9 +236,22 @@ type IssuesView struct {
 	InvalidDiscovery []store.DiscoverySnapshotRow
 	MissingParents   []MissingParent
 	Annotations      []AnnotationIssue
+
+	// IgnoredDiscovery is capped at IgnoredPreviewMax rows; IgnoredTotal
+	// is the uncapped count. A broad ignore rule (namespace: "test-*")
+	// can match hundreds of Ingresses, and the page must not grow with
+	// the cluster — /discovery is the place to page through them.
+	IgnoredDiscovery []store.DiscoverySnapshotRow
+	IgnoredTotal     int
 }
 
+// IgnoredPreviewMax is how many kube-ignored rows the /issues page
+// lists before deferring to the /discovery link.
+const IgnoredPreviewMax = 10
+
 // Total is the issue count the nav badge and the page heading share.
+// IgnoredDiscovery is excluded: an operator wrote the ignore: rule that
+// produced those rows, so they are an acknowledgement, not an issue.
 func (v IssuesView) Total() int {
 	return len(v.Mapping.Invalid) + len(v.InvalidDiscovery) +
 		len(v.MissingParents) + len(v.Annotations)
@@ -326,14 +339,22 @@ templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page
 
 // IssuesPage is the bare-minimum operator-awareness view: anything
 // the system noticed at runtime that an operator probably wants to
-// look at. v1 surfaces two existing sources — Slack userMapping
-// entries that failed the validator, and discovery_snapshot rows
-// stuck at "kube-invalid". Neither requires new storage; each links
-// out to the page where the operator already acts on that class of
-// problem (the homepage mapping panel / the /discovery listing).
+// look at. It surfaces existing sources — Slack userMapping entries
+// that failed the validator, discovery_snapshot rows stuck at
+// "kube-invalid", rejected annotation values, and unresolved dependsOn
+// parents. None requires new storage; each links out to the page where
+// the operator already acts on that class of problem (the homepage
+// mapping panel / the /discovery listing).
+//
+// A trailing "Skipped ingresses" section lists "kube-ignored" rows.
+// Those are acknowledgements rather than issues, so they sit below the
+// fold and stay out of Total() — but an operator reviewing the page
+// needs to see what an ignore: rule swallowed, especially a rule
+// written broadly enough to cover more than the wildcard it targeted.
 templ IssuesPage(view IssuesView) {
 	{{ mapping := view.Mapping }}
 	{{ invalidDiscovery := view.InvalidDiscovery }}
+	{{ ignoredDiscovery := view.IgnoredDiscovery }}
 	{{ missingParents := view.MissingParents }}
 	@Layout("Issues") {
 		<h1 class="text-xl font-semibold mb-4 inline-flex items-center gap-2">
@@ -378,7 +399,7 @@ templ IssuesPage(view IssuesView) {
 				</h2>
 				<div class="bg-white dark:bg-slate-900 rounded border border-rose-200 dark:border-rose-800 p-4">
 					<p class="text-sm text-slate-500 dark:text-slate-400 mb-2">
-						Ingresses the watcher saw but couldn't materialize into a monitor — usually a missing or unknown preset annotation.
+						Ingresses the watcher saw but couldn't materialize into a monitor — a resolved value that failed validation, or a wildcard host no prober can resolve. Fix the value in <code class="font-mono">kube.match</code>; a wildcard host has no value to fix, so acknowledge it with a matching <code class="font-mono">ignore: true</code> rule instead.
 					</p>
 					<ul class="text-sm divide-y divide-slate-100 dark:divide-slate-800">
 						for _, row := range invalidDiscovery {
@@ -442,6 +463,37 @@ templ IssuesPage(view IssuesView) {
 							</li>
 						}
 					</ul>
+				</div>
+			</section>
+		}
+		if view.IgnoredTotal > 0 {
+			<section class="mb-6">
+				<h2 class="text-lg font-semibold mb-2 text-slate-600 dark:text-slate-400">
+					Skipped ingresses ({ fmt.Sprint(view.IgnoredTotal) })
+					<a class="text-sm font-normal ml-2 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100" href="/discovery?status=kube-ignored">View all →</a>
+				</h2>
+				<div class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4">
+					<p class="text-sm text-slate-500 dark:text-slate-400 mb-2">
+						Ingresses a matching <code class="font-mono">ignore: true</code> rule deliberately excluded from monitoring. Listed for review, not action — an entry here that you don't recognize means the rule is broader than intended.
+					</p>
+					<ul class="text-sm divide-y divide-slate-100 dark:divide-slate-800">
+						for _, row := range ignoredDiscovery {
+							<li class="py-2 flex flex-wrap gap-3">
+								<code class="font-mono text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">{ row.Namespace }</code>
+								<a class="font-medium text-blue-700 dark:text-blue-400 hover:underline" href={ templ.SafeURL("/discovery/" + row.Namespace + "/" + row.IngressName + "/" + row.Host) }>{ row.IngressName }</a>
+								<span class="text-slate-500 dark:text-slate-400">{ row.Host }</span>
+								if row.Reason != nil {
+									<span class="text-slate-500 dark:text-slate-400">{ *row.Reason }</span>
+								}
+							</li>
+						}
+					</ul>
+					if rest := view.IgnoredTotal - len(ignoredDiscovery); rest > 0 {
+						<p class="text-xs text-slate-400 dark:text-slate-500 mt-2">
+							… and { fmt.Sprint(rest) } more —
+							<a class="text-blue-700 dark:text-blue-400 hover:underline" href="/discovery?status=kube-ignored">see the full listing</a>
+						</p>
+					}
 				</div>
 			</section>
 		}

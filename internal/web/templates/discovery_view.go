@@ -48,6 +48,13 @@ type DiscoveryDetailView struct {
 	// the offending value.
 	InvalidError string
 
+	// WildcardHost marks a host whose leftmost label is `*`, which no
+	// prober can resolve (ADR-0012). It rides alongside Outcome because
+	// the fact holds for both invalid (no rule acknowledged it) and
+	// ignored (a rule did) rows, and the banners word themselves
+	// differently when it is set.
+	WildcardHost bool
+
 	// InvalidField is a best-effort extraction of the KubeConfig key
 	// that the resolved-validation error talks about. Used by the
 	// template to highlight the row in the Resolved card. Empty when
@@ -73,6 +80,7 @@ func PopulateCascadeView(view *DiscoveryDetailView, rules []config.KubeMatchRule
 	view.Trace = traces
 	view.Provenance = res.Provenance
 	view.Warnings = res.Warnings
+	view.WildcardHost = res.WildcardHost
 	switch {
 	case !res.Matched:
 		view.Outcome = DiscoveryOutcomeNoMatch

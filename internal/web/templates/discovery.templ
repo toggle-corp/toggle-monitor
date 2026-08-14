@@ -267,22 +267,33 @@ templ cascadeBannerNoMatch() {
 
 // cascadeBannerIgnored highlights which rule flipped ignore so the
 // operator immediately knows what to look at when debugging "why isn't
-// this ingress being monitored?".
+// this ingress being monitored?". A wildcard host gets a second line:
+// the resolved block below reads as "would have materialized as…",
+// which is not true for a host no prober can resolve (ADR-0012).
 templ cascadeBannerIgnored(view DiscoveryDetailView) {
 	<div class="rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 p-4 mb-4 text-sm">
 		<p class="font-medium mb-1">This ingress is ignored — no monitor was materialized.</p>
 		<p>A rule below set <code class="text-xs">ignore: true</code>. The cascade is still shown so you can see <em>which</em> rule made the call.</p>
+		if view.WildcardHost {
+			<p class="mt-1">This host is a wildcard, so no monitor was possible here regardless of the rule — <code class="text-xs">https://{ view.Row.Host }/</code> never resolves.</p>
+		}
 	</div>
 	<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Match cascade</h2>
 }
 
-// cascadeBannerInvalid surfaces the resolved-validation error from
-// merger.checkResolved. The rule trace is still rendered so the
-// operator can see which rule wrote the field that triggered the
-// failure.
+// cascadeBannerInvalid surfaces the materialization blocker — a
+// resolved-validation error from merger.checkResolved, or a wildcard
+// host (ADR-0012), which is a property of the host rather than of any
+// resolved value. The rule trace is still rendered so the operator can
+// see which rule wrote the field that triggered a validation failure.
 templ cascadeBannerInvalid(view DiscoveryDetailView) {
 	<div class="rounded border border-rose-300 dark:border-rose-700 bg-rose-50 dark:bg-rose-950/40 text-rose-900 dark:text-rose-200 p-4 mb-4 text-sm">
-		<p class="font-medium mb-1">Resolved config is invalid — daemon emitted <code class="text-xs">kube-invalid</code>.</p>
+		if view.WildcardHost {
+			<p class="font-medium mb-1">Host is not probeable — daemon emitted <code class="text-xs">kube-invalid</code>.</p>
+			<p class="mb-1">Acknowledge it with a matching <code class="text-xs">ignore: true</code> rule to record it as <code class="text-xs">kube-ignored</code> instead.</p>
+		} else {
+			<p class="font-medium mb-1">Resolved config is invalid — daemon emitted <code class="text-xs">kube-invalid</code>.</p>
+		}
 		<p class="font-mono text-xs break-words">{ view.InvalidError }</p>
 	</div>
 	<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Match cascade</h2>

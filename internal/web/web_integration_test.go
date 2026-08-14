@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -612,6 +613,48 @@ func TestIssuesPage_emptyAndKubeInvalid(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("issues body missing %q; first 600:\n%s", want, firstN(body, 600))
 		}
+	}
+}
+
+// ADR-0012: kube-ignored rows are acknowledgements, so they render below
+// the fold, stay out of the issue count, and cap at IgnoredPreviewMax so
+// a broad ignore rule can't grow the page with the cluster.
+func TestIssuesPage_skippedIngressesSectionIsCappedAndUncounted(t *testing.T) {
+	srv, repo := newServer(t)
+	ctx := context.Background()
+
+	total := templates.IgnoredPreviewMax + 2
+	for i := 0; i < total; i++ {
+		reason := "kube-ignored: match[0] () — wildcard host not probeable"
+		if _, err := repo.UpsertDiscoverySnapshot(ctx, store.DiscoverySnapshotRow{
+			Namespace:   "static",
+			IngressName: "router-" + strconv.Itoa(i),
+			Host:        "*.static.example.test",
+			Status:      "kube-ignored",
+			Reason:      &reason,
+		}); err != nil {
+			t.Fatalf("upsert %d: %v", i, err)
+		}
+	}
+
+	_, body := get(t, srv.Routes(), "/issues")
+	for _, want := range []string{
+		"Skipped ingresses (" + strconv.Itoa(total) + ")",
+		"/discovery?status=kube-ignored",
+		"wildcard host not probeable",
+		"and 2 more",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("issues body missing %q; first 600:\n%s", want, firstN(body, 600))
+		}
+	}
+	// The preview stops at the cap even though every row is in the DB.
+	if n := strings.Count(body, ">router-"); n != templates.IgnoredPreviewMax {
+		t.Errorf("preview rows: got %d, want %d (cap)", n, templates.IgnoredPreviewMax)
+	}
+	// Acknowledged rows are not issues: no count, no nav chip.
+	if !strings.Contains(body, "No issues detected.") {
+		t.Errorf("ignored rows must not turn into issues; first 600:\n%s", firstN(body, 600))
 	}
 }
 

@@ -602,11 +602,18 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 		s.renderDBUnavailable(ctx, w, err)
 		return
 	}
-	var invalidDiscovery []store.DiscoverySnapshotRow
+	var invalidDiscovery, ignoredDiscovery []store.DiscoverySnapshotRow
 	for _, row := range rows {
-		if row.Status == "kube-invalid" {
+		switch row.Status {
+		case "kube-invalid":
 			invalidDiscovery = append(invalidDiscovery, row)
+		case "kube-ignored":
+			ignoredDiscovery = append(ignoredDiscovery, row)
 		}
+	}
+	ignoredTotal := len(ignoredDiscovery)
+	if ignoredTotal > templates.IgnoredPreviewMax {
+		ignoredDiscovery = ignoredDiscovery[:templates.IgnoredPreviewMax]
 	}
 	var mapping templates.MappingHealth
 	if s.mapping != nil {
@@ -642,6 +649,8 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 	_ = templates.IssuesPage(templates.IssuesView{
 		Mapping:          mapping,
 		InvalidDiscovery: invalidDiscovery,
+		IgnoredDiscovery: ignoredDiscovery,
+		IgnoredTotal:     ignoredTotal,
 		MissingParents:   missing,
 		Annotations:      annotations,
 	}).Render(ctx, w)
