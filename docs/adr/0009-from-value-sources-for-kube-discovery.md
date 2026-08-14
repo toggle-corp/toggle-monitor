@@ -4,12 +4,18 @@ date: 2026-08-13
 deciders: [monitoring-team]
 amends:
   - "0002-kube-match-tree-cascade.md (partial — the `### Annotations: removed` sub-section only)"
+extended-by:
+  - "0013-from-value-sources-for-alertmanager-routing.md"
 ---
 
 # ADR 0009 — `*From` value sources for kube discovery
 
 **Status:** Accepted
 **Date:** 2026-08-13
+**Extended by:**
+[ADR-0013](0013-from-value-sources-for-alertmanager-routing.md) — carries
+the same `*From` mechanism into `alertmanager.match` (accepted
+2026-08-14).
 **Amends:** ADR-0002 (partial). The cascading `kube.match[]` tree, its
 merge rules, `final:`/`ignore:`, and the root-required constraint all
 stand unchanged. This record reverses exactly one sub-decision — that

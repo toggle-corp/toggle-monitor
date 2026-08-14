@@ -3,6 +3,9 @@
 **Status:** Accepted
 **Date:** 2026-06-04
 **Supersedes:** nothing — net-new feature.
+**Amended by:**
+[ADR-0013](0013-from-value-sources-for-alertmanager-routing.md) — the
+`AlertmanagerMatchConfig` field set only (accepted 2026-08-14).
 
 ## Context
 
