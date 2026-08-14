@@ -30,6 +30,13 @@ type Resolved struct {
 	Notify    []string
 	RuleChain string
 	Final     bool
+
+	// Provenance and Warnings cover the ADR-0013 annotation inputs:
+	// which fields came from a Namespace annotation rather than the
+	// tree, and which annotation values were rejected. Both empty for a
+	// tree that uses only literals.
+	Provenance []Provenance
+	Warnings   []Warning
 }
 
 // Evaluate walks the configured AM match tree against one alert and
@@ -45,8 +52,9 @@ type Resolved struct {
 // validated at config-load (Slice 2) so regexp.Compile here cannot
 // fail in practice — failures fall through to "this rule doesn't
 // match" rather than panicking.
-func Evaluate(rules []config.AlertmanagerMatchRule, alert Alert, envelope Envelope) Resolved {
-	stack, chain, final := walkRules(rules, alert, envelope)
+func Evaluate(rules []config.AlertmanagerMatchRule, alert Alert, envelope Envelope, env Env) Resolved {
+	vr := newValueResolver(alert, env)
+	stack, chain, final := walkRules(rules, alert, envelope, vr)
 
 	// Deepest-wins ignore resolution across the matched stack.
 	ignored := false
@@ -63,8 +71,10 @@ func Evaluate(rules []config.AlertmanagerMatchRule, alert Alert, envelope Envelo
 	}
 
 	res := Resolved{
-		RuleChain: chain.String(),
-		Final:     final,
+		RuleChain:  chain.render(vr.provenance),
+		Final:      final,
+		Provenance: vr.provenance,
+		Warnings:   vr.warnings,
 	}
 	if ignored {
 		res.Ignored = true
@@ -93,11 +103,23 @@ type ruleChain struct {
 func (c *ruleChain) push(s string) { c.steps = append(c.steps, s) }
 func (c ruleChain) String() string { return strings.Join(c.steps, " → ") }
 
+// render appends annotation provenance to the chain, pipe-separated. The
+// rule chain is the AM tree's only debugging surface — there is no
+// explain subcommand for it — so "which rules matched" and "where the
+// values came from" share the one column.
+func (c ruleChain) render(prov []Provenance) string {
+	out := c.String()
+	for _, p := range prov {
+		out += " | " + p.String()
+	}
+	return out
+}
+
 // walkRules traverses the AM match tree depth-first in document
 // order, collecting every rule whose `when:` matches the (alert,
 // envelope) pair into the merge stack. `final: true` halts the entire
 // traversal after the rule's own nested subtree has been visited.
-func walkRules(rules []config.AlertmanagerMatchRule, alert Alert, env Envelope) ([]stackEntry, ruleChain, bool) {
+func walkRules(rules []config.AlertmanagerMatchRule, alert Alert, env Envelope, vr *valueResolver) ([]stackEntry, ruleChain, bool) {
 	var stack []stackEntry
 	var chain ruleChain
 	finalHit := false
@@ -105,7 +127,7 @@ func walkRules(rules []config.AlertmanagerMatchRule, alert Alert, env Envelope) 
 		if finalHit {
 			break
 		}
-		halted := visitRule(&rules[i], alert, env, fmt.Sprintf("match[%d]", i), &stack, &chain)
+		halted := visitRule(&rules[i], alert, env, fmt.Sprintf("match[%d]", i), &stack, &chain, vr)
 		if halted {
 			finalHit = true
 		}
@@ -125,6 +147,7 @@ func visitRule(
 	label string,
 	stack *[]stackEntry,
 	chain *ruleChain,
+	vr *valueResolver,
 ) (halt bool) {
 	if !whenMatches(r.When, alert, env) {
 		return false
@@ -136,13 +159,13 @@ func visitRule(
 	chain.push(step)
 	var cfg config.AlertmanagerMatchConfig
 	if r.Config != nil {
-		cfg = *r.Config
+		cfg = vr.apply(label, *r.Config)
 	}
 	*stack = append(*stack, stackEntry{cfg: cfg, ignore: r.Ignore})
 
 	for j := range r.Nested {
 		nestedLabel := fmt.Sprintf("%s.nested[%d]", label, j)
-		if visitRule(&r.Nested[j], alert, env, nestedLabel, stack, chain) {
+		if visitRule(&r.Nested[j], alert, env, nestedLabel, stack, chain, vr) {
 			return true
 		}
 	}

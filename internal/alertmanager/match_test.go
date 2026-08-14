@@ -34,7 +34,7 @@ func rootRule(slack string, notify ...string) config.AlertmanagerMatchRule {
 
 func TestEvaluate_rootOnly_returnsRootConfig(t *testing.T) {
 	rules := []config.AlertmanagerMatchRule{rootRule("ops-default", "ops")}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "Anything"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "Anything"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Ignored {
 		t.Fatalf("Ignored: got true, want false")
 	}
@@ -62,7 +62,7 @@ func TestEvaluate_alertname_globMatch(t *testing.T) {
 			Config: &config.AlertmanagerMatchConfig{Slack: "high-channel"},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "HighCPU"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "HighCPU"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Channel != "high-channel" {
 		t.Errorf("Channel: got %q, want high-channel", got.Channel)
 	}
@@ -76,7 +76,7 @@ func TestEvaluate_alertname_globMiss(t *testing.T) {
 			Config: &config.AlertmanagerMatchConfig{Slack: "high-channel"},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "LowDisk"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "LowDisk"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Channel != "ops-default" {
 		t.Errorf("Channel: got %q, want ops-default", got.Channel)
 	}
@@ -91,7 +91,7 @@ func TestEvaluate_alertname_emptySelector_matchesAnything(t *testing.T) {
 			Config: &config.AlertmanagerMatchConfig{Slack: "child"},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "Anything"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "Anything"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Channel != "child" {
 		t.Errorf("Channel: got %q, want child", got.Channel)
 	}
@@ -105,7 +105,7 @@ func TestEvaluate_alertnameRegex_match(t *testing.T) {
 			Config: &config.AlertmanagerMatchConfig{Slack: "pod-channel"},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "PodCrashLooping"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "PodCrashLooping"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Channel != "pod-channel" {
 		t.Errorf("Channel: got %q, want pod-channel", got.Channel)
 	}
@@ -120,12 +120,12 @@ func TestEvaluate_alertnameRegex_autoAnchored(t *testing.T) {
 			Config: &config.AlertmanagerMatchConfig{Slack: "acme-channel"},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "acme-prod"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "acme-prod"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Channel != "ops-default" {
 		t.Errorf("Channel: got %q, want ops-default (auto-anchor should reject acme-prod)", got.Channel)
 	}
 	// But "acme" should match "acme" exactly.
-	got = alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "acme"}), alertmanager.Envelope{})
+	got = alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "acme"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Channel != "acme-channel" {
 		t.Errorf("Channel: got %q, want acme-channel for exact match", got.Channel)
 	}
@@ -141,7 +141,7 @@ func TestEvaluate_labels_exactMatch(t *testing.T) {
 			Config: &config.AlertmanagerMatchConfig{Slack: "crit-channel"},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"severity": "critical"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"severity": "critical"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Channel != "crit-channel" {
 		t.Errorf("Channel: got %q, want crit-channel", got.Channel)
 	}
@@ -157,7 +157,7 @@ func TestEvaluate_labels_globMatch(t *testing.T) {
 			Config: &config.AlertmanagerMatchConfig{Slack: "acme-channel"},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"namespace": "acme-prod"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"namespace": "acme-prod"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Channel != "acme-channel" {
 		t.Errorf("Channel: got %q, want acme-channel", got.Channel)
 	}
@@ -173,12 +173,12 @@ func TestEvaluate_labels_regexMatch(t *testing.T) {
 			Config: &config.AlertmanagerMatchConfig{Slack: "pod-channel"},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"instance": "pod-42"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"instance": "pod-42"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Channel != "pod-channel" {
 		t.Errorf("Channel: got %q, want pod-channel", got.Channel)
 	}
 	// pod-foo must not match (auto-anchored regex).
-	got = alertmanager.Evaluate(rules, alert(map[string]string{"instance": "pod-foo"}), alertmanager.Envelope{})
+	got = alertmanager.Evaluate(rules, alert(map[string]string{"instance": "pod-foo"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Channel != "ops-default" {
 		t.Errorf("Channel: got %q, want ops-default", got.Channel)
 	}
@@ -195,7 +195,7 @@ func TestEvaluate_labels_missingOnAlert_doesNotMatch(t *testing.T) {
 		},
 	}
 	// Alert has alertname but no severity label.
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "HighCPU"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "HighCPU"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Channel != "ops-default" {
 		t.Errorf("Channel: got %q, want ops-default", got.Channel)
 	}
@@ -209,12 +209,12 @@ func TestEvaluate_receiver_exactMatch(t *testing.T) {
 			Config: &config.AlertmanagerMatchConfig{Slack: "tm-channel"},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{Receiver: "toggle_monitor"})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{Receiver: "toggle_monitor"}, alertmanager.Env{})
 	if got.Channel != "tm-channel" {
 		t.Errorf("Channel: got %q, want tm-channel", got.Channel)
 	}
 	// Miss
-	got = alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{Receiver: "other"})
+	got = alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{Receiver: "other"}, alertmanager.Env{})
 	if got.Channel != "ops-default" {
 		t.Errorf("Channel: got %q, want ops-default", got.Channel)
 	}
@@ -228,12 +228,12 @@ func TestEvaluate_externalURL_exactMatch(t *testing.T) {
 			Config: &config.AlertmanagerMatchConfig{Slack: "staging-channel"},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{ExternalURL: "https://am.staging.example.test"})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{ExternalURL: "https://am.staging.example.test"}, alertmanager.Env{})
 	if got.Channel != "staging-channel" {
 		t.Errorf("Channel: got %q, want staging-channel", got.Channel)
 	}
 	// Miss
-	got = alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{ExternalURL: "https://am.prod.example.test"})
+	got = alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{ExternalURL: "https://am.prod.example.test"}, alertmanager.Env{})
 	if got.Channel != "ops-default" {
 		t.Errorf("Channel: got %q, want ops-default", got.Channel)
 	}
@@ -251,12 +251,12 @@ func TestEvaluate_multiField_AND(t *testing.T) {
 		},
 	}
 	// Both match
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "HighCPU", "severity": "critical"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "HighCPU", "severity": "critical"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Channel != "critical-cpu" {
 		t.Errorf("Channel: got %q, want critical-cpu", got.Channel)
 	}
 	// Only alertname matches, severity wrong
-	got = alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "HighCPU", "severity": "warning"}), alertmanager.Envelope{})
+	got = alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "HighCPU", "severity": "warning"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Channel != "ops-default" {
 		t.Errorf("Channel: got %q, want ops-default", got.Channel)
 	}
@@ -276,7 +276,7 @@ func TestEvaluate_nestedOverridesRoot(t *testing.T) {
 			},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "HighCPU"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "HighCPU"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Channel != "child-channel" {
 		t.Errorf("Channel: got %q, want child-channel", got.Channel)
 	}
@@ -294,7 +294,7 @@ func TestEvaluate_multipleMatchingSiblings_allContribute(t *testing.T) {
 			Config: &config.AlertmanagerMatchConfig{Slack: "s2", Notify: config.NotifyList{Values: []string{"c"}}},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{}, alertmanager.Env{})
 	// Deepest in document order wins for slack.
 	if got.Channel != "s2" {
 		t.Errorf("Channel: got %q, want s2", got.Channel)
@@ -313,7 +313,7 @@ func TestEvaluate_nonMatchingNested_skipped(t *testing.T) {
 			Config: &config.AlertmanagerMatchConfig{Slack: "other"},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Channel != "root-channel" {
 		t.Errorf("Channel: got %q, want root-channel", got.Channel)
 	}
@@ -333,7 +333,7 @@ func TestEvaluate_finalHaltsTraversal(t *testing.T) {
 			Config: &config.AlertmanagerMatchConfig{Slack: "b"},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Channel != "a" {
 		t.Errorf("Channel: got %q, want a (final on rule index 1 should halt traversal)", got.Channel)
 	}
@@ -360,7 +360,7 @@ func TestEvaluate_finalDoesNotHaltOwnNested(t *testing.T) {
 			},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X", "severity": "critical"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X", "severity": "critical"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Channel != "a-crit" {
 		t.Errorf("Channel: got %q, want a-crit (final's own nested still contributes)", got.Channel)
 	}
@@ -379,7 +379,7 @@ func TestEvaluate_scalarUnsetDeeperPreservesShallower(t *testing.T) {
 			},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Channel != "root-channel" {
 		t.Errorf("Channel: got %q, want root-channel (deeper unset slack should preserve root)", got.Channel)
 	}
@@ -393,7 +393,7 @@ func TestEvaluate_notifyUnion_dedupes(t *testing.T) {
 			Config: &config.AlertmanagerMatchConfig{Notify: config.NotifyList{Values: []string{"b", "c"}}},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{}, alertmanager.Env{})
 	want := []string{"a", "b", "c"}
 	if !reflect.DeepEqual(got.Notify, want) {
 		t.Errorf("Notify: got %v, want %v (union dedup, shallow-first)", got.Notify, want)
@@ -410,7 +410,7 @@ func TestEvaluate_notifyOverride_replaces(t *testing.T) {
 			},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{}, alertmanager.Env{})
 	want := []string{"x"}
 	if !reflect.DeepEqual(got.Notify, want) {
 		t.Errorf("Notify: got %v, want %v (override replaces ancestors)", got.Notify, want)
@@ -427,7 +427,7 @@ func TestEvaluate_notifyOverrideEmpty_resolvesEmpty(t *testing.T) {
 			},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if len(got.Notify) != 0 {
 		t.Errorf("Notify: got %v, want empty (override [] clears)", got.Notify)
 	}
@@ -437,7 +437,7 @@ func TestEvaluate_notifyOverrideEmpty_resolvesEmpty(t *testing.T) {
 
 func TestEvaluate_noIgnore_returnsConfig(t *testing.T) {
 	rules := []config.AlertmanagerMatchRule{rootRule("ops-default")}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Ignored {
 		t.Errorf("Ignored: got true, want false")
 	}
@@ -452,7 +452,7 @@ func TestEvaluate_nestedIgnoreTrue_setsIgnored(t *testing.T) {
 			Final:  true,
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "Watchdog"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "Watchdog"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if !got.Ignored {
 		t.Errorf("Ignored: got false, want true")
 	}
@@ -475,7 +475,7 @@ func TestEvaluate_deeperUnignore_unsetsIgnore(t *testing.T) {
 			},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"namespace": "test-critical-foo"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"namespace": "test-critical-foo"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.Ignored {
 		t.Errorf("Ignored: got true, want false (deeper un-ignore)")
 	}
@@ -492,7 +492,7 @@ func TestEvaluate_ignored_channelAndNotifyEmpty(t *testing.T) {
 			Ignore: boolPtr(true),
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "Watchdog"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "Watchdog"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if !got.Ignored {
 		t.Fatalf("Ignored: got false, want true")
 	}
@@ -511,7 +511,7 @@ func TestEvaluate_ignored_channelAndNotifyEmpty(t *testing.T) {
 
 func TestEvaluate_ruleChain_singleRoot(t *testing.T) {
 	rules := []config.AlertmanagerMatchRule{rootRule("ops-default")}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if got.RuleChain != "match[0]" {
 		t.Errorf("RuleChain: got %q, want %q", got.RuleChain, "match[0]")
 	}
@@ -525,7 +525,7 @@ func TestEvaluate_ruleChain_rootPlusNested(t *testing.T) {
 			Config: &config.AlertmanagerMatchConfig{Slack: "child"},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "X"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if !strings.Contains(got.RuleChain, "match[0]") {
 		t.Errorf("RuleChain: %q should contain match[0]", got.RuleChain)
 	}
@@ -557,7 +557,7 @@ func TestEvaluate_ruleChain_selectorSummary(t *testing.T) {
 	// Build alert that matches every selector.
 	got := alertmanager.Evaluate(rules,
 		alert(map[string]string{"alertname": "Watchdog", "severity": "critical"}),
-		alertmanager.Envelope{Receiver: "rcv", ExternalURL: "https://am.example.test"})
+		alertmanager.Envelope{Receiver: "rcv", ExternalURL: "https://am.example.test"}, alertmanager.Env{})
 	for _, want := range []string{"alertname=Watchdog", "labels.severity=critical", "receiver=rcv", "externalURL=https://am.example.test"} {
 		if !strings.Contains(got.RuleChain, want) {
 			t.Errorf("RuleChain: %q should contain %q", got.RuleChain, want)
@@ -573,7 +573,7 @@ func TestEvaluate_ruleChain_alertnameRegex(t *testing.T) {
 			Config: &config.AlertmanagerMatchConfig{Slack: "child"},
 		},
 	}
-	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "PodCrashLooping"}), alertmanager.Envelope{})
+	got := alertmanager.Evaluate(rules, alert(map[string]string{"alertname": "PodCrashLooping"}), alertmanager.Envelope{}, alertmanager.Env{})
 	if !strings.Contains(got.RuleChain, "alertnameRegex=Pod.*") {
 		t.Errorf("RuleChain: %q should contain alertnameRegex=Pod.*", got.RuleChain)
 	}
@@ -655,7 +655,7 @@ func TestEvaluate_realisticFixture(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := alertmanager.Evaluate(rules, alert(tc.alertLabels), tc.envelope)
+			got := alertmanager.Evaluate(rules, alert(tc.alertLabels), tc.envelope, alertmanager.Env{})
 			if got.Ignored != tc.wantIgnored {
 				t.Errorf("Ignored: got %v, want %v (chain=%q)", got.Ignored, tc.wantIgnored, got.RuleChain)
 			}
