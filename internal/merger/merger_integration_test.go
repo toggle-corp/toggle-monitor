@@ -515,14 +515,42 @@ func TestMaterializer_ignoreTrueProducesIgnoredRow(t *testing.T) {
 	}
 }
 
-func TestMaterializer_wildcardHostIsInvalidBeforeWalk(t *testing.T) {
+func TestMaterializer_wildcardHostIsInvalidWithoutIgnoreRule(t *testing.T) {
 	repo := newRepo(t)
-	// An ignore rule matches this host. If the wildcard guard ran
-	// AFTER the cascade walk, the row would come back kube-ignored.
-	// The guard must run BEFORE the walk, so the structural
-	// invalidity of the wildcard wins: kube-invalid, not kube-ignored.
+	// No rule acknowledges the wildcard, so the unprobeable host is a
+	// kube-invalid row the operator has to look at.
+	kc := fixtureKube(t, "", true)
+	m := merger.New(repo, withKube(kc, nil), nil)
+	ing := ingress("acme", "wildcard", nil, "*.foo.example.test")
+
+	row, err := m.Materialize(context.Background(), ing, "*.foo.example.test")
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if row.Status != "kube-invalid" {
+		t.Errorf("status: got %q, want kube-invalid", row.Status)
+	}
+	if row.Reason == nil || !strings.Contains(*row.Reason, "wildcard") {
+		t.Errorf("reason should explain the wildcard, got %v", row.Reason)
+	}
+	if row.Reason == nil || !strings.Contains(*row.Reason, "match[0]") {
+		t.Errorf("reason should carry the rule chain, got %v", row.Reason)
+	}
+	if row.MonitorSlug != nil {
+		t.Errorf("wildcard row must NOT carry a monitor slug, got %v", row.MonitorSlug)
+	}
+	if plans := m.CurrentPlans(); len(plans) != 0 {
+		t.Errorf("wildcard host must not produce a probe plan, got %d", len(plans))
+	}
+}
+
+func TestMaterializer_wildcardHostIgnoredByRule(t *testing.T) {
+	repo := newRepo(t)
+	// ADR-0012: an explicit ignore rule acknowledges the wildcard, so
+	// the row drops out of the kube-invalid issue count. It stays
+	// unprobed either way, and the reason still says why.
 	extra := `
-- when: {host: "*.foo.example.test"}
+- when: {hostRegex: '\*\..*'}
   ignore: true
 `
 	kc := fixtureKube(t, extra, true)
@@ -533,11 +561,44 @@ func TestMaterializer_wildcardHostIsInvalidBeforeWalk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("materialize: %v", err)
 	}
-	if row.Status != "kube-invalid" {
-		t.Errorf("status: got %q, want kube-invalid (wildcard guard must beat the ignore rule)", row.Status)
+	if row.Status != "kube-ignored" {
+		t.Errorf("status: got %q, want kube-ignored (an explicit ignore rule beats the wildcard)", row.Status)
+	}
+	if row.Reason == nil || !strings.Contains(*row.Reason, "match[1]") {
+		t.Errorf("reason should mention the matching rule, got %v", row.Reason)
 	}
 	if row.Reason == nil || !strings.Contains(*row.Reason, "wildcard") {
-		t.Errorf("reason should explain the wildcard, got %v", row.Reason)
+		t.Errorf("ignored wildcard row should still explain the wildcard, got %v", row.Reason)
+	}
+	if row.MonitorSlug != nil {
+		t.Errorf("ignored row must NOT carry a monitor slug, got %v", row.MonitorSlug)
+	}
+	if plans := m.CurrentPlans(); len(plans) != 0 {
+		t.Errorf("wildcard host must not produce a probe plan, got %d", len(plans))
+	}
+}
+
+func TestMaterializer_wildcardHostNestedIgnoreFalseIsInvalidAgain(t *testing.T) {
+	repo := newRepo(t)
+	// A nested ignore: false un-ignores the wildcard. It must fall back
+	// to kube-invalid rather than materialize an unprobeable monitor.
+	extra := `
+- when: {hostRegex: '\*\..*'}
+  ignore: true
+  nested:
+    - when: {namespace: "acme"}
+      ignore: false
+`
+	kc := fixtureKube(t, extra, true)
+	m := merger.New(repo, withKube(kc, nil), nil)
+	ing := ingress("acme", "wildcard", nil, "*.foo.example.test")
+
+	row, err := m.Materialize(context.Background(), ing, "*.foo.example.test")
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if row.Status != "kube-invalid" {
+		t.Errorf("status: got %q, want kube-invalid", row.Status)
 	}
 	if row.MonitorSlug != nil {
 		t.Errorf("wildcard row must NOT carry a monitor slug, got %v", row.MonitorSlug)

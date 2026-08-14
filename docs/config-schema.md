@@ -438,6 +438,19 @@ A matching rule with `final: true` descends into its own `nested:` subtree (so f
 
 A resolved `ignore: true` means no monitor is created; a `status="kube-ignored"` discovery row is recorded so the operator sees the rule fired and can filter on `/discovery`.
 
+### Wildcard hosts
+
+Kubernetes permits `*` as the leftmost label of an Ingress rule host (`*.static.example.test`). No prober can resolve such a name, so it never materializes into a monitor.
+
+By default it records `status="kube-invalid"` with reason `wildcard host not probeable`, which counts toward the `/issues` badge and the `toggle_monitor_issues{source="kube-invalid"}` gauge. A matching `ignore: true` rule acknowledges it: the row becomes `kube-ignored` (still unprobed, still explained in the reason) and drops out of both counts. See ADR-0012.
+
+```yaml
+- when: { hostRegex: '\*\..*' }   # hostRegex is auto-anchored ^…$
+  ignore: true
+```
+
+Scope the selector as tightly as the situation allows — `when: { namespace: "static-*", hostRegex: '\*\..*' }` acknowledges one team's wildcards without silencing the next one that appears elsewhere.
+
 ### `kube.*` field reference
 
 | Field | Type | Req | Validation | Notes |

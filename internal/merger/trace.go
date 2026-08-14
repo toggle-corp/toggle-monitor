@@ -89,9 +89,7 @@ func ResolveWithTrace(rules []config.KubeMatchRule, ing *networkingv1.Ingress, h
 		}
 	}
 	out.Config = resolveStack(stack)
-	if !out.Ignored {
-		out.Err = checkResolved(out.Config)
-	}
+	out.classify(host)
 	return out, traces
 }
 

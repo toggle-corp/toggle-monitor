@@ -154,6 +154,12 @@ child can flip `ignore: false` to un-ignore a subset:
 `nested:` / `final:`), not inside `config:` — it answers "does a
 monitor materialize?" not "what config does the monitor have?"
 
+> [ADR-0012](0012-wildcard-ingress-hosts-are-ignorable.md) records the
+> precedence between this directive and the materialization blockers:
+> `ignore:` > wildcard host > resolved-value validation. A resolved
+> `ignore: true` therefore records `kube-ignored` even for an
+> unprobeable wildcard host, which would otherwise be `kube-invalid`.
+
 ### Merge rules
 
 **Scalars** (string, int, bool, Duration): deeper / later overrides

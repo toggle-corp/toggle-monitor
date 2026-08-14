@@ -102,6 +102,15 @@ kube:
     - when: { namespace: "test-*" }
       ignore: true
 
+    # ── Acknowledge wildcard hosts ─────────────────────────────────
+    # A wildcard Ingress host (`*.static.example.test`) is never
+    # probeable and records `kube-invalid` by default. An ignore rule
+    # acknowledges it: `kube-ignored` instead, off the /issues count.
+    # `hostRegex` is auto-anchored, so this matches only hosts whose
+    # leftmost label is `*`. See ADR-0012.
+    - when: { hostRegex: '\*\..*' }
+      ignore: true
+
     # ── ACME namespace family ──────────────────────────────────────
     # Tags accumulate down the tree (union by default): acme →
     # acme+service-a → acme+service-a+eoapi. Status-page sections

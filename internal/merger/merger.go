@@ -13,6 +13,7 @@ package merger
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path"
@@ -214,7 +215,8 @@ func (m *Materializer) AnnotationWarnings() []MonitorWarnings {
 // the rule halted the cascade).
 //
 // Ignored is the deepest-wins resolution of rule-level ignore:
-// directives across the matched stack. Err is the resolved-value
+// directives across the matched stack. Err is the materialization
+// blocker: either a wildcard host (ErrWildcardHost) or a resolved-value
 // validation error (interval > timeout, sslAlert > escalation > 0,
 // required-at-root fields not regressed) — non-nil means the resolved
 // config would emit a kube-invalid discovery row rather than
@@ -222,16 +224,48 @@ func (m *Materializer) AnnotationWarnings() []MonitorWarnings {
 // possible against a hand-constructed tree without a root rule;
 // production configs always carry a matching root).
 //
+// WildcardHost reports the structural fact independently of Err, so an
+// ignored row can still explain that nothing would have been probed. It
+// is meaningful only when Matched — an unmatched tree resolves nothing
+// and reports no outcome beyond that.
+//
 // Provenance and Warnings cover the ADR-0009 annotation inputs and are
 // empty for a tree that uses only literals.
 type Resolution struct {
-	Config     config.KubeConfig
-	Chain      []string
-	Provenance []Provenance
-	Warnings   []Warning
-	Ignored    bool
-	Matched    bool
-	Err        error
+	Config       config.KubeConfig
+	Chain        []string
+	Provenance   []Provenance
+	Warnings     []Warning
+	Ignored      bool
+	Matched      bool
+	WildcardHost bool
+	Err          error
+}
+
+// ErrWildcardHost marks a host k8s permits on an Ingress rule but that
+// no prober can resolve: `*` is legal only as the leftmost label (e.g.
+// `*.foo.example.test`), and probing https://*.foo/ is a perpetual "no
+// such host".
+var ErrWildcardHost = errors.New("wildcard host not probeable")
+
+// classify applies the post-walk outcome shared by Resolve and
+// ResolveWithTrace. A wildcard host outranks checkResolved because it
+// is the more actionable message; an explicit ignore: directive
+// outranks both, since the operator has already said this Ingress is
+// not to be monitored (ADR-0012).
+//
+// ContainsRune is a deliberate superset of the `*.`-prefix form k8s
+// permits — cheap, and robust to fake listers.
+func (r *Resolution) classify(host string) {
+	r.WildcardHost = strings.ContainsRune(host, '*')
+	if r.Ignored {
+		return
+	}
+	if r.WildcardHost {
+		r.Err = ErrWildcardHost
+		return
+	}
+	r.Err = checkResolved(r.Config)
 }
 
 // Resolve walks the cascading kube.match[] tree against (ing, host)
@@ -258,9 +292,7 @@ func Resolve(rules []config.KubeMatchRule, ing *networkingv1.Ingress, host strin
 		}
 	}
 	out.Config = resolveStack(stack)
-	if !out.Ignored {
-		out.Err = checkResolved(out.Config)
-	}
+	out.classify(host)
 	return out
 }
 
@@ -274,21 +306,6 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 		Namespace:   ing.Namespace,
 		IngressName: ing.Name,
 		Host:        host,
-	}
-
-	// Wildcard guard — runs BEFORE the cascade walk. A wildcard ingress
-	// host (k8s only permits `*` as the leftmost label, e.g.
-	// `*.foo.example.test`) is not a resolvable name: probing
-	// https://*.foo/ yields a perpetual "no such host". Such a host is
-	// structurally unprobeable regardless of which match rules it would
-	// hit, so it must short-circuit to kube-invalid before any ignore
-	// or override rule can reclassify it. ContainsRune is a deliberate
-	// superset of the `*.`-prefix form — cheap, and robust to fake
-	// listers and the no-materializer fallback path.
-	if strings.ContainsRune(host, '*') {
-		reason := "kube-invalid: wildcard host not probeable"
-		base.Status, base.Reason = "kube-invalid", &reason
-		return base, nil
 	}
 
 	res := Resolve(m.match, ing, host, m.ResolveEnv(ing.Namespace))
@@ -309,7 +326,17 @@ func (m *Materializer) Materialize(ctx context.Context, ing *networkingv1.Ingres
 	suffix := annotationSuffix(res)
 
 	if res.Ignored {
-		reason := "kube-ignored: " + chainStr + suffix
+		// A wildcard host says so even when ignored: the row is the
+		// only place an operator learns that this Ingress could never
+		// have been probed, ignore rule or not.
+		// A dash rather than parens: the last chain step already ends in
+		// its own selector parens, so nesting another group there reads
+		// as part of the rule summary.
+		reason := "kube-ignored: " + chainStr
+		if res.WildcardHost {
+			reason += " — " + ErrWildcardHost.Error()
+		}
+		reason += suffix
 		base.Status, base.Reason = "kube-ignored", &reason
 		return base, nil
 	}
