@@ -363,3 +363,97 @@ func TestPrune_dropsWarningsForMonitorsThatNoLongerMaterialize(t *testing.T) {
 		t.Errorf("AnnotationWarnings() = %+v, want only kube-live to survive", got)
 	}
 }
+
+// acceptedStatusCodes is replace-by-default, so an annotation-sourced
+// value replaces the cascade's list outright rather than unioning.
+func TestResolve_acceptedStatusCodesFromAnnotation(t *testing.T) {
+	rules := parseRules(t, vsRootYAML+`
+- when: {namespace: "acme-*"}
+  config:
+    acceptedStatusCodesFrom:
+      annotation: app.example.test/accepted-status-codes
+`)
+	ing := annotatedIng("acme-serve-1", "serve",
+		map[string]string{"app.example.test/accepted-status-codes": "303"}, "s.example.test")
+
+	got := Resolve(rules, ing, "s.example.test", Env{})
+
+	if len(got.Config.AcceptedStatusCodes) != 1 || got.Config.AcceptedStatusCodes[0] != 303 {
+		t.Errorf("acceptedStatusCodes = %v, want [303] replacing the root's [200]", got.Config.AcceptedStatusCodes)
+	}
+	if got.Err != nil {
+		t.Errorf("unexpected resolved-validation error: %v", got.Err)
+	}
+	if len(got.Warnings) != 0 {
+		t.Errorf("valid codes should not warn: %v", got.Warnings)
+	}
+}
+
+func TestResolve_acceptedStatusCodesFromParsesMultipleAndTrimsSpace(t *testing.T) {
+	rules := parseRules(t, vsRootYAML+`
+- when: {namespace: "acme-*"}
+  config:
+    acceptedStatusCodesFrom:
+      annotation: app.example.test/accepted-status-codes
+`)
+	ing := annotatedIng("acme-serve-1", "serve",
+		map[string]string{"app.example.test/accepted-status-codes": "200, 303 ,404"}, "s.example.test")
+
+	got := Resolve(rules, ing, "s.example.test", Env{})
+
+	want := []int{200, 303, 404}
+	if len(got.Config.AcceptedStatusCodes) != 3 {
+		t.Fatalf("acceptedStatusCodes = %v, want %v", got.Config.AcceptedStatusCodes, want)
+	}
+	for i, w := range want {
+		if got.Config.AcceptedStatusCodes[i] != w {
+			t.Errorf("acceptedStatusCodes = %v, want %v", got.Config.AcceptedStatusCodes, want)
+			break
+		}
+	}
+}
+
+// Partial validity, as for every other list: keep what parses, warn on
+// the rest.
+func TestResolve_acceptedStatusCodesFromDropsUnparseableEntries(t *testing.T) {
+	rules := parseRules(t, vsRootYAML+`
+- when: {namespace: "acme-*"}
+  config:
+    acceptedStatusCodesFrom:
+      annotation: app.example.test/accepted-status-codes
+`)
+	ing := annotatedIng("acme-serve-1", "serve",
+		map[string]string{"app.example.test/accepted-status-codes": "303,teapot,99"}, "s.example.test")
+
+	got := Resolve(rules, ing, "s.example.test", Env{})
+
+	if len(got.Config.AcceptedStatusCodes) != 1 || got.Config.AcceptedStatusCodes[0] != 303 {
+		t.Errorf("acceptedStatusCodes = %v, want [303]", got.Config.AcceptedStatusCodes)
+	}
+	if len(got.Warnings) != 2 {
+		t.Errorf("want a warning per rejected entry, got: %v", got.Warnings)
+	}
+}
+
+// An all-invalid value must leave the cascade's list alone. Replacing a
+// working [200] with an empty list would fail checkResolved and cost
+// the monitor entirely.
+func TestResolve_acceptedStatusCodesFromAllInvalidLeavesCascadeValue(t *testing.T) {
+	rules := parseRules(t, vsRootYAML+`
+- when: {namespace: "acme-*"}
+  config:
+    acceptedStatusCodesFrom:
+      annotation: app.example.test/accepted-status-codes
+`)
+	ing := annotatedIng("acme-serve-1", "serve",
+		map[string]string{"app.example.test/accepted-status-codes": "teapot"}, "s.example.test")
+
+	got := Resolve(rules, ing, "s.example.test", Env{})
+
+	if len(got.Config.AcceptedStatusCodes) != 1 || got.Config.AcceptedStatusCodes[0] != 200 {
+		t.Errorf("acceptedStatusCodes = %v, want the root's [200]", got.Config.AcceptedStatusCodes)
+	}
+	if got.Err != nil {
+		t.Errorf("the monitor must still materialize, got: %v", got.Err)
+	}
+}

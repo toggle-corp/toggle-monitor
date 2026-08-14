@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -236,6 +237,11 @@ type KubeConfig struct {
 	TagsFrom           *ValueSource `yaml:"tagsFrom,omitempty"`
 	TagsOverrideFrom   *ValueSource `yaml:"tagsOverrideFrom,omitempty"`
 
+	// AcceptedStatusCodesFrom has no Override twin: acceptedStatusCodes
+	// is replace-by-default across the cascade, so every layer that sets
+	// it already replaces the previous one.
+	AcceptedStatusCodesFrom *ValueSource `yaml:"acceptedStatusCodesFrom,omitempty"`
+
 	// setFields records which YAML keys were present in the input.
 	// Populated by UnmarshalYAML; consumed by the merger to tell
 	// "unset" apart from "explicitly set to the zero value".
@@ -403,6 +409,10 @@ const (
 	KubeValueScalar KubeValueKind = iota
 	// KubeValueList merges like notify / tags.
 	KubeValueList
+	// KubeValueStatusCodes merges like acceptedStatusCodes: an entry
+	// list that replaces the previous layer's rather than unioning, and
+	// whose entries are HTTP status codes rather than free strings.
+	KubeValueStatusCodes
 )
 
 // KubeValueSource pairs one set *From block with the literal field it
@@ -438,6 +448,7 @@ func (k *KubeConfig) ValueSources() []KubeValueSource {
 		{Key: "notifyOverrideFrom", Field: "notify", Kind: KubeValueList, Override: true, Source: k.NotifyOverrideFrom},
 		{Key: "tagsFrom", Field: "tags", Kind: KubeValueList, Source: k.TagsFrom},
 		{Key: "tagsOverrideFrom", Field: "tags", Kind: KubeValueList, Override: true, Source: k.TagsOverrideFrom},
+		{Key: "acceptedStatusCodesFrom", Field: "acceptedStatusCodes", Kind: KubeValueStatusCodes, Source: k.AcceptedStatusCodesFrom},
 	}
 	out := make([]KubeValueSource, 0, len(all))
 	for _, vs := range all {
@@ -2167,6 +2178,22 @@ func (c *checker) validateValueSourceDefault(
 		for i, tag := range vs.Source.DefaultList {
 			if err := slug.ValidateTag(tag); err != nil {
 				c.errf(append(append([]any{}, dbase...), i), "%v", err)
+			}
+		}
+	case "acceptedStatusCodes":
+		if len(vs.Source.DefaultList) == 0 {
+			c.errf(dbase, "must be a non-empty list of HTTP status codes")
+		}
+		for i, raw := range vs.Source.DefaultList {
+			code, err := strconv.Atoi(raw)
+			if err != nil {
+				c.errf(append(append([]any{}, dbase...), i),
+					"%q is not a number; acceptedStatusCodes entries are HTTP status codes", raw)
+				continue
+			}
+			if code < 100 || code > 599 {
+				c.errf(append(append([]any{}, dbase...), i),
+					"%d is not a valid HTTP status code (100..599)", code)
 			}
 		}
 	}

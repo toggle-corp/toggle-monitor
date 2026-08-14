@@ -193,3 +193,60 @@ func TestLoad_kube_rootPathFromWithoutDefaultFailsRequiredAtRoot(t *testing.T) {
 		t.Errorf("error should point at the unsatisfied path requirement, got: %v", err)
 	}
 }
+
+// acceptedStatusCodes is replace-by-default across the cascade, so it
+// has one *From key and no Override twin.
+func TestLoad_kube_acceptedStatusCodesFromParses(t *testing.T) {
+	tree := kubeRootBaseline + `    - when: { namespace: "acme-*" }
+      config:
+        acceptedStatusCodesFrom:
+          annotation: app.example.test/accepted-status-codes
+          default: [200, 303]
+`
+	cfg, err := config.Load(withKubeBlock(tree))
+	if err != nil {
+		t.Fatalf("acceptedStatusCodesFrom should parse, got: %v", err)
+	}
+	src := cfg.Kube.Match[1].Config.AcceptedStatusCodesFrom
+	if src == nil {
+		t.Fatal("AcceptedStatusCodesFrom should be populated")
+	}
+	if src.Annotation != "app.example.test/accepted-status-codes" {
+		t.Errorf("annotation = %q", src.Annotation)
+	}
+	if got, want := src.DefaultList, []string{"200", "303"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("DefaultList = %v, want %v", got, want)
+	}
+}
+
+func TestLoad_kube_rejectsNonNumericAcceptedStatusCodesDefault(t *testing.T) {
+	tree := kubeRootBaseline + `    - when: { namespace: "acme-*" }
+      config:
+        acceptedStatusCodesFrom:
+          annotation: app.example.test/accepted-status-codes
+          default: [200, teapot]
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected a non-numeric default to be rejected")
+	}
+	if !strings.Contains(err.Error(), "teapot") {
+		t.Errorf("error should name the bad value, got: %v", err)
+	}
+}
+
+func TestLoad_kube_rejectsOutOfRangeAcceptedStatusCodesDefault(t *testing.T) {
+	tree := kubeRootBaseline + `    - when: { namespace: "acme-*" }
+      config:
+        acceptedStatusCodesFrom:
+          annotation: app.example.test/accepted-status-codes
+          default: [99]
+`
+	_, err := config.Load(withKubeBlock(tree))
+	if err == nil {
+		t.Fatal("expected an out-of-range status code default to be rejected")
+	}
+	if !strings.Contains(err.Error(), "100..599") {
+		t.Errorf("error should name the valid range, got: %v", err)
+	}
+}

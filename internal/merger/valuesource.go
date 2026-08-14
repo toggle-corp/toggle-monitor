@@ -2,6 +2,7 @@ package merger
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/toggle-corp/toggle-monitor/internal/config"
@@ -137,6 +138,8 @@ func (r *valueResolver) lower(label string, out *config.KubeConfig, vs config.Ku
 		r.lowerScalar(label, out, vs, raw, scope, key)
 	case config.KubeValueList:
 		r.lowerList(label, out, vs, raw, scope, key)
+	case config.KubeValueStatusCodes:
+		r.lowerStatusCodes(label, out, vs, raw, scope, key)
 	}
 }
 
@@ -162,7 +165,74 @@ func (r *valueResolver) writeDefault(label string, out *config.KubeConfig, vs co
 		}
 		r.setList(out, vs, vs.Source.DefaultList)
 		r.note(label, vs.Field, key, ScopeDefault, formatList(vs.Source.DefaultList))
+	case config.KubeValueStatusCodes:
+		codes, _ := parseStatusCodes(vs.Source.DefaultList)
+		if len(codes) == 0 {
+			return
+		}
+		out.AcceptedStatusCodes = codes
+		out.MarkSet(vs.Field)
+		r.note(label, vs.Field, key, ScopeDefault, formatList(vs.Source.DefaultList))
 	}
+}
+
+// lowerStatusCodes resolves an acceptedStatusCodes annotation. The
+// field is replace-by-default across the cascade, so a usable value
+// here discards the inherited list rather than adding to it — which is
+// also why an all-invalid value must contribute nothing: replacing a
+// working list with an empty one fails checkResolved and costs the
+// monitor entirely.
+func (r *valueResolver) lowerStatusCodes(label string, out *config.KubeConfig, vs config.KubeValueSource, raw, scope, key string) {
+	entries := config.SplitAnnotationList(raw)
+	codes, rejected := parseStatusCodes(entries)
+	for _, bad := range rejected {
+		r.warn(label, vs.Field, key, scope, bad.value, bad.reason)
+	}
+	if len(codes) == 0 {
+		if vs.Source.HasDefault {
+			r.writeDefault(label, out, vs, key)
+		}
+		return
+	}
+	out.AcceptedStatusCodes = codes
+	out.MarkSet(vs.Field)
+	r.note(label, vs.Field, key, scope, formatCodes(codes))
+}
+
+// rejectedCode pairs an unusable entry with why it was dropped.
+type rejectedCode struct {
+	value  string
+	reason string
+}
+
+// parseStatusCodes converts annotation entries to status codes,
+// returning the usable ones and a reason per rejection. Partial
+// validity is preserved, as for every other list-valued source.
+func parseStatusCodes(entries []string) (config.StatusCodeList, []rejectedCode) {
+	var codes config.StatusCodeList
+	var rejected []rejectedCode
+	for _, entry := range entries {
+		code, err := strconv.Atoi(entry)
+		if err != nil {
+			rejected = append(rejected, rejectedCode{entry, "is not a number"})
+			continue
+		}
+		if code < 100 || code > 599 {
+			rejected = append(rejected, rejectedCode{entry, "is not a valid HTTP status code (100..599)"})
+			continue
+		}
+		codes = append(codes, code)
+	}
+	return codes, rejected
+}
+
+// formatCodes renders resolved status codes for a provenance line.
+func formatCodes(codes config.StatusCodeList) string {
+	parts := make([]string, len(codes))
+	for i, c := range codes {
+		parts[i] = strconv.Itoa(c)
+	}
+	return formatList(parts)
 }
 
 func (r *valueResolver) lowerScalar(label string, out *config.KubeConfig, vs config.KubeValueSource, raw, scope, key string) {
