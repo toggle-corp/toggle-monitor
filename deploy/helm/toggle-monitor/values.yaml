@@ -211,10 +211,12 @@ serviceMonitor:
 
 # Optional PrometheusRule for kube-prometheus-stack. Off by default.
 #
-# These are the *self*-alerting rules: they alert on toggle-monitor's
-# own /issues page — the misconfigurations it notices at runtime but
-# cannot fix (kube ingresses it can't materialize, Slack mappings that
-# don't resolve, dependsOn typos, annotation values it had to reject).
+# These are the *self*-alerting rules: they alert on the
+# misconfigurations toggle-monitor notices at runtime but cannot fix.
+# Most mirror an /issues section (kube ingresses it can't materialize,
+# Slack mappings that don't resolve, dependsOn typos, annotation values
+# it had to reject); amValueSources alerts on a counter instead, since
+# alertmanager routing has no /issues section.
 # Requires serviceMonitor.enabled (or your own scrape config) so the
 # toggle_monitor_issues gauge actually reaches Prometheus.
 #
@@ -246,6 +248,18 @@ prometheusRule:
       enabled: true
       for: 1h
       severity: info
+
+  # Alertmanager-routing value sources (ADR-0013). Not an /issues source:
+  # AM rules are evaluated per inbound alert, so there is no current set
+  # to gauge — only events to count. `window` is the increase() range,
+  # i.e. how long one rejection keeps the alert firing; keep `for` well
+  # below it, or the alert can never trip (rejections arrive hours apart,
+  # as often as Alertmanager re-delivers the offending alert).
+  amValueSources:
+    enabled: true
+    window: 6h
+    for: 0m
+    severity: info
 
   # Catches "toggle-monitor itself is gone", which no /issues source can
   # report — while this fires, none of the rules above can.

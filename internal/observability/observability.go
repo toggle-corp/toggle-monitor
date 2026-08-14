@@ -55,6 +55,12 @@ type Metrics struct {
 	AMWebhookLatencySeconds prometheus.Histogram
 	AMBatchSizeHist         prometheus.Histogram
 
+	// AMValueSourceRejectionsTotal counts annotation values an
+	// alertmanager.match `*From` block could not use (ADR-0013). AM
+	// routing has no reconcile loop, so there is no current set to put on
+	// /issues — this counter and the warn log are the whole surface.
+	AMValueSourceRejectionsTotal *prometheus.CounterVec
+
 	lastTickUnix atomic.Int64
 }
 
@@ -179,6 +185,11 @@ func New() *Metrics {
 			Help:    "Size of the alerts[] array in each AM webhook delivery.",
 			Buckets: []float64{1, 2, 5, 10, 25, 50, 100, 250},
 		}),
+		AMValueSourceRejectionsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "toggle_monitor_am_value_source_rejections_total",
+			Help: "Annotation values an alertmanager.match *From block could not use. " +
+				"The field label names the routing field; reason is a fixed code.",
+		}, []string{"field", "reason"}),
 	}
 
 	reg.MustRegister(
@@ -201,6 +212,7 @@ func New() *Metrics {
 		m.AMLateResolveTotal,
 		m.AMWebhookLatencySeconds,
 		m.AMBatchSizeHist,
+		m.AMValueSourceRejectionsTotal,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -300,6 +312,15 @@ func (m *Metrics) AMWebhookRequest(result, reason string) {
 // AMAlertProcessed increments toggle_monitor_am_alert_processed_total.
 func (m *Metrics) AMAlertProcessed(result, reason string) {
 	m.AMAlertProcessedTotal.WithLabelValues(result, reason).Inc()
+}
+
+// AMValueSourceRejected increments
+// toggle_monitor_am_value_source_rejections_total. reason must be one of
+// the alertmanager package's Code* values, which are a fixed set — the
+// human-readable Reason may embed a namespace name and would blow up
+// label cardinality.
+func (m *Metrics) AMValueSourceRejected(field, reason string) {
+	m.AMValueSourceRejectionsTotal.WithLabelValues(field, reason).Inc()
 }
 
 // AMSlackPost increments toggle_monitor_am_slack_post_total.

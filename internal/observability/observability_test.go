@@ -32,6 +32,7 @@ func TestMetrics_exposesAllDocumentedSeries(t *testing.T) {
 	m.AMLateResolve()
 	m.AMWebhookLatency(0.123)
 	m.AMBatchSize(3)
+	m.AMValueSourceRejected("slack", "value_rejected")
 	m.SetSelfDegraded(true)
 	m.SelfDegradedEntry()
 
@@ -60,6 +61,7 @@ func TestMetrics_exposesAllDocumentedSeries(t *testing.T) {
 		"toggle_monitor_am_late_resolve_total",
 		"toggle_monitor_am_webhook_latency_seconds",
 		"toggle_monitor_am_batch_size",
+		"toggle_monitor_am_value_source_rejections_total",
 		"toggle_monitor_self_degraded",
 		"toggle_monitor_self_degraded_entries_total",
 		"go_goroutines",             // Go runtime collector

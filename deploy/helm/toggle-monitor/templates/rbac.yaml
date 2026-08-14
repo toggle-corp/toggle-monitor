@@ -9,7 +9,8 @@ rules:
     resources: ["ingresses"]
     verbs: ["get", "list", "watch"]
   # Namespace annotations feed namespaceAnnotation-scoped *From value
-  # sources (ADR-0009). Required whenever a kube.match rule uses one.
+  # sources in both cascades: kube.match (ADR-0009) and
+  # alertmanager.match (ADR-0013). Required whenever either uses one.
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch"]

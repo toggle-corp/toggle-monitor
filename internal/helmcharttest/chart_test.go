@@ -13,9 +13,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -251,5 +253,86 @@ func TestChart_ClusterRoleGrantsNamespaceRead(t *testing.T) {
 	}
 	if !strings.Contains(rendered, `resources: ["namespaces"]`) {
 		t.Errorf("ClusterRole does not grant namespaces read\n--- rendered ---\n%s", rendered)
+	}
+}
+
+// AM value-source rejections have no /issues section to alert on — the
+// counter and the warn log are the whole surface (ADR-0013) — so the
+// shipped rule is the only thing that surfaces them unprompted.
+func TestChart_PrometheusRuleAlertsOnAMValueSourceRejections(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH; skipping chart render test")
+	}
+
+	rendered, err := helmTemplate(t, chartDir(t), "", []string{"prometheusRule.enabled=true"}, nil)
+	if err != nil {
+		t.Fatalf("helm template failed: %v\n--- output ---\n%s", err, rendered)
+	}
+	if !strings.Contains(rendered, "alert: ToggleMonitorAMValueSourceRejections") {
+		t.Fatal("no alert for toggle_monitor_am_value_source_rejections_total")
+	}
+	// increase(), not rate(): rejections are events that arrive only as
+	// often as Alertmanager re-delivers the offending alert, so a rate
+	// over a short window is zero most of the time.
+	if !strings.Contains(rendered, "increase(toggle_monitor_am_value_source_rejections_total[") {
+		t.Error("alert expression should use increase() over the counter")
+	}
+	// Without `by`, the alert cannot say which field or reason fired.
+	if !strings.Contains(rendered, "sum by (field, reason)") {
+		t.Error("alert expression should preserve the field/reason labels")
+	}
+
+	// The alert can only ever fire if the series stays non-zero for the
+	// whole `for` window, and increase() holds it up for exactly
+	// `window`. for >= window is a silently dead rule.
+	window, forDur := amValueSourceWindows(t, rendered)
+	if forDur >= window {
+		t.Errorf("for (%s) must be shorter than the increase window (%s), or the alert can never fire", forDur, window)
+	}
+}
+
+// amValueSourceWindows extracts the rejection alert's increase() range
+// and its `for:` from the rendered chart.
+func amValueSourceWindows(t *testing.T, rendered string) (window, forDur time.Duration) {
+	t.Helper()
+	idx := strings.Index(rendered, "alert: ToggleMonitorAMValueSourceRejections")
+	if idx < 0 {
+		t.Fatal("rejection alert not found in rendered chart")
+	}
+	block := rendered[idx:]
+	if end := strings.Index(block, "- alert: "); end > 0 {
+		block = block[:end]
+	}
+	w := regexp.MustCompile(`increase\(toggle_monitor_am_value_source_rejections_total\[([^\]]+)\]\)`).FindStringSubmatch(block)
+	f := regexp.MustCompile(`(?m)^\s*for:\s*(\S+)\s*$`).FindStringSubmatch(block)
+	if w == nil || f == nil {
+		t.Fatalf("could not read window/for from:\n%s", block)
+	}
+	var err error
+	if window, err = time.ParseDuration(w[1]); err != nil {
+		t.Fatalf("increase window %q: %v", w[1], err)
+	}
+	if forDur, err = time.ParseDuration(f[1]); err != nil {
+		t.Fatalf("for %q: %v", f[1], err)
+	}
+	return window, forDur
+}
+
+// Every rule in the block is individually toggleable.
+func TestChart_AMValueSourceRuleIsToggleable(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH; skipping chart render test")
+	}
+
+	rendered, err := helmTemplate(t, chartDir(t), "",
+		[]string{"prometheusRule.enabled=true", "prometheusRule.amValueSources.enabled=false"}, nil)
+	if err != nil {
+		t.Fatalf("helm template failed: %v\n--- output ---\n%s", err, rendered)
+	}
+	if strings.Contains(rendered, "ToggleMonitorAMValueSourceRejections") {
+		t.Error("rule rendered despite amValueSources.enabled=false")
+	}
+	if !strings.Contains(rendered, "ToggleMonitorDown") {
+		t.Error("disabling one rule should not disable the others")
 	}
 }

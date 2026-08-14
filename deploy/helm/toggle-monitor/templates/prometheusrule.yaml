@@ -71,6 +71,30 @@ spec:
               affected monitors fall back to their config-tree values. See /issues.
         {{- end }}
         {{- end }}
+        {{- if .Values.prometheusRule.amValueSources.enabled }}
+        # ADR-0013. The alertmanager cascade has no reconcile loop, so
+        # there is no /issues section for it and no gauge — a counter is
+        # the whole surface. `increase` over a long window rather than
+        # `rate` with a `for:`, because rejections are event-driven: a
+        # permanently bad annotation only increments the counter when
+        # Alertmanager re-delivers that alert (hours apart), so any
+        # condition requiring the series to be continuously non-zero
+        # would never hold. `window` is how long one rejection keeps the
+        # alert up; `for` must stay well below it.
+        - alert: ToggleMonitorAMValueSourceRejections
+          expr: >-
+            sum by (field, reason) (increase(toggle_monitor_am_value_source_rejections_total[{{ .Values.prometheusRule.amValueSources.window }}])) > 0
+          for: {{ .Values.prometheusRule.amValueSources.for }}
+          labels:
+            severity: {{ .Values.prometheusRule.amValueSources.severity }}
+          annotations:
+            summary: "{{ `{{ $value | printf \"%.0f\" }}` }} alertmanager routing value(s) rejected ({{ `{{ $labels.field }}` }}: {{ `{{ $labels.reason }}` }})"
+            description: >-
+              A namespace annotation an alertmanager.match rule reads could not be
+              used, so those alerts routed to the cascade's channel instead of the
+              namespace's. Alerts are still delivered. Check the
+              am.value_source.rejected log lines for the namespace and reason.
+        {{- end }}
         {{- if .Values.prometheusRule.scrapeHealth.enabled }}
         # The gauge above only alerts while toggle-monitor is up to
         # publish it. This is the rule that catches "the watcher itself
