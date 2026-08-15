@@ -38,24 +38,28 @@ func newExplainCmd() *cobra.Command {
 		Short: "Resolve the kube.match cascade for a live or hypothetical Ingress",
 		Long: "Walks the cascading kube.match[] tree for either a live " +
 			"Ingress (--ingress ns/name) or a synthetic one " +
-			"(--namespace + --labels + --host) and prints the resolved " +
+			"(--namespace + --labels/--annotations + --host) and prints the resolved " +
 			"monitor config plus the rule chain that produced it.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfgPath, _ := cmd.Flags().GetString("config")
 			ingressRef, _ := cmd.Flags().GetString("ingress")
 			namespace, _ := cmd.Flags().GetString("namespace")
 			labelsFlag, _ := cmd.Flags().GetString("labels")
+			annotationsFlag, _ := cmd.Flags().GetString("annotations")
+			nsAnnotationsFlag, _ := cmd.Flags().GetString("namespace-annotations")
 			hostFlag, _ := cmd.Flags().GetString("host")
 			kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
 			return runExplainCLI(cmd.Context(), explainOpts{
-				configPath: cfgPath,
-				ingressRef: ingressRef,
-				namespace:  namespace,
-				labelsFlag: labelsFlag,
-				host:       hostFlag,
-				kubeconfig: kubeconfig,
-				out:        cmd.OutOrStdout(),
-				clientFor:  defaultClientFor,
+				configPath:        cfgPath,
+				ingressRef:        ingressRef,
+				namespace:         namespace,
+				labelsFlag:        labelsFlag,
+				annotationsFlag:   annotationsFlag,
+				nsAnnotationsFlag: nsAnnotationsFlag,
+				host:              hostFlag,
+				kubeconfig:        kubeconfig,
+				out:               cmd.OutOrStdout(),
+				clientFor:         defaultClientFor,
 			})
 		},
 	}
@@ -63,6 +67,8 @@ func newExplainCmd() *cobra.Command {
 	cmd.Flags().String("ingress", "", "live mode: <namespace>/<name> of an Ingress to fetch from the cluster")
 	cmd.Flags().String("namespace", "", "hypothetical mode: namespace of the synthetic Ingress")
 	cmd.Flags().String("labels", "", "hypothetical mode: comma-separated key=value pairs for the synthetic Ingress labels (empty allowed)")
+	cmd.Flags().String("annotations", "", "hypothetical mode: comma-separated key=value pairs for the synthetic Ingress annotations (empty allowed)")
+	cmd.Flags().String("namespace-annotations", "", "hypothetical mode: comma-separated key=value pairs for the synthetic Namespace annotations (empty allowed)")
 	cmd.Flags().String("host", "", "hypothetical: host on the synthetic Ingress; live: filter to one host on the fetched Ingress")
 	cmd.Flags().String("kubeconfig", "",
 		"live mode: path to a kubeconfig file; "+
@@ -77,9 +83,13 @@ type explainOpts struct {
 	ingressRef string
 	namespace  string
 	labelsFlag string
-	host       string
-	kubeconfig string
-	out        io.Writer
+	// annotationsFlag / nsAnnotationsFlag feed the two `when:` annotation
+	// scopes (ADR-0014). Live mode reads both off the cluster instead.
+	annotationsFlag   string
+	nsAnnotationsFlag string
+	host              string
+	kubeconfig        string
+	out               io.Writer
 
 	// clientFor is the seam tests use to inject a fake clientset. nil
 	// in production wires defaultClientFor (in-cluster → kubeconfig →
@@ -91,8 +101,9 @@ type explainOpts struct {
 // report. Live and hypothetical modes share the same renderer; only
 // the Ingress construction differs.
 func runExplainCLI(ctx context.Context, opts explainOpts) error {
-	if opts.ingressRef != "" && (opts.namespace != "" || opts.labelsFlag != "") {
-		return fmt.Errorf("--ingress is mutually exclusive with --namespace/--labels (live vs hypothetical modes)")
+	if opts.ingressRef != "" && (opts.namespace != "" || opts.labelsFlag != "" ||
+		opts.annotationsFlag != "" || opts.nsAnnotationsFlag != "") {
+		return fmt.Errorf("--ingress is mutually exclusive with --namespace/--labels/--annotations/--namespace-annotations (live vs hypothetical modes)")
 	}
 	if opts.ingressRef == "" && opts.namespace == "" {
 		return fmt.Errorf("provide either --ingress ns/name (live) or --namespace + --host (hypothetical)")
@@ -135,21 +146,30 @@ func runExplainHypothetical(cfg *config.Config, opts explainOpts) error {
 	if opts.host == "" {
 		return fmt.Errorf("hypothetical mode requires --host")
 	}
-	labels, err := parseLabelsFlag(opts.labelsFlag)
+	labels, err := parsePairsFlag("--labels", opts.labelsFlag)
+	if err != nil {
+		return err
+	}
+	annotations, err := parsePairsFlag("--annotations", opts.annotationsFlag)
+	if err != nil {
+		return err
+	}
+	nsAnnotations, err := parsePairsFlag("--namespace-annotations", opts.nsAnnotationsFlag)
 	if err != nil {
 		return err
 	}
 	ing := &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: opts.namespace,
-			Name:      "(hypothetical)",
-			Labels:    labels,
+			Namespace:   opts.namespace,
+			Name:        "(hypothetical)",
+			Labels:      labels,
+			Annotations: annotations,
 		},
 		Spec: networkingv1.IngressSpec{
 			Rules: []networkingv1.IngressRule{{Host: opts.host}},
 		},
 	}
-	return writeExplainReport(opts.out, cfg, ing, opts.host, nil)
+	return writeExplainReport(opts.out, cfg, ing, opts.host, nsAnnotations)
 }
 
 // runExplainLive fetches the named Ingress from the live cluster and
@@ -228,11 +248,12 @@ func splitIngressRef(ref string) (namespace, name string, err error) {
 	return parts[0], parts[1], nil
 }
 
-// parseLabelsFlag accepts "" (empty map), "k=v", or "k=v,k2=v2"
+// parsePairsFlag accepts "" (empty map), "k=v", or "k=v,k2=v2"
 // with whitespace tolerated around keys and values. Anything that
 // doesn't parse as key=value is a hard error — silently dropping
-// malformed pairs would hide typos in selector tests.
-func parseLabelsFlag(flag string) (map[string]string, error) {
+// malformed pairs would hide typos in selector tests. name is the flag
+// the pairs came from, so the error says which one to fix.
+func parsePairsFlag(name, flag string) (map[string]string, error) {
 	out := map[string]string{}
 	flag = strings.TrimSpace(flag)
 	if flag == "" {
@@ -245,12 +266,12 @@ func parseLabelsFlag(flag string) (map[string]string, error) {
 		}
 		eq := strings.IndexByte(pair, '=')
 		if eq <= 0 {
-			return nil, fmt.Errorf("--labels entry %q is not key=value", pair)
+			return nil, fmt.Errorf("%s entry %q is not key=value", name, pair)
 		}
 		k := strings.TrimSpace(pair[:eq])
 		v := strings.TrimSpace(pair[eq+1:])
 		if k == "" {
-			return nil, fmt.Errorf("--labels entry %q has empty key", pair)
+			return nil, fmt.Errorf("%s entry %q has empty key", name, pair)
 		}
 		out[k] = v
 	}

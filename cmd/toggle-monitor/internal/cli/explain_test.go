@@ -69,6 +69,16 @@ kube:
             path: /minio/health/live
     - when: {namespace: "ignored-*"}
       ignore: true
+    - when:
+        annotations:
+          monitor.example.test/skip: "true"
+      ignore: true
+      final: true
+    - when:
+        namespaceAnnotations:
+          monitor.example.test/skip: "true"
+      ignore: true
+      final: true
 `
 
 func TestExplain_hypotheticalMaterialized(t *testing.T) {
@@ -224,5 +234,72 @@ func TestExplain_invalidIngressRef(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "<namespace>/<name>") {
 		t.Errorf("error should show expected format, got: %v", err)
+	}
+}
+
+// ADR-0014 — hypothetical mode has to be able to answer "would this
+// annotation skip the host?", so the two annotation scopes need flags
+// of their own; live mode reads both off the cluster.
+func TestExplain_hypotheticalIngressAnnotationSkips(t *testing.T) {
+	t.Parallel()
+	path := writeTempYAML(t, explainYAML)
+	out, err := run(
+		"explain",
+		"--config", path,
+		"--namespace", "acme-eoapi-3",
+		"--annotations", "monitor.example.test/skip=true",
+		"--host", "api.example.com",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\noutput:\n%s", err, out)
+	}
+	for _, want := range []string{
+		"outcome: ignored",
+		"annotations.monitor.example.test/skip=true",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in output:\n%s", want, out)
+		}
+	}
+}
+
+func TestExplain_hypotheticalNamespaceAnnotationSkips(t *testing.T) {
+	t.Parallel()
+	path := writeTempYAML(t, explainYAML)
+	out, err := run(
+		"explain",
+		"--config", path,
+		"--namespace", "acme-eoapi-3",
+		"--namespace-annotations", "monitor.example.test/skip=true",
+		"--host", "api.example.com",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\noutput:\n%s", err, out)
+	}
+	for _, want := range []string{
+		"outcome: ignored",
+		"namespaceAnnotations.monitor.example.test/skip=true",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in output:\n%s", want, out)
+		}
+	}
+}
+
+func TestExplain_annotationsMalformed(t *testing.T) {
+	t.Parallel()
+	path := writeTempYAML(t, explainYAML)
+	_, err := run(
+		"explain",
+		"--config", path,
+		"--namespace", "acme",
+		"--annotations", "no-equals-sign",
+		"--host", "api.example.com",
+	)
+	if err == nil {
+		t.Fatal("expected a malformed --annotations entry to be rejected")
+	}
+	if !strings.Contains(err.Error(), "--annotations") {
+		t.Errorf("error should name the flag it came from, got: %v", err)
 	}
 }
