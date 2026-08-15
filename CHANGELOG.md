@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.5.0](https://github.com/toggle-corp/toggle-monitor/compare/0.4.0..0.5.0) - 2026-08-15
+### Changes:
+
+#### 🚀  Features
+
+- *(web)* Add the tm-* templ component library - ([97d016e](https://github.com/toggle-corp/toggle-monitor/commit/97d016efc0640185479f24f0b075bfcbb0c189e1))
+- *(web)* Self-host Hanken Grotesk and IBM Plex Mono - ([d7b2b81](https://github.com/toggle-corp/toggle-monitor/commit/d7b2b810f527d4ab7a0897c11f3f6c4ecde97146))
+- *(web)* Add --tm-* design token layer and Tailwind mapping - ([520ef94](https://github.com/toggle-corp/toggle-monitor/commit/520ef9404ca89dff6bb9a33c32bdc2923c4dc13f))
+
+#### 🐛 Bug Fixes
+
+- *(web)* Stop washing acknowledged discovery rows and overlapping cascade keys - ([695999f](https://github.com/toggle-corp/toggle-monitor/commit/695999f78f9423423bca7b11e7f7ad1e892c09e9))
+- *(web)* Correct heading levels, status hooks, and rendering defects from the retheme - ([dc3dab2](https://github.com/toggle-corp/toggle-monitor/commit/dc3dab2cda73c8af52f8823d484b52900aa961b1))
+
+#### 🚜 Refactor
+
+- *(web)* Extend the design vocabulary to discovery and alerts - ([9c51c45](https://github.com/toggle-corp/toggle-monitor/commit/9c51c45644c82e457d321d7a40ead6d24c4a130c))
+- *(web)* Rebuild home, monitors, monitor detail, and status on the component library - ([a42bd3e](https://github.com/toggle-corp/toggle-monitor/commit/a42bd3e61c37daba186c3c0315396265f867fdfa))
+- *(web)* Retheme the layout shell, nav, and shared badges - ([ff24667](https://github.com/toggle-corp/toggle-monitor/commit/ff2466724366c32febebfac5697334d3fbfc6693))
+
+#### 🧪 Testing
+
+- *(web)* Assert status via data-* hooks instead of palette classes - ([65162d1](https://github.com/toggle-corp/toggle-monitor/commit/65162d17603b32d09ed56593ce07c9d4782e6279))
+
+
 ## [0.4.0](https://github.com/toggle-corp/toggle-monitor/compare/0.3.0..0.4.0) - 2026-08-15
 ### Changes:
 
