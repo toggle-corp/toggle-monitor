@@ -468,13 +468,16 @@ func monitorHost(s string) string {
 	return s
 }
 
-// navWrap injects per-request NavMeta (currently just the issue
-// count) into ctx so the operator-side Layout can render a badge on
-// the Issues tab without each handler having to compute it. Skipped
-// for the public /status page, which uses its own bare layout.
+// navWrap injects per-request NavMeta (the issue count and the active
+// nav section) into ctx so the operator-side Layout can render the nav
+// without each handler having to compute it. Skipped for the public
+// /status page, which uses its own bare layout.
 func (s *Server) navWrap(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		meta := templates.NavMeta{IssueCount: s.issueCount(r.Context())}
+		meta := templates.NavMeta{
+			IssueCount: s.issueCount(r.Context()),
+			Active:     templates.NavSectionFor(r.URL.Path),
+		}
 		h(w, r.WithContext(templates.WithNav(r.Context(), meta)))
 	}
 }

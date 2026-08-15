@@ -1,14 +1,47 @@
 package templates
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
-// NavMeta is the per-request nav-bar state — currently just the
-// total count of open issues. The web Server stuffs it into ctx
-// for operator routes; Layout reads it back out when rendering the
-// "Issues" nav link.
+// NavMeta is the per-request nav-bar state: the total count of open
+// issues, and which top-level section the request lands in. The web
+// Server stuffs it into ctx for operator routes; Layout reads it back
+// out when rendering the nav.
 type NavMeta struct {
 	IssueCount int
+	// Active is the href of the current section ("/monitors"), matched
+	// against the nav links to mark one current. Empty for requests
+	// outside the operator nav.
+	Active string
 }
+
+// navSection maps a request path onto the nav link that owns it, so
+// /monitor/<slug> lights up "Monitors" and /alert/<id> lights up
+// "Alerts".
+func navSection(path string) string {
+	switch {
+	case path == "/":
+		return "/"
+	case strings.HasPrefix(path, "/monitors"), strings.HasPrefix(path, "/monitor/"):
+		return "/monitors"
+	case strings.HasPrefix(path, "/status"):
+		return "/status"
+	case strings.HasPrefix(path, "/discovery"):
+		return "/discovery"
+	case strings.HasPrefix(path, "/alerts"), strings.HasPrefix(path, "/alert/"):
+		return "/alerts"
+	case strings.HasPrefix(path, "/issues"):
+		return "/issues"
+	default:
+		return ""
+	}
+}
+
+// NavSectionFor is navSection, exported for the Server's nav
+// middleware.
+func NavSectionFor(path string) string { return navSection(path) }
 
 type navCtxKey struct{}
 
