@@ -96,5 +96,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         exit 1
     fi
     run_preflight
-    exec "$SCRIPT_DIR/fugit/scripts/release.sh" "$@"
+    # fugit/scripts/release.sh runs under `set -u` and reads $1 unguarded as
+    # the pre-filled version prompt, so an argument-less invocation must still
+    # hand it one (empty) positional.
+    exec "$SCRIPT_DIR/fugit/scripts/release.sh" "${@:-}"
 fi
