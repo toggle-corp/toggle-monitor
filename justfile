@@ -76,6 +76,11 @@ templ: install-templ
 tailwind: install-tailwind
     {{tailwind_bin}} -c {{tailwind_cfg}} -i {{tailwind_in}} -o {{tailwind_out}} --minify
 
+# Re-vendor the self-hosted woff2 faces. The files are committed, so this
+# only needs running to pick up an upstream font release.
+fonts:
+    scripts/fonts.sh --force
+
 # Install every local tool into bin/.
 tools: install-golangci-lint install-templ install-tailwind
 
