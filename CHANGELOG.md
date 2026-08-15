@@ -1,5 +1,63 @@
 # Changelog
 
+## [0.4.0](https://github.com/toggle-corp/toggle-monitor/compare/0.3.0..0.4.0) - 2026-08-15
+### Changes:
+
+#### 🚀  Features
+
+- *(alertmanager)* Wire namespace annotations into the webhook handler (ADR-0013) - ([47d6caa](https://github.com/toggle-corp/toggle-monitor/commit/47d6caa16f583e55b304bc75168cc8357ead2e8c))
+- *(alertmanager)* Resolve *From annotation value sources in the cascade (ADR-0013) - ([535fc68](https://github.com/toggle-corp/toggle-monitor/commit/535fc6846942d098310f0eb04d1ba6d4b1e55624))
+- *(cli)* Add explain --annotations and --namespace-annotations - ([260b29c](https://github.com/toggle-corp/toggle-monitor/commit/260b29cef63c80e1152df28da703e94c032338f7))
+- *(config)* Add *From value sources to alertmanager.match (ADR-0013) - ([42df700](https://github.com/toggle-corp/toggle-monitor/commit/42df70008638fc84063be2c5673ec2de7c05fd85))
+- *(config)* Add acceptedStatusCodesFrom value source - ([24f06f1](https://github.com/toggle-corp/toggle-monitor/commit/24f06f1ed53a88fb1c97ffa17efc59e06d888317))
+- *(config)* Add kube.watchDebounce - ([bdbdfac](https://github.com/toggle-corp/toggle-monitor/commit/bdbdfac8c79f2af2175b2abd6dfb715427bb778c))
+- *(config)* Add *From value sources to kube.match config blocks (ADR-0009) - ([c55cfb3](https://github.com/toggle-corp/toggle-monitor/commit/c55cfb3d08edd7c26e652d803c1aec349c6f2776))
+- *(kube)* Select on Ingress and Namespace annotations in when: (ADR-0014) - ([8ef9153](https://github.com/toggle-corp/toggle-monitor/commit/8ef915326acdf97ffc7a9341b69954c47ad6e6b6))
+- *(kube)* [**breaking**] Let ignore: rules acknowledge wildcard ingress hosts (ADR-0012) - ([3b967c0](https://github.com/toggle-corp/toggle-monitor/commit/3b967c04147a791da5520c587239f1007ecb06ea))
+- *(kube)* Reconcile on ingress watch events, debounced - ([effe68a](https://github.com/toggle-corp/toggle-monitor/commit/effe68a838bf328f883bfc31d4253a0080464ead))
+- *(kube)* Watch Namespaces for annotation value sources (ADR-0009) - ([f71efb8](https://github.com/toggle-corp/toggle-monitor/commit/f71efb81a353fdb8c3d97f26a3c538605259a4d2))
+- *(merger)* Resolve *From annotation value sources into the cascade (ADR-0009) - ([d3219b9](https://github.com/toggle-corp/toggle-monitor/commit/d3219b91d3f3f1a5357fb3be92aff55ab9a50108))
+- *(observability)* Count alertmanager value-source rejections and alert on them - ([fec89d0](https://github.com/toggle-corp/toggle-monitor/commit/fec89d0935be82b9e4bc3de4213896cccd9f9fae))
+- *(observability)* Export toggle_monitor_issues gauge and ship a PrometheusRule - ([9897475](https://github.com/toggle-corp/toggle-monitor/commit/9897475f9a380b77d65c16f59df24926b7072ddb))
+- *(web)* List kube-ignored ingresses on /issues - ([6339af3](https://github.com/toggle-corp/toggle-monitor/commit/6339af3cfa7255679acd6912314571f42d8d584e))
+- *(web)* Pin the nav bar to the top on scroll - ([c31f96c](https://github.com/toggle-corp/toggle-monitor/commit/c31f96c6bf379f1814db1a6847af76f724fb363f))
+- *(web)* Show annotation provenance on the discovery detail page (ADR-0009) - ([96a9498](https://github.com/toggle-corp/toggle-monitor/commit/96a9498729aa08afba3d5c3e70b8cc0a2e87ea1e))
+- *(web)* Surface rejected annotation values on /issues (ADR-0009) - ([7fd1247](https://github.com/toggle-corp/toggle-monitor/commit/7fd12476bd93de1947387a71c6da7a9f2221a3ff))
+
+#### 🐛 Bug Fixes
+
+- *(ci)* Build release notes from CHANGELOG.md instead of git-cliff --latest - ([67495fd](https://github.com/toggle-corp/toggle-monitor/commit/67495fdd48604ab7b42e0f944a8a6ca143ad0da7))
+- *(helm)* Let the migrate Job's Helm-hook path find what it mounts - ([dd00098](https://github.com/toggle-corp/toggle-monitor/commit/dd000985ac0c51e39301502781f9b6df7ecf19f4))
+- *(kube)* [**breaking**] Anchor every branch of a namespaceRegex/hostRegex alternation - ([1895e10](https://github.com/toggle-corp/toggle-monitor/commit/1895e10c8d0e77470408eb59913b5cd6f3b8c4ce))
+- *(merger)* Prune annotation warnings for monitors that stop materializing - ([07002bf](https://github.com/toggle-corp/toggle-monitor/commit/07002bfc6bb865482b7ec312aa08956e23cd6f17))
+- *(merger,alertmanager)* Say why a value source fell back to its default - ([6acf49b](https://github.com/toggle-corp/toggle-monitor/commit/6acf49b801945b660458ff530ce0757f8e3b596c))
+- *(release)* Forward a positional to fugit so bare runs don't trip set -u - ([55debeb](https://github.com/toggle-corp/toggle-monitor/commit/55debeb3eeacc3243fd65471ef81c9a41e13421f))
+- *(web)* Render the timestamps that shipped as literal templ source - ([e24dbfd](https://github.com/toggle-corp/toggle-monitor/commit/e24dbfd0bcba4f4947e61c4e4d4fb3b9cb31255d))
+- *(web)* State the watch trigger in the discovery empty state - ([0ee4ebf](https://github.com/toggle-corp/toggle-monitor/commit/0ee4ebf7831bd9a77ab522570dec49355c7c6706))
+
+#### 🚜 Refactor
+
+- *(lifecycle)* Extract infallibleSource for the issue gauge closures - ([f9e7d1b](https://github.com/toggle-corp/toggle-monitor/commit/f9e7d1bc68a704542e07657ce35861bfa11b469c))
+
+#### 📚 Documentation
+
+- *(adr)* Add ADR-0014 annotation selectors in the kube.match tree - ([7943163](https://github.com/toggle-corp/toggle-monitor/commit/7943163cfe4ea49fa69e1cd659353db5cb510f91))
+- *(adr)* Add ADR-0013 *From value sources for alertmanager routing - ([310ac9f](https://github.com/toggle-corp/toggle-monitor/commit/310ac9fb0449124ea6ae71d65248b7c0440522b3))
+- *(adr)* Add ADR-0011 watch-driven kube removal detection - ([f761144](https://github.com/toggle-corp/toggle-monitor/commit/f761144957d35da07687dd82cfc52618ef1baea0))
+- *(adr)* Add ADR-0010 self-alerting on /issues - ([973511d](https://github.com/toggle-corp/toggle-monitor/commit/973511dbae98f5cef0e1070072178b39fabbd5ec))
+- *(adr)* Accept ADR-0009 and mark ADR-0002 amended - ([2a99b01](https://github.com/toggle-corp/toggle-monitor/commit/2a99b0107d157c4244dba064c943f062edb1eb6f))
+- *(adr)* Add ADR-0009 *From annotation value sources - ([d18f604](https://github.com/toggle-corp/toggle-monitor/commit/d18f604502903207e98f2eba35609e9324b6b96c))
+- Document annotation selectors and the app-team opt-out - ([00489bb](https://github.com/toggle-corp/toggle-monitor/commit/00489bb909e783a510bd5448ac3268f613455afd))
+- Document *From value sources for alertmanager routing - ([23af6c8](https://github.com/toggle-corp/toggle-monitor/commit/23af6c8b27eb14aa6d0bbe976007dfab6c283f3c))
+- Document acceptedStatusCodesFrom and amend ADR-0009 - ([d70249a](https://github.com/toggle-corp/toggle-monitor/commit/d70249a8195a598f9dcae005f96461a5e4a176e8))
+- Document kube.watchDebounce and the watch reconcile trigger - ([4c4faf0](https://github.com/toggle-corp/toggle-monitor/commit/4c4faf00c4f35b2e2d8f82b56513fa092b6603b5))
+- Document *From value sources and /issues self-alerting - ([98e40f2](https://github.com/toggle-corp/toggle-monitor/commit/98e40f2791a7963078664e0cb5c6590703c3a76a))
+
+#### Build
+
+- Pin golangci-lint to the CI version and note the toolchain caveat - ([6209a6f](https://github.com/toggle-corp/toggle-monitor/commit/6209a6f573e202df0dd3ea6c113d4b5c2bf6b12a))
+
+
 ## [0.3.0](https://github.com/toggle-corp/toggle-monitor/compare/0.2.0..0.3.0) - 2026-07-24
 ### Changes:
 
@@ -12,7 +70,7 @@
 - Use tagged version for fugit - ([efdd485](https://github.com/toggle-corp/toggle-monitor/commit/efdd485be78f95ce9a2d206f52f45013cd732e1a))
 
 
-## [0.2.0] - 2026-06-11
+## [0.2.0](https://github.com/toggle-corp/toggle-monitor/compare/0.2.0-dev4..0.2.0) - 2026-06-11
 ### Changes:
 
 #### 🚀  Features
