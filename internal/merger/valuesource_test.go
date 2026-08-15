@@ -105,6 +105,70 @@ func TestResolve_absentAnnotationFallsBackToDefault(t *testing.T) {
 	}
 }
 
+// A rejected value and an absent one both land on the default. They are
+// different problems for whoever wrote the annotation, and the
+// provenance line is what /discovery and the discovery_snapshot reason
+// column show them.
+func TestResolve_rejectedAnnotationProvenanceSaysRejectedNotAbsent(t *testing.T) {
+	rules := parseRules(t, vsRootYAML+`
+- when: {namespace: "acme-*"}
+  config:
+    pathFrom:
+      annotation: app.example.test/health-check
+      default: /healthz
+`)
+	ing := annotatedIng("acme-api-1", "api",
+		map[string]string{"app.example.test/health-check": "no-leading-slash"}, "api.example.test")
+
+	got := Resolve(rules, ing, "api.example.test", Env{})
+
+	if got.Config.Path != "/healthz" {
+		t.Fatalf("path = %q, want the rule's default /healthz", got.Config.Path)
+	}
+	var joined []string
+	for _, p := range got.Provenance {
+		joined = append(joined, p.String())
+	}
+	want := "path=/healthz ← default (app.example.test/health-check rejected)"
+	if !slicesContain(joined, want) {
+		t.Errorf("provenance: got %v, want it to contain %q", joined, want)
+	}
+}
+
+// A status-code annotation whose every entry is unusable also lands on
+// the default, and for the same reason must not read as absent.
+func TestResolve_rejectedStatusCodesProvenanceSaysRejected(t *testing.T) {
+	rules := parseRules(t, vsRootYAML+`
+- when: {namespace: "acme-*"}
+  config:
+    acceptedStatusCodesFrom:
+      annotation: app.example.test/accepted-status-codes
+      default: [204]
+`)
+	ing := annotatedIng("acme-api-1", "api",
+		map[string]string{"app.example.test/accepted-status-codes": "abc,999"}, "api.example.test")
+
+	got := Resolve(rules, ing, "api.example.test", Env{})
+
+	var joined []string
+	for _, p := range got.Provenance {
+		joined = append(joined, p.String())
+	}
+	want := "acceptedStatusCodes=[204] ← default (app.example.test/accepted-status-codes rejected)"
+	if !slicesContain(joined, want) {
+		t.Errorf("provenance: got %v, want it to contain %q", joined, want)
+	}
+}
+
+func slicesContain(hay []string, needle string) bool {
+	for _, h := range hay {
+		if h == needle {
+			return true
+		}
+	}
+	return false
+}
+
 func TestResolve_absentAnnotationWithoutDefaultLeavesCascadeValue(t *testing.T) {
 	rules := parseRules(t, vsRootYAML+`
 - when: {namespace: "acme-*"}

@@ -34,6 +34,18 @@ type Env struct {
 	SlackChannels        map[string]struct{}
 }
 
+// Causes a ScopeDefault value can have — why the annotation did not
+// supply it. A rejected value and an absent one resolve identically but
+// are different problems for whoever wrote the annotation, and the
+// provenance line is where that difference is read.
+const (
+	// CauseAbsent: the annotation is not set on the object.
+	CauseAbsent = "absent"
+	// CauseRejected: the annotation is set, but its value is not usable
+	// for the field.
+	CauseRejected = "rejected"
+)
+
 // Provenance records that one field's value came from an annotation
 // rather than from a literal in the rule tree. Without it, ADR-0002's
 // single-source-of-truth debugging story ("why does this monitor have
@@ -43,15 +55,23 @@ type Provenance struct {
 	Rule  string
 	Field string
 	// Key is the annotation key read. Scope says which object it was
-	// read from; for ScopeDefault it is the key that was absent.
+	// read from; for ScopeDefault it is the key that did not supply the
+	// value and Cause says why.
 	Key   string
 	Scope string
 	Value string
+	// Cause is one of the Cause* set, and is meaningful only for
+	// ScopeDefault.
+	Cause string
 }
 
 func (p Provenance) String() string {
 	if p.Scope == ScopeDefault {
-		return fmt.Sprintf("%s=%s ← default (%s absent)", p.Field, p.Value, p.Key)
+		cause := p.Cause
+		if cause == "" {
+			cause = CauseAbsent
+		}
+		return fmt.Sprintf("%s=%s ← default (%s %s)", p.Field, p.Value, p.Key, cause)
 	}
 	return fmt.Sprintf("%s=%s ← %s %s", p.Field, p.Value, p.Scope, p.Key)
 }
@@ -129,7 +149,7 @@ func (r *valueResolver) lower(label string, out *config.KubeConfig, vs config.Ku
 		if !vs.Source.HasDefault {
 			return
 		}
-		r.writeDefault(label, out, vs, key)
+		r.writeDefault(label, out, vs, key, CauseAbsent)
 		return
 	}
 
@@ -152,19 +172,21 @@ func (r *valueResolver) read(src *config.ValueSource) (raw, scope, key string) {
 	return r.ingress[src.Annotation], ScopeIngress, src.Annotation
 }
 
-// writeDefault applies the rule's `default:`. Defaults live in reviewed
-// config and were validated at load, so they are not re-checked here.
-func (r *valueResolver) writeDefault(label string, out *config.KubeConfig, vs config.KubeValueSource, key string) {
+// writeDefault applies the rule's `default:`, recording cause so the
+// provenance line says why the annotation didn't supply the value.
+// Defaults live in reviewed config and were validated at load, so they
+// are not re-checked here.
+func (r *valueResolver) writeDefault(label string, out *config.KubeConfig, vs config.KubeValueSource, key, cause string) {
 	switch vs.Kind {
 	case config.KubeValueScalar:
 		r.setScalar(out, vs.Field, vs.Source.DefaultScalar)
-		r.note(label, vs.Field, key, ScopeDefault, vs.Source.DefaultScalar)
+		r.note(label, vs.Field, key, ScopeDefault, vs.Source.DefaultScalar, cause)
 	case config.KubeValueList:
 		if len(vs.Source.DefaultList) == 0 {
 			return
 		}
 		r.setList(out, vs, vs.Source.DefaultList)
-		r.note(label, vs.Field, key, ScopeDefault, formatList(vs.Source.DefaultList))
+		r.note(label, vs.Field, key, ScopeDefault, formatList(vs.Source.DefaultList), cause)
 	case config.KubeValueStatusCodes:
 		codes, _ := parseStatusCodes(vs.Source.DefaultList)
 		if len(codes) == 0 {
@@ -172,7 +194,7 @@ func (r *valueResolver) writeDefault(label string, out *config.KubeConfig, vs co
 		}
 		out.AcceptedStatusCodes = codes
 		out.MarkSet(vs.Field)
-		r.note(label, vs.Field, key, ScopeDefault, formatList(vs.Source.DefaultList))
+		r.note(label, vs.Field, key, ScopeDefault, formatList(vs.Source.DefaultList), cause)
 	}
 }
 
@@ -190,13 +212,19 @@ func (r *valueResolver) lowerStatusCodes(label string, out *config.KubeConfig, v
 	}
 	if len(codes) == 0 {
 		if vs.Source.HasDefault {
-			r.writeDefault(label, out, vs, key)
+			// A list of separators alone splits to no entries and rejects
+			// none, which is the absent case rather than the rejected one.
+			cause := CauseAbsent
+			if len(rejected) > 0 {
+				cause = CauseRejected
+			}
+			r.writeDefault(label, out, vs, key, cause)
 		}
 		return
 	}
 	out.AcceptedStatusCodes = codes
 	out.MarkSet(vs.Field)
-	r.note(label, vs.Field, key, scope, formatCodes(codes))
+	r.note(label, vs.Field, key, scope, formatCodes(codes), "")
 }
 
 // rejectedCode pairs an unusable entry with why it was dropped.
@@ -243,12 +271,12 @@ func (r *valueResolver) lowerScalar(label string, out *config.KubeConfig, vs con
 		// garbage annotation should not also discard the reviewed
 		// fallback the operator wrote for the absent case.
 		if vs.Source.HasDefault {
-			r.writeDefault(label, out, vs, key)
+			r.writeDefault(label, out, vs, key, CauseRejected)
 		}
 		return
 	}
 	r.setScalar(out, vs.Field, value)
-	r.note(label, vs.Field, key, scope, value)
+	r.note(label, vs.Field, key, scope, value, "")
 }
 
 // checkScalar returns why value is unusable for field, or "" when it
@@ -287,7 +315,7 @@ func (r *valueResolver) lowerList(label string, out *config.KubeConfig, vs confi
 		return
 	}
 	r.setList(out, vs, kept)
-	r.note(label, vs.Field, key, scope, formatList(kept))
+	r.note(label, vs.Field, key, scope, formatList(kept), "")
 }
 
 // checkListEntry returns why entry is unusable for field, or "" when it
@@ -335,9 +363,9 @@ func (r *valueResolver) setList(out *config.KubeConfig, vs config.KubeValueSourc
 	out.MarkSet(vs.Field)
 }
 
-func (r *valueResolver) note(label, field, key, scope, value string) {
+func (r *valueResolver) note(label, field, key, scope, value, cause string) {
 	r.provenance = append(r.provenance, Provenance{
-		Rule: label, Field: field, Key: key, Scope: scope, Value: value,
+		Rule: label, Field: field, Key: key, Scope: scope, Value: value, Cause: cause,
 	})
 }
 

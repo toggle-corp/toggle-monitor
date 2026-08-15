@@ -45,6 +45,22 @@ type Env struct {
 	KnownHandle  func(slug string) bool
 }
 
+// Causes a ScopeDefault value can have — why the annotation did not
+// supply it. A rejected value and an absent one resolve identically but
+// are different operator problems, and the rule chain is where that
+// difference is read.
+const (
+	// CauseAbsent: the annotation is not set, or the alert carries no
+	// namespace label to read it from.
+	CauseAbsent = "absent"
+	// CauseRejected: the annotation is set, but its value is not usable
+	// for the field.
+	CauseRejected = "rejected"
+	// CauseUnreadable: no annotation source is wired, so the annotation
+	// could not be read at all.
+	CauseUnreadable = "unreadable"
+)
+
 // Provenance records that one field's value came from an annotation
 // rather than from a literal in the rule tree. It mirrors
 // merger.Provenance without sharing it: ADR-0005 treats each cascade's
@@ -55,16 +71,24 @@ type Provenance struct {
 	Rule  string
 	Field string
 	// Key is the annotation key read. Scope says which object it was
-	// read from; for ScopeDefault it is the key that was absent.
+	// read from; for ScopeDefault it is the key that did not supply the
+	// value and Cause says why.
 	Key   string
 	Scope string
 	Value string
+	// Cause is one of the Cause* set, and is meaningful only for
+	// ScopeDefault.
+	Cause string
 }
 
 // String renders a provenance entry for the rule-chain column.
 func (p Provenance) String() string {
 	if p.Scope == ScopeDefault {
-		return fmt.Sprintf("%s=%s ← default (%s absent)", p.Field, p.Value, p.Key)
+		cause := p.Cause
+		if cause == "" {
+			cause = CauseAbsent
+		}
+		return fmt.Sprintf("%s=%s ← default (%s %s)", p.Field, p.Value, p.Key, cause)
 	}
 	return fmt.Sprintf("%s=%s ← %s %s", p.Field, p.Value, p.Scope, p.Key)
 }
@@ -144,7 +168,7 @@ func (r *valueResolver) lower(label string, out *config.AlertmanagerMatchConfig,
 	raw, key, code, reason := r.read(vs.Source)
 	if reason != "" {
 		r.warn(label, vs.Field, key, "", code, reason)
-		r.fallback(label, out, vs, key)
+		r.fallback(label, out, vs, key, CauseUnreadable)
 		return
 	}
 
@@ -153,7 +177,7 @@ func (r *valueResolver) lower(label string, out *config.AlertmanagerMatchConfig,
 	// renders ""; reading that as "notify nobody" would silently
 	// silence a namespace on a values typo.
 	if strings.TrimSpace(raw) == "" {
-		r.fallback(label, out, vs, key)
+		r.fallback(label, out, vs, key, CauseAbsent)
 		return
 	}
 
@@ -190,24 +214,25 @@ func (r *valueResolver) read(src *config.ValueSource) (raw, key, code, reason st
 	return r.env.Namespaces.NamespaceAnnotations(namespace)[key], key, "", ""
 }
 
-// fallback applies the rule's `default:` when it has one. Defaults live
-// in reviewed config and were validated at load, so they are not
-// re-checked here. With no default the source contributes nothing and
-// the cascade value stands.
-func (r *valueResolver) fallback(label string, out *config.AlertmanagerMatchConfig, vs config.AlertmanagerValueSource, key string) {
+// fallback applies the rule's `default:` when it has one, recording
+// cause so the provenance line says why the annotation didn't supply
+// the value. Defaults live in reviewed config and were validated at
+// load, so they are not re-checked here. With no default the source
+// contributes nothing and the cascade value stands.
+func (r *valueResolver) fallback(label string, out *config.AlertmanagerMatchConfig, vs config.AlertmanagerValueSource, key, cause string) {
 	if !vs.Source.HasDefault {
 		return
 	}
 	switch vs.Kind {
 	case config.AlertmanagerValueScalar:
 		r.setScalar(out, vs.Field, vs.Source.DefaultScalar)
-		r.note(label, vs.Field, key, ScopeDefault, vs.Source.DefaultScalar)
+		r.note(label, vs.Field, key, ScopeDefault, vs.Source.DefaultScalar, cause)
 	case config.AlertmanagerValueList:
 		if len(vs.Source.DefaultList) == 0 {
 			return
 		}
 		r.setList(out, vs, vs.Source.DefaultList)
-		r.note(label, vs.Field, key, ScopeDefault, formatList(vs.Source.DefaultList))
+		r.note(label, vs.Field, key, ScopeDefault, formatList(vs.Source.DefaultList), cause)
 	}
 }
 
@@ -218,11 +243,11 @@ func (r *valueResolver) lowerScalar(label string, out *config.AlertmanagerMatchC
 		// Fall back to the default when the rule carries one — a garbage
 		// annotation should not also discard the reviewed fallback the
 		// operator wrote for the absent case.
-		r.fallback(label, out, vs, key)
+		r.fallback(label, out, vs, key, CauseRejected)
 		return
 	}
 	r.setScalar(out, vs.Field, value)
-	r.note(label, vs.Field, key, ScopeNamespace, value)
+	r.note(label, vs.Field, key, ScopeNamespace, value, "")
 }
 
 // checkScalar returns why value is unusable for field, or "" when it is
@@ -241,9 +266,11 @@ func (r *valueResolver) checkScalar(field, value string) string {
 
 func (r *valueResolver) lowerList(label string, out *config.AlertmanagerMatchConfig, vs config.AlertmanagerValueSource, raw, key string) {
 	var kept []string
+	rejected := 0
 	for _, entry := range config.SplitAnnotationList(raw) {
 		if reason := r.checkListEntry(vs.Field, entry); reason != "" {
 			r.warn(label, vs.Field, key, entry, CodeValueRejected, reason)
+			rejected++
 			continue
 		}
 		kept = append(kept, entry)
@@ -253,11 +280,17 @@ func (r *valueResolver) lowerList(label string, out *config.AlertmanagerMatchCon
 	// contribute — for the Override twin especially, replacing real
 	// recipients with an empty list would silence the alert's mentions.
 	if len(kept) == 0 {
-		r.fallback(label, out, vs, key)
+		// A list of separators alone splits to no entries and rejects
+		// none, which is the absent case rather than the rejected one.
+		cause := CauseAbsent
+		if rejected > 0 {
+			cause = CauseRejected
+		}
+		r.fallback(label, out, vs, key, cause)
 		return
 	}
 	r.setList(out, vs, kept)
-	r.note(label, vs.Field, key, ScopeNamespace, formatList(kept))
+	r.note(label, vs.Field, key, ScopeNamespace, formatList(kept), "")
 }
 
 // checkListEntry returns why entry is unusable for field, or "" when it
@@ -292,9 +325,9 @@ func (r *valueResolver) setList(out *config.AlertmanagerMatchConfig, vs config.A
 	}
 }
 
-func (r *valueResolver) note(label, field, key, scope, value string) {
+func (r *valueResolver) note(label, field, key, scope, value, cause string) {
 	r.provenance = append(r.provenance, Provenance{
-		Rule: label, Field: field, Key: key, Scope: scope, Value: value,
+		Rule: label, Field: field, Key: key, Scope: scope, Value: value, Cause: cause,
 	})
 }
 

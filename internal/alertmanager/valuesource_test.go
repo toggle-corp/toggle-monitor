@@ -580,3 +580,97 @@ func TestEvaluate_provenanceRendering_defaultScope(t *testing.T) {
 		t.Errorf("RuleChain:\n got %q\nwant %q", got.RuleChain, want)
 	}
 }
+
+// A rejected value and an absent one both land on the default, but they
+// are different operator problems: the first says "your annotation is
+// wrong", the second says "you have no annotation". The rule chain is
+// the first thing read when debugging a routing surprise, so it has to
+// tell them apart.
+func TestEvaluate_provenanceRendering_rejectedValueIsNotAbsent(t *testing.T) {
+	rules := []config.AlertmanagerMatchRule{
+		rootRule("ops-default"),
+		{
+			Config: &config.AlertmanagerMatchConfig{
+				SlackFrom: &config.ValueSource{
+					NamespaceAnnotation: "app.example.test/slack",
+					DefaultScalar:       "team-fallback",
+					HasDefault:          true,
+				},
+			},
+		},
+	}
+	env := envWith(
+		fakeNamespaces{"team-a": {"app.example.test/slack": "no-such-channel"}},
+		[]string{"ops-default", "team-fallback"}, nil,
+	)
+
+	got := alertmanager.Evaluate(rules,
+		alert(map[string]string{"alertname": "HighCPU", "namespace": "team-a"}),
+		alertmanager.Envelope{}, env)
+
+	want := "match[0] → match[1] | slack=team-fallback ← default (app.example.test/slack rejected)"
+	if got.RuleChain != want {
+		t.Errorf("RuleChain:\n got %q\nwant %q", got.RuleChain, want)
+	}
+	if len(got.Provenance) != 1 || got.Provenance[0].Cause != alertmanager.CauseRejected {
+		t.Errorf("Provenance: got %+v, want one entry with Cause=%q", got.Provenance, alertmanager.CauseRejected)
+	}
+}
+
+// With no annotation source the annotation was never read, so the chain
+// must not claim it was absent — the namespace may well carry one.
+func TestEvaluate_provenanceRendering_unreadableIsNotAbsent(t *testing.T) {
+	rules := []config.AlertmanagerMatchRule{
+		rootRule("ops-default"),
+		{
+			Config: &config.AlertmanagerMatchConfig{
+				SlackFrom: &config.ValueSource{
+					NamespaceAnnotation: "app.example.test/slack",
+					DefaultScalar:       "team-fallback",
+					HasDefault:          true,
+				},
+			},
+		},
+	}
+	env := alertmanager.Env{KnownChannel: member([]string{"ops-default", "team-fallback"})}
+
+	got := alertmanager.Evaluate(rules,
+		alert(map[string]string{"alertname": "HighCPU", "namespace": "team-a"}),
+		alertmanager.Envelope{}, env)
+
+	want := "match[0] → match[1] | slack=team-fallback ← default (app.example.test/slack unreadable)"
+	if got.RuleChain != want {
+		t.Errorf("RuleChain:\n got %q\nwant %q", got.RuleChain, want)
+	}
+}
+
+// Every entry of a list source being rejected is a rejection, not an
+// absence — the Override twin silently replacing a roster is exactly
+// the case an operator needs named accurately.
+func TestEvaluate_provenanceRendering_listWithEveryEntryRejected(t *testing.T) {
+	rules := []config.AlertmanagerMatchRule{
+		rootRule("ops-default"),
+		{
+			Config: &config.AlertmanagerMatchConfig{
+				NotifyFrom: &config.ValueSource{
+					NamespaceAnnotation: "app.example.test/notify",
+					DefaultList:         []string{"oncall"},
+					HasDefault:          true,
+				},
+			},
+		},
+	}
+	env := envWith(
+		fakeNamespaces{"team-a": {"app.example.test/notify": "ghost,phantom"}},
+		[]string{"ops-default"}, []string{"oncall"},
+	)
+
+	got := alertmanager.Evaluate(rules,
+		alert(map[string]string{"alertname": "HighCPU", "namespace": "team-a"}),
+		alertmanager.Envelope{}, env)
+
+	want := "match[0] → match[1] | notify=[oncall] ← default (app.example.test/notify rejected)"
+	if got.RuleChain != want {
+		t.Errorf("RuleChain:\n got %q\nwant %q", got.RuleChain, want)
+	}
+}
