@@ -262,6 +262,19 @@ func statusTone(kind string) Tone {
 	}
 }
 
+// discoveryRowTone is the wash a snapshot row carries, which is not the
+// same question as what its badge says. Only kube-invalid is something
+// an operator has to act on; `added`, `kube-paused` and `kube-ignored`
+// are all working-as-configured. On a real cluster the ignored rows are
+// the bulk of the listing, and tinting every one of them amber says
+// "everything needs attention", which is the opposite of the truth.
+func discoveryRowTone(status string) Tone {
+	if status == "kube-invalid" {
+		return ToneDown
+	}
+	return ToneNeutral
+}
+
 // AMSeverityTone colors an Alertmanager severity label. The vocabulary
 // covers AM's de-facto common severities; anything else (or empty)
 // falls through to neutral. Matched case-insensitively — the label

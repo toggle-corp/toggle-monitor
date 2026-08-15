@@ -105,7 +105,7 @@ templ DiscoveryListing(rows []store.DiscoverySnapshotRow, filter DiscoveryFilter
 // cascade trace, which is where an operator goes to answer "why did
 // this end up in that state?".
 templ discoveryRow(r store.DiscoverySnapshotRow) {
-	@TableRow(false, DiscoveryTone(r.Status)) {
+	@TableRow(false, discoveryRowTone(r.Status)) {
 		@TableCell("") {
 			<span class="text-muted break-all">{ r.Namespace }</span>
 		}
@@ -378,8 +378,8 @@ templ cascadeRuleCard(rt merger.RuleTrace, invalidField string) {
 // band rather than a floating box.
 templ traceEventRow(ev merger.TraceEvent, invalidField string) {
 	<div class={ "flex py-[9px] font-mono text-xs gap-2", templ.KV("bg-down-soft -mx-4 px-4", ev.Key == invalidField) }>
-		<span style={ "width:" + px(kvKeyWidth) } class="flex-none flex items-center gap-2 text-faint">
-			<span>{ ev.Key }</span>
+		<span style={ "width:" + px(kvWideKeyWidth) } class="flex-none flex flex-wrap items-center gap-x-2 gap-y-1 text-faint">
+			<span class="break-all">{ ev.Key }</span>
 			<span class={ "inline-block text-2xs px-1.5 rounded", TraceActionClass(ev.Action) }>{ string(ev.Action) }</span>
 		</span>
 		<span class="text-ink min-w-0 break-words">
