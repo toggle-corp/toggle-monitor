@@ -1,0 +1,433 @@
+package templates
+
+import "fmt"
+
+// The shared component vocabulary, recreated in templ from the
+// monitor-ui design system. Everything here reads --tm-* semantic roles
+// through the Tailwind aliases in tailwind.config.js, so a component is
+// written once and both themes follow from the token layer — there are
+// no `dark:` variants anywhere in this package.
+//
+// Page templates compose these primitives; the domain-named wrappers
+// (StatusBadge, SSLCell, TagChip, …) live in layout.templ and say what
+// a thing *is* rather than which tone it happens to render.
+
+// Dot is a bare status mark, for the places a full badge would be too
+// heavy (inside a tile header, beside a brand). Never use it as the
+// only carrier of meaning — pair it with a label.
+templ Dot(tone Tone) {
+	<span class={ "inline-block w-[7px] h-[7px] rounded-full shrink-0", toneMark(tone) } aria-hidden="true"></span>
+}
+
+// Badge is the canonical status indicator: a saturated dot plus a mono
+// text label. Pass an empty label to get the tone's default wording.
+templ Badge(tone Tone, label string) {
+	<span data-status={ string(tone) } class={ "inline-flex items-center gap-1.5 font-mono text-xs font-semibold whitespace-nowrap", toneText(tone) }>
+		@Dot(tone)
+		if label == "" {
+			{ toneLabel(tone) }
+		} else {
+			{ label }
+		}
+	</span>
+}
+
+// Chip is a compact outlined label — a tag, an HTTP code, a count. It
+// borrows the tone's text color but keeps a neutral border, so a row of
+// chips reads as one group rather than a rainbow.
+templ Chip(tone Tone) {
+	<span data-tone={ string(tone) } class={ "inline-block border border-border rounded px-[7px] py-px font-mono text-2xs font-semibold whitespace-nowrap", chipTone(tone) }>
+		{ children... }
+	</span>
+}
+
+// MonitorID renders a monitor's identity as a path — "auth/login-api",
+// or "/login-api" when it has no scope. The scope is dimmed so the name
+// itself is what the eye lands on when scanning a column.
+templ MonitorID(scope, name string) {
+	<span class="font-mono text-[13px] text-ink inline-flex items-baseline min-w-0">
+		if scope != "" {
+			<span class="text-muted shrink-0">{ scope }/</span>
+		} else {
+			<span class="text-muted shrink-0">/</span>
+		}<span class="truncate">{ name }</span>
+	</span>
+}
+
+// MetricTile is one cell of an overview rollup: a status mark, an
+// uppercase label, and a large mono count.
+templ MetricTile(tone Tone, label string, count int, vivid bool) {
+	<div data-status={ string(tone) } class="border border-border rounded-md px-3 py-[11px] min-w-[90px]">
+		<div class="flex items-center gap-1.5 mb-[7px]">
+			@Dot(tone)
+			<span class={ "font-mono text-[9.5px] uppercase tracking-[.06em]", metricTone(tone, vivid, count) }>
+				if label == "" {
+					{ toneLabel(tone) }
+				} else {
+					{ label }
+				}
+			</span>
+		</div>
+		<div class={ "font-mono text-[22px] font-semibold leading-none tabular-nums", metricTone(tone, vivid, count) }>{ fmt.Sprint(count) }</div>
+	</div>
+}
+
+// MetricTileLink is a MetricTile that navigates — the overview tiles
+// double as filtered links into the monitors listing.
+templ MetricTileLink(tone Tone, label string, count int, href string, vivid bool) {
+	<a href={ templ.URL(href) } class="rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent hover:bg-surface-hover">
+		@MetricTile(tone, label, count, vivid)
+	</a>
+}
+
+// Table is a bordered, rounded container that publishes one column
+// template to every row through the --tm-cols custom property, and
+// hairlines its children apart. Cells are ordinary elements, one per
+// column — see TableRow.
+//
+// This is a CSS grid rather than a <table> because the design's column
+// widths mix fixed and fractional tracks and the rows carry full-width
+// state washes. The table roles are declared explicitly so assistive
+// tech still reads it as tabular data.
+templ Table(cols string) {
+	<div role="table" style={ gridTemplate(cols) } class="border border-border rounded-lg overflow-hidden bg-bg [&>*]:border-t [&>*]:border-hair [&>*:first-child]:border-t-0">
+		{ children... }
+	</div>
+}
+
+// TableRow lays its cells on the shared column template. `head` styles
+// it as the header row; a non-empty tone washes the whole row, which is
+// how a down monitor stays findable in a listing of fifty.
+templ TableRow(head bool, tone Tone) {
+	<div
+		role="row"
+		class={
+			"grid grid-cols-[var(--tm-cols)] gap-3 items-center font-mono",
+			templ.KV("text-2xs font-semibold uppercase tracking-[.06em] text-faint px-4 py-[9px]", head),
+			templ.KV("text-xs text-ink px-4 py-3", !head),
+			rowWash(tone),
+		}
+	>
+		{ children... }
+	</div>
+}
+
+// TableCell is one cell of a TableRow. Cells are grid children, so a
+// cell that holds more than one thing wraps it here rather than
+// spilling extra tracks into the row.
+templ TableCell(align string) {
+	<div
+		role="cell"
+		class={ "min-w-0", templ.KV("text-right", align == "right"), templ.KV("justify-self-end", align == "right") }
+	>
+		{ children... }
+	</div>
+}
+
+// TableHeadCell is a header cell. Pass a non-empty sort ("asc" /
+// "desc") when this column is the active sort so screen readers get the
+// same signal the arrow gives sighted operators.
+templ TableHeadCell(sort string) {
+	<div
+		role="columnheader"
+		if sort != "" {
+			aria-sort={ sort }
+		}
+		class="min-w-0"
+	>
+		{ children... }
+	</div>
+}
+
+// List is a bordered container that hairlines its rows apart with no
+// divider markup, optionally under an uppercase label header. `flush`
+// drops the horizontal padding for full-bleed content.
+templ List(label string, flush bool) {
+	<div class="border border-border rounded-lg overflow-hidden bg-bg">
+		if label != "" {
+			<div class="px-[14px] py-[9px] border-b border-border font-mono text-2xs tracking-[.06em] uppercase text-faint">{ label }</div>
+		}
+		<div class={ templ.KV("px-4", !flush), "[&>*]:border-t [&>*]:border-hair [&>*:first-child]:border-t-0" }>
+			{ children... }
+		</div>
+	</div>
+}
+
+// KeyValue is one row of a List: a fixed-width dim label and a value.
+// keyWidth is the label column in pixels — widen it for a panel whose
+// labels run long rather than letting them wrap.
+templ KeyValue(label string, keyWidth int) {
+	<div class="flex py-[9px] font-mono text-xs gap-2">
+		<span style={ "width:" + px(keyWidth) } class="flex-none text-faint">{ label }</span>
+		<span class="text-ink min-w-0 break-words">{ children... }</span>
+	</div>
+}
+
+// Banner is an inline incident notice — the single loudest thing on a
+// page, so a page shows at most one.
+templ Banner(tone Tone) {
+	<div data-status={ string(tone) } class={ "border border-border rounded-lg px-[15px] py-[11px] flex items-start gap-2.5 font-mono text-xs", toneWash(tone) }>
+		<span class={ "font-semibold leading-5", toneText(tone) } aria-hidden="true">●</span>
+		<span class="text-muted min-w-0">{ children... }</span>
+	</div>
+}
+
+// Card is a generic bordered surface with an optional uppercase label
+// header.
+templ Card(label string) {
+	<div class="border border-border rounded-lg overflow-hidden bg-bg">
+		if label != "" {
+			<div class="px-[14px] py-[9px] border-b border-border font-mono text-2xs tracking-[.06em] uppercase text-faint">{ label }</div>
+		}
+		<div>
+			{ children... }
+		</div>
+	</div>
+}
+
+// SectionHeader titles a block of content, with optional dim meta text
+// beside it (a count, a hint).
+templ SectionHeader(title, meta string) {
+	<div class="flex items-center gap-2.5">
+		<h2 class="m-0 text-[13px] font-bold text-ink">{ title }</h2>
+		if meta != "" {
+			<span class="font-mono text-2xs text-faint">{ meta }</span>
+		}
+	</div>
+}
+
+// Eyebrow is the small uppercase line that names a screen and its
+// scale ("Monitors · 48 total").
+templ Eyebrow(text string) {
+	<div class="font-mono text-xs uppercase tracking-[.04em] text-faint">{ text }</div>
+}
+
+// PageTitle is a screen's main heading. Machine-derived titles (a
+// monitor slug) set mono; prose titles ("Status pages") don't.
+templ PageTitle(mono bool) {
+	<h1 class={ "m-0 text-[21px] font-bold text-ink tracking-[-.01em]", templ.KV("font-mono", mono) }>
+		{ children... }
+	</h1>
+}
+
+// Breadcrumb renders a trail whose last segment is the current page.
+// Earlier segments link when a matching href is supplied.
+templ Breadcrumb(crumbs []Crumb) {
+	<nav aria-label="Breadcrumb" class="font-mono text-xs text-muted">
+		for i, c := range crumbs {
+			if i > 0 {
+				<span class="px-1" aria-hidden="true">/</span>
+			}
+			if c.Href != "" {
+				<a href={ templ.URL(c.Href) } class="hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">{ c.Label }</a>
+			} else {
+				<span class="text-ink" aria-current="page">{ c.Label }</span>
+			}
+		}
+	</nav>
+}
+
+// Crumb is one segment of a Breadcrumb. An empty Href marks the current
+// page.
+type Crumb struct {
+	Label string
+	Href  string
+}
+
+// Link is the standard in-content link: mono, accent, underlined.
+templ Link(href string) {
+	<a href={ templ.URL(href) } class="font-mono text-xs text-accent underline underline-offset-2 hover:text-accent-strong rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+		{ children... }
+	</a>
+}
+
+// ExternalLink points off the console. It carries the target/rel pair
+// and an outbound glyph so an operator knows the tab will change.
+templ ExternalLink(href, title string) {
+	<a
+		href={ templ.URL(href) }
+		target="_blank"
+		rel="noopener noreferrer"
+		title={ title }
+		class="font-mono text-xs text-accent hover:text-accent-strong hover:underline underline-offset-2 inline-flex items-center gap-1 min-w-0 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+	>
+		{ children... }
+		@Icon("external-link", 12)
+	</a>
+}
+
+// buttonClasses is the shared shape of every button-like control.
+// primary is the filled action (ink on bg — the accent is spent on
+// navigation, not on buttons), secondary the bordered alternative,
+// ghost the low-emphasis one.
+func buttonClasses(variant string) string {
+	base := "inline-flex items-center justify-center gap-1.5 rounded-md px-3.5 py-[7px] min-h-[34px] text-[12.5px] leading-tight font-semibold cursor-pointer transition-colors active:translate-y-px focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-45"
+	switch variant {
+	case "secondary":
+		return base + " bg-transparent text-ink border border-border-strong hover:bg-surface-hover active:bg-surface-active"
+	case "ghost":
+		return base + " bg-transparent text-muted border border-transparent hover:bg-surface-hover hover:text-ink active:bg-surface-active"
+	default:
+		return base + " bg-ink text-bg border border-ink hover:bg-ink-hover hover:border-ink-hover active:bg-ink-active"
+	}
+}
+
+// Button is a form control (defaults to submit).
+templ Button(variant, buttonType string) {
+	<button
+		if buttonType != "" {
+			type={ buttonType }
+		} else {
+			type="submit"
+		}
+		class={ buttonClasses(variant) }
+	>
+		{ children... }
+	</button>
+}
+
+// LinkButton is a link wearing a button's affordance — used where the
+// action is really navigation ("clear filters" is a link to the bare
+// listing URL).
+templ LinkButton(variant, href string) {
+	<a href={ templ.URL(href) } class={ buttonClasses(variant) }>
+		{ children... }
+	</a>
+}
+
+// SearchField is the bordered search input used at the head of every
+// listing. It is a plain named input so it works inside an ordinary GET
+// form with no JavaScript.
+templ SearchField(name, placeholder, value string) {
+	<label class="flex items-center gap-2.5 border border-border rounded-md px-3 py-[9px] font-mono focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-accent">
+		<span class="text-dim flex" aria-hidden="true">
+			@Icon("search", 16)
+		</span>
+		<span class="sr-only">{ placeholder }</span>
+		<input
+			type="search"
+			name={ name }
+			value={ value }
+			placeholder={ placeholder }
+			class="border-0 bg-transparent outline-none text-ink font-mono text-[12.5px] w-full placeholder:text-dim"
+		/>
+	</label>
+}
+
+// SelectField is a native select in the design's clothing. The chevron
+// is drawn beside it because a native appearance can't be themed.
+templ SelectField(name, label string) {
+	<span class="relative inline-flex items-center">
+		<span class="sr-only">{ label }</span>
+		<select
+			name={ name }
+			aria-label={ label }
+			class="appearance-none font-mono text-[12.5px] text-ink bg-transparent border border-border rounded-md pl-[11px] pr-[30px] py-2 min-h-[34px] cursor-pointer transition-colors hover:bg-surface-hover hover:border-border-strong focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+		>
+			{ children... }
+		</select>
+		<span class="absolute right-[11px] text-faint pointer-events-none flex" aria-hidden="true">
+			@Icon("chevron-down", 12)
+		</span>
+	</span>
+}
+
+// Toolbar is the filter row that heads a listing: a search field that
+// takes the slack, then selects and actions at their natural width.
+templ Toolbar() {
+	<div class="flex flex-wrap items-center gap-2">
+		{ children... }
+	</div>
+}
+
+// Cluster is a wrapping horizontal row of natural-width items — a group
+// of tags, a pair of buttons.
+templ Cluster() {
+	<div class="flex flex-wrap items-center gap-2">
+		{ children... }
+	</div>
+}
+
+// Avatar is the letter mark that identifies a status page. color is a
+// CSS color from the page's own config, so it is applied inline.
+templ Avatar(label, color string, size int) {
+	<span
+		style={ sizeStyle(size) + ";background:" + color + ";font-size:" + px(size*46/100) }
+		class="rounded-md text-white inline-flex items-center justify-center font-bold shrink-0 select-none"
+		aria-hidden="true"
+	>
+		{ label }
+	</span>
+}
+
+// Modal is a native <dialog> in the design's clothing — the config
+// panel opens from a button on the monitor detail page and closes on
+// Escape without any of our own JavaScript.
+templ Modal(id, title string) {
+	<dialog id={ id } class="backdrop:bg-black/55 bg-transparent p-0 max-w-[560px] w-[92vw] text-ink">
+		<div class="border border-border bg-surface rounded-lg overflow-hidden">
+			<div class="flex items-center justify-between px-[18px] py-[13px] border-b border-border">
+				<span class="text-[13.5px] font-bold text-ink">{ title }</span>
+				<form method="dialog">
+					<button class="text-muted font-mono text-base leading-none hover:text-ink rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" aria-label="Close">✕</button>
+				</form>
+			</div>
+			<div class="p-4">
+				{ children... }
+			</div>
+		</div>
+	</dialog>
+}
+
+// Code is a block of machine output — a config dump, a raw payload.
+templ Code() {
+	<pre class="m-0 px-4 py-3 bg-code-bg border border-border rounded-lg font-mono text-xs leading-relaxed text-ink overflow-x-auto whitespace-pre-wrap break-words">{ children... }</pre>
+}
+
+// EmptyState is what a list shows when it has nothing — failure and
+// emptiness are the normal case in an observability tool, so they get
+// designed rather than left to fall out of the layout.
+templ EmptyState(title string) {
+	<div class="border border-border rounded-lg bg-bg px-6 py-10 text-center">
+		<div class="text-[13px] font-bold text-ink">{ title }</div>
+		<div class="mt-1.5 font-mono text-xs text-faint">
+			{ children... }
+		</div>
+	</div>
+}
+
+// Icon renders one of the small stroke icons the design uses, inline
+// and at the current text color. The set is deliberately tiny — adding
+// one means adding its path here rather than reaching for a font or a
+// CDN.
+templ Icon(name string, size int) {
+	<svg
+		data-icon={ name }
+		style={ sizeStyle(size) }
+		class="inline-block shrink-0"
+		viewBox="0 0 24 24"
+		fill="none"
+		stroke="currentColor"
+		stroke-width="2"
+		stroke-linecap="round"
+		stroke-linejoin="round"
+		aria-hidden="true"
+		focusable="false"
+	>
+		switch name {
+			case "search":
+				<circle cx="11" cy="11" r="8"></circle>
+				<path d="m21 21-4.3-4.3"></path>
+			case "chevron-down":
+				<path d="m6 9 6 6 6-6"></path>
+			case "external-link":
+				<path d="M15 3h6v6"></path>
+				<path d="M10 14 21 3"></path>
+				<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h6"></path>
+			case "triangle-alert":
+				<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path>
+				<path d="M12 9v4"></path>
+				<path d="M12 17h.01"></path>
+		}
+	</svg>
+}
