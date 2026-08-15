@@ -141,7 +141,7 @@ func TestMonitorsListing_rendersAndFilters(t *testing.T) {
 
 	// Empty result shows the clear-filters link.
 	_, body = get(t, srv.Routes(), "/monitors?q=ZZZ_NONE")
-	if !strings.Contains(body, "Clear filters") {
+	if !strings.Contains(body, "clear filters") {
 		t.Errorf("empty result should show clear-filters; got:\n%s", firstN(body, 400))
 	}
 }
@@ -220,7 +220,7 @@ func TestMonitorDetail_renders(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("monitor detail status: got %d, want 200", resp.StatusCode)
 	}
-	for _, want := range []string{"API", "http://api/health", "Service Unavailable", "503", "DOWN", "open"} {
+	for _, want := range []string{"API", "http://api/health", "Service Unavailable", "503", `data-status="down"`, "open"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("detail body missing %q", want)
 		}
@@ -281,7 +281,7 @@ func TestMonitorDetail_rendersConfigDialogAndPreset(t *testing.T) {
 		"Show config",
 		`id="monitor-config-dialog"`,
 		"showModal()",
-		"Effective configuration",
+		"Effective config",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("detail body missing dialog wiring %q", want)
@@ -344,8 +344,8 @@ func TestDiscoveryListing_namespaceAndStatusFilter(t *testing.T) {
 
 	// Empty-result state with an active filter offers a clear-filters link.
 	_, body = get(t, srv.Routes(), "/discovery?ns=does-not-exist")
-	if !strings.Contains(body, "Clear filters") {
-		t.Errorf("empty result with active filter should offer 'Clear filters'; body:\n%s", firstN(body, 800))
+	if !strings.Contains(body, "clear filters") {
+		t.Errorf("empty result with active filter should offer 'clear filters'; body:\n%s", firstN(body, 800))
 	}
 }
 
@@ -367,9 +367,9 @@ func TestNav_issueBadgeAndStatusLink(t *testing.T) {
 	if !strings.Contains(body, "Issues") {
 		t.Fatalf("homepage nav should include the Issues link; first 600:\n%s", firstN(body, 600))
 	}
-	// The badge body for count=1 is just "1" wrapped in the rose chip.
-	// The chip class string fingerprint distinguishes it from a stray "1".
-	if !strings.Contains(body, "bg-rose-100") || !strings.Contains(body, ">1<") {
+	// The badge body for count=1 is just "1" wrapped in the down chip.
+	// The data-nav-issues hook distinguishes it from a stray "1".
+	if !strings.Contains(body, "data-nav-issues") || !strings.Contains(body, ">1<") {
 		t.Errorf("expected issue-count badge with count=1; first 800:\n%s", firstN(body, 800))
 	}
 }
@@ -378,8 +378,8 @@ func TestNav_noBadgeWhenZero(t *testing.T) {
 	srv, _ := newServer(t)
 	_, body := get(t, srv.Routes(), "/")
 	// No discovery rows + no mapping reader → count is 0 → no badge.
-	// The Issues link itself still renders; the chip class shouldn't appear inside the nav anchor.
-	if strings.Contains(body, "bg-rose-100") {
+	// The Issues link itself still renders; the chip shouldn't appear inside the nav anchor.
+	if strings.Contains(body, "data-nav-issues") {
 		t.Errorf("count=0 should not render any rose chip in the nav; first 600:\n%s", firstN(body, 600))
 	}
 }
@@ -390,7 +390,7 @@ func TestStatusIndex_emptyWhenNoConfig(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("/status status: got %d, want 200", resp.StatusCode)
 	}
-	if !strings.Contains(body, "No status pages configured.") {
+	if !strings.Contains(body, "No status pages configured") {
 		t.Errorf("empty placeholder expected; first 400:\n%s", firstN(body, 400))
 	}
 }
@@ -488,8 +488,8 @@ func TestStatusPage_sectionsAndMatching(t *testing.T) {
 		"API",
 		"UI",
 		"Internal",
-		"Operational", // page-level 3-state badge (kind=up)
-		">public<",    // slug chip in the header
+		"Operational",      // page-level 3-state badge (kind=up)
+		">/status/public<", // slug chip in the header
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q; first 600:\n%s", want, firstN(body, 600))
@@ -501,11 +501,11 @@ func TestStatusPage_sectionsAndMatching(t *testing.T) {
 		t.Errorf("expected the Internal monitor to render in exactly one section; got %d occurrences", strings.Count(body, ">Internal<"))
 	}
 
-	// New URL column: the 🔗 link points at the application root
-	// (scheme+host) so operators can open the app, while the full URL
+	// New URL column: the outbound-marked link points at the application
+	// root (scheme+host) so operators can open the app, while the full URL
 	// underneath links to the health-check endpoint the monitor probes.
 	for _, want := range []string{
-		"🔗",
+		`data-icon="external-link"`,
 		">api.example.com<",
 		`href="https://api.example.com"`,        // app-root link
 		`href="https://api.example.com/health"`, // health-check link
@@ -540,7 +540,7 @@ func TestIssuesPage_missingParentsSection(t *testing.T) {
 		}
 	}
 	// Nav badge picks up the missing parent in the count.
-	if !strings.Contains(body, "bg-rose-100") {
+	if !strings.Contains(body, "data-nav-issues") {
 		t.Errorf("nav should show issue chip when missing parents exist; first 600:\n%s", firstN(body, 600))
 	}
 }
@@ -590,8 +590,8 @@ func TestIssuesPage_emptyAndKubeInvalid(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("/issues status: got %d, want 200", resp.StatusCode)
 	}
-	if !strings.Contains(body, "No issues detected.") {
-		t.Errorf("empty state should say 'No issues detected.'; first 400:\n%s", firstN(body, 400))
+	if !strings.Contains(body, "No issues detected") {
+		t.Errorf("empty state should say 'No issues detected'; first 400:\n%s", firstN(body, 400))
 	}
 
 	// Insert a kube-invalid row and verify it surfaces.
@@ -639,7 +639,8 @@ func TestIssuesPage_skippedIngressesSectionIsCappedAndUncounted(t *testing.T) {
 
 	_, body := get(t, srv.Routes(), "/issues")
 	for _, want := range []string{
-		"Skipped ingresses (" + strconv.Itoa(total) + ")",
+		"Skipped ingresses",
+		`data-issue-count="` + strconv.Itoa(total) + `"`,
 		"/discovery?status=kube-ignored",
 		"wildcard host not probeable",
 		"and 2 more",
@@ -653,7 +654,7 @@ func TestIssuesPage_skippedIngressesSectionIsCappedAndUncounted(t *testing.T) {
 		t.Errorf("preview rows: got %d, want %d (cap)", n, templates.IgnoredPreviewMax)
 	}
 	// Acknowledged rows are not issues: no count, no nav chip.
-	if !strings.Contains(body, "No issues detected.") {
+	if !strings.Contains(body, "No issues detected") {
 		t.Errorf("ignored rows must not turn into issues; first 600:\n%s", firstN(body, 600))
 	}
 }
@@ -706,7 +707,7 @@ func TestStatusPage_sslTilesSplitExpiringAndExpired(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("/status/pub status: got %d, want 200", resp.StatusCode)
 	}
-	for _, want := range []string{"SSL expiring", "SSL expired"} {
+	for _, want := range []string{"ssl exp", "expired"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("status-page tiles should include %q; first 2000:\n%s", want, firstN(body, 2000))
 		}
@@ -780,8 +781,8 @@ func TestMonitorsListing_sslColumnRendersAllStates(t *testing.T) {
 			t.Errorf("/monitors body missing SSL chip label %q; first 2000:\n%s", label, firstN(body, 2000))
 		}
 	}
-	if !strings.Contains(body, "bg-rose-100") {
-		t.Errorf("/monitors expired row should use rose chip classes; first 2000:\n%s", firstN(body, 2000))
+	if !strings.Contains(body, `data-ssl="expired" data-status="down"`) {
+		t.Errorf("/monitors expired row should carry the down status tone; first 2000:\n%s", firstN(body, 2000))
 	}
 }
 
@@ -844,10 +845,10 @@ func TestStatusPage_sslColumnRendersAllStates(t *testing.T) {
 		}
 	}
 
-	// The expired chip must use the red/rose palette (not amber), per the
+	// The expired cell must carry the down tone (not warn), per the
 	// presentation-only override.
-	if !strings.Contains(body, "bg-rose-100") {
-		t.Errorf("expired cert should render with rose/red chip classes; first 2000:\n%s", firstN(body, 2000))
+	if !strings.Contains(body, `data-ssl="expired" data-status="down"`) {
+		t.Errorf("expired cert should render with the down status tone; first 2000:\n%s", firstN(body, 2000))
 	}
 
 	// Relative dates next to expiring (future) and expired (past) certs.
@@ -931,7 +932,7 @@ func TestIssuesPage_annotationWarningsSection(t *testing.T) {
 			t.Errorf("body missing %q; first 900:\n%s", want, firstN(body, 900))
 		}
 	}
-	if !strings.Contains(body, "bg-rose-100") {
+	if !strings.Contains(body, "data-nav-issues") {
 		t.Errorf("nav should show the issue chip when annotations were rejected; first 600:\n%s", firstN(body, 600))
 	}
 }

@@ -298,8 +298,8 @@ func TestAlertsListing_filteredEmptyOffersClear(t *testing.T) {
 	if !strings.Contains(body, "No alerts match") {
 		t.Errorf("filtered-empty state should explain that filters narrowed to zero; first 1500:\n%s", firstN(body, 1500))
 	}
-	if !strings.Contains(body, "Clear filters") {
-		t.Errorf("filtered-empty state should offer 'Clear filters'; first 1500:\n%s", firstN(body, 1500))
+	if !strings.Contains(body, "clear filters") {
+		t.Errorf("filtered-empty state should offer 'clear filters'; first 1500:\n%s", firstN(body, 1500))
 	}
 }
 

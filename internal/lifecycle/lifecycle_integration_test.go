@@ -149,7 +149,7 @@ monitors:
 	for {
 		body := mustGet(t, base+"/monitor/api")
 		lastBody = body
-		if strings.Contains(body, "UP") && strings.Contains(body, "open") && strings.Contains(body, "resolve") {
+		if strings.Contains(body, `data-status="up"`) && strings.Contains(body, "open") && strings.Contains(body, "resolve") {
 			break
 		}
 		if time.Now().After(deadline) {
