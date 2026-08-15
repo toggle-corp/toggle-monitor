@@ -211,7 +211,8 @@ templ archivedBanner(m store.MonitorRow) {
 			</p>
 		} else if m.ArchivedAt != nil {
 			<p class="text-sm mb-1">
-				Archived @Timestamp(*m.ArchivedAt)
+				<span>Archived </span>
+				@Timestamp(*m.ArchivedAt)
 			</p>
 		}
 		<p class="text-sm">The state below reflects its last known values and is no longer updating.</p>

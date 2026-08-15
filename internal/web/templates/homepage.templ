@@ -302,7 +302,8 @@ templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page
 					</ul>
 					if !mapping.LastRun.IsZero() {
 						<p class="text-xs text-slate-400 dark:text-slate-500 mt-2">
-							Last checked @Timestamp(mapping.LastRun)
+							<span>Last checked </span>
+							@Timestamp(mapping.LastRun)
 						</p>
 					}
 				</div>
@@ -386,7 +387,10 @@ templ IssuesPage(view IssuesView) {
 						}
 					</ul>
 					if !mapping.LastRun.IsZero() {
-						<p class="text-xs text-slate-400 dark:text-slate-500 mt-2">Last checked @Timestamp(mapping.LastRun)</p>
+						<p class="text-xs text-slate-400 dark:text-slate-500 mt-2">
+							<span>Last checked </span>
+							@Timestamp(mapping.LastRun)
+						</p>
 					}
 				</div>
 			</section>
@@ -458,7 +462,10 @@ templ IssuesPage(view IssuesView) {
 								<span class="text-slate-500 dark:text-slate-400">referenced by</span>
 								<span class="font-medium">{ strings.Join(mp.Children, ", ") }</span>
 								if !mp.LastSeen.IsZero() {
-									<span class="ml-auto text-xs text-slate-400 dark:text-slate-500">last seen @Timestamp(mp.LastSeen)</span>
+									<span class="ml-auto text-xs text-slate-400 dark:text-slate-500">
+										<span>last seen </span>
+										@Timestamp(mp.LastSeen)
+									</span>
 								}
 							</li>
 						}
