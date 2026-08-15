@@ -322,9 +322,16 @@ grafana:
 
 # ArgoCD sync hook: a one-shot Job that runs `toggle-monitor migrate`
 # before the new app pod rolls out. Uses ArgoCD's Sync phase with
-# sync-wave ordering (SA/ConfigMap at -2, this Job at -1, Deployment at 0)
-# so the SA exists before the Job's pod starts. Disable if you're not on
-# ArgoCD — the chart falls back to Helm pre-install/pre-upgrade hooks.
+# sync-wave ordering (ConfigMap at -2, this Job at -1, Deployment at 0)
+# so the config exists before the Job's pod starts. Disable if you're
+# not on ArgoCD — the chart falls back to Helm pre-install/pre-upgrade
+# hooks.
+#
+# Under that fallback a chart-managed ConfigMap becomes a hook resource
+# too, because Helm runs every hook before any normal resource and the
+# Job mounts it. Hook resources are outside the release, so `helm
+# uninstall` leaves that ConfigMap behind; delete it by hand, or set
+# config.existingConfigMap.name and own it yourself.
 migrate:
   argoCDPreSyncHook: true
   resources:

@@ -17,6 +17,15 @@ metadata:
   annotations:
     # Create before the migrate Job (wave -1) so its volume mount resolves.
     argocd.argoproj.io/sync-wave: "-2"
+    {{- if not .Values.migrate.argoCDPreSyncHook }}
+    # Under the Helm-hook path the migrate Job is a pre-install hook, and
+    # Helm runs every hook before any normal resource. A ConfigMap the
+    # hook mounts must therefore be a hook itself, at a weight below the
+    # Job's -5. No delete policy: the Deployment mounts this same
+    # ConfigMap for the life of the release.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    {{- end }}
 data:
   {{ .Values.config.existingConfigMap.key }}: |
 {{ toYaml .Values.config.inline | indent 4 }}

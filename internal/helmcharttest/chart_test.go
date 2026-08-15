@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -334,5 +335,191 @@ func TestChart_AMValueSourceRuleIsToggleable(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "ToggleMonitorDown") {
 		t.Error("disabling one rule should not disable the others")
+	}
+}
+
+// Helm runs pre-install hooks before every normal resource in the
+// release, so anything a hook pod references must not be a normal
+// resource of that same release. The chart's ArgoCD path expresses the
+// ordering with sync waves; the Helm path has no equivalent, and a
+// dangling reference here is not a template error — it is a fresh
+// install that hangs until it times out.
+func TestChart_migrateHookReferencesNothingHelmCreatesLater(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH; skipping chart render test")
+	}
+	dir := chartDir(t)
+
+	cases := []struct {
+		name string
+		sets []string
+	}{
+		{
+			// The quickstart path: the chart renders its own ConfigMap.
+			name: "chart-managed config",
+			sets: []string{
+				`migrate.argoCDPreSyncHook=false`,
+				`config.inline.database.host=stub-pg.svc.cluster.local`,
+				`config.inline.slack.channels[0].slug=ops-alerts`,
+				`config.inline.slack.channels[0].channelId=C0123ABCD`,
+				`config.inline.slack.channels[0].tokenEnv=SLACK_BOT_TOKEN`,
+			},
+		},
+		{
+			// The operator-managed path: the ConfigMap is external, so
+			// only the ServiceAccount reference is in question.
+			name: "existing config map",
+			sets: []string{
+				`migrate.argoCDPreSyncHook=false`,
+				`config.existingConfigMap.name=external-config`,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			manifest, err := helmTemplate(t, dir, "", tc.sets, nil)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, manifest)
+			}
+			docs := decodeManifest(t, manifest)
+
+			job := findMigrateJob(t, docs)
+			if _, ok := job.Metadata.Annotations["helm.sh/hook"]; !ok {
+				t.Fatal("migrate Job is not a Helm hook — this test asserts the wrong thing")
+			}
+
+			if sa := job.Spec.Template.Spec.ServiceAccountName; sa != "" {
+				if d := findByKindName(docs, "ServiceAccount", sa); d != nil && !isHelmHook(*d) {
+					t.Errorf("migrate hook runs as ServiceAccount %q, which the chart creates as a normal resource — the hook pod cannot be admitted", sa)
+				}
+			}
+
+			for _, v := range job.Spec.Template.Spec.Volumes {
+				if v.ConfigMap.Name == "" {
+					continue
+				}
+				d := findByKindName(docs, "ConfigMap", v.ConfigMap.Name)
+				if d == nil {
+					continue // externally managed; the operator owns its lifecycle
+				}
+				if !isHelmHook(*d) {
+					t.Errorf("migrate hook mounts ConfigMap %q, which the chart creates as a normal resource — the hook pod stays pending", v.ConfigMap.Name)
+					continue
+				}
+				if hookWeight(t, *d) >= hookWeight(t, job) {
+					t.Errorf("ConfigMap %q has hook-weight %d, not below the Job's %d — Helm may create it after the hook runs",
+						v.ConfigMap.Name, hookWeight(t, *d), hookWeight(t, job))
+				}
+			}
+		})
+	}
+}
+
+// manifestDoc is the slice of a rendered document these ordering
+// assertions need.
+type manifestDoc struct {
+	Kind     string `yaml:"kind"`
+	Metadata struct {
+		Name        string            `yaml:"name"`
+		Annotations map[string]string `yaml:"annotations"`
+	} `yaml:"metadata"`
+	Spec struct {
+		Template struct {
+			Spec struct {
+				ServiceAccountName string `yaml:"serviceAccountName"`
+				Volumes            []struct {
+					Name      string `yaml:"name"`
+					ConfigMap struct {
+						Name string `yaml:"name"`
+					} `yaml:"configMap"`
+				} `yaml:"volumes"`
+			} `yaml:"spec"`
+		} `yaml:"template"`
+	} `yaml:"spec"`
+}
+
+func decodeManifest(t *testing.T, manifest string) []manifestDoc {
+	t.Helper()
+	var docs []manifestDoc
+	dec := yaml.NewDecoder(strings.NewReader(manifest))
+	for {
+		var d manifestDoc
+		err := dec.Decode(&d)
+		if errors.Is(err, io.EOF) {
+			return docs
+		}
+		if err != nil {
+			t.Fatalf("yaml decode: %v", err)
+		}
+		if d.Kind != "" {
+			docs = append(docs, d)
+		}
+	}
+}
+
+func findMigrateJob(t *testing.T, docs []manifestDoc) manifestDoc {
+	t.Helper()
+	for _, d := range docs {
+		if d.Kind == "Job" && strings.Contains(d.Metadata.Name, "migrate") {
+			return d
+		}
+	}
+	t.Fatal("no migrate Job in the rendered manifest")
+	return manifestDoc{}
+}
+
+func findByKindName(docs []manifestDoc, kind, name string) *manifestDoc {
+	for i, d := range docs {
+		if d.Kind == kind && d.Metadata.Name == name {
+			return &docs[i]
+		}
+	}
+	return nil
+}
+
+func isHelmHook(d manifestDoc) bool {
+	_, ok := d.Metadata.Annotations["helm.sh/hook"]
+	return ok
+}
+
+// hookWeight returns the resource's hook weight; Helm treats an absent
+// weight as 0.
+func hookWeight(t *testing.T, d manifestDoc) int {
+	t.Helper()
+	raw, ok := d.Metadata.Annotations["helm.sh/hook-weight"]
+	if !ok {
+		return 0
+	}
+	w, err := strconv.Atoi(raw)
+	if err != nil {
+		t.Fatalf("hook-weight %q on %s/%s is not an integer: %v", raw, d.Kind, d.Metadata.Name, err)
+	}
+	return w
+}
+
+// The ArgoCD path orders the same resources with sync waves. Helm hook
+// annotations there would take the ConfigMap out of the release Argo
+// tracks, so they must appear only under the Helm-hook path.
+func TestChart_argoCDPathLeavesTheConfigMapANormalResource(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH; skipping chart render test")
+	}
+
+	manifest, err := helmTemplate(t, chartDir(t), "", []string{
+		`migrate.argoCDPreSyncHook=true`,
+		`config.inline.database.host=stub-pg.svc.cluster.local`,
+		`config.inline.slack.channels[0].slug=ops-alerts`,
+		`config.inline.slack.channels[0].channelId=C0123ABCD`,
+		`config.inline.slack.channels[0].tokenEnv=SLACK_BOT_TOKEN`,
+	}, nil)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, manifest)
+	}
+
+	for _, d := range decodeManifest(t, manifest) {
+		if d.Kind == "ConfigMap" && isHelmHook(d) {
+			t.Errorf("ConfigMap %q carries helm.sh/hook under the ArgoCD path", d.Metadata.Name)
+		}
 	}
 }

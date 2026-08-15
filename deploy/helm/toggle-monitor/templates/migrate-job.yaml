@@ -26,7 +26,11 @@ spec:
       labels: {{- include "toggle-monitor.selectorLabels" . | nindent 8 }}
     spec:
       restartPolicy: Never
-      serviceAccountName: {{ include "toggle-monitor.serviceAccountName" . }}
+      # No serviceAccountName: `migrate` reads the mounted config and
+      # talks to Postgres, and touches no Kubernetes API, so it runs as
+      # the namespace default. That also keeps it independent of the
+      # chart's own ServiceAccount, which under the Helm-hook path below
+      # would not exist yet when this pod is admitted.
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
