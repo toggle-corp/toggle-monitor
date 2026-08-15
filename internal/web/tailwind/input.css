@@ -2,18 +2,206 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Highlight the currently-selected theme button. Driven by the
-   `data-theme` attribute set on <html> by the themeBoot + themeToggle
-   scripts in layout.templ. */
-html[data-theme="light"] [data-theme-set="light"],
-html[data-theme="dark"]  [data-theme-set="dark"],
-html[data-theme="system"] [data-theme-set="system"] {
-  background-color: rgb(15 23 42); /* slate-900 */
-  color: rgb(255 255 255);
+/* ============================================================
+   Self-hosted faces. Files live in internal/web/static/fonts/
+   and ship through the `//go:embed all:static` tree in web.go,
+   so the console renders with no third-party network reachable.
+   Refresh them with scripts/fonts.sh.
+   ============================================================ */
+@font-face {
+  font-family: "Hanken Grotesk";
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url("/static/fonts/hanken-grotesk-latin.woff2") format("woff2");
 }
-html.dark[data-theme="light"] [data-theme-set="light"],
-html.dark[data-theme="dark"]  [data-theme-set="dark"],
-html.dark[data-theme="system"] [data-theme-set="system"] {
-  background-color: rgb(226 232 240); /* slate-200 */
-  color: rgb(15 23 42);
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-mono-latin-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-mono-latin-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-mono-latin-600.woff2") format("woff2");
+}
+
+/* ============================================================
+   TOKENS — the whole primitive layer: a warm-graphite neutral
+   ramp, an indigo accent, the type & spacing scales. No external
+   design system; every value is literal here and everything else
+   authors against --tm-*.
+   ============================================================ */
+:root {
+  --tm-font-sans: 'Hanken Grotesk', system-ui, sans-serif;
+  --tm-font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  /* warm-graphite ramp (hue ~60) */
+  --tm-neutral-0:   oklch(0.993 0.002 70);
+  --tm-neutral-50:  oklch(0.981 0.003 70);
+  --tm-neutral-100: oklch(0.962 0.004 70);
+  --tm-neutral-150: oklch(0.945 0.004 70);
+  --tm-neutral-200: oklch(0.918 0.005 68);
+  --tm-neutral-300: oklch(0.872 0.006 66);
+  --tm-neutral-400: oklch(0.735 0.008 62);
+  --tm-neutral-500: oklch(0.612 0.009 58);
+  --tm-neutral-600: oklch(0.508 0.010 56);
+  --tm-neutral-700: oklch(0.405 0.011 54);
+  --tm-neutral-800: oklch(0.305 0.012 52);
+  --tm-neutral-900: oklch(0.235 0.013 50);
+  --tm-neutral-950: oklch(0.175 0.013 48);
+  /* spacing — 4px base grid */
+  --tm-space-3xs: 2px;
+  --tm-space-2xs: 4px;
+  --tm-space-xs:  8px;
+  --tm-space-sm:  12px;
+  --tm-space-md:  16px;
+  --tm-space-lg:  24px;
+  --tm-space-xl:  32px;
+  --tm-space-2xl: 48px;
+  --tm-space-3xl: 64px;
+  --tm-space-4xl: 96px;
+  /* radii */
+  --tm-radius-xs:   4px;
+  --tm-radius-sm:   6px;
+  --tm-radius-md:   8px;
+  --tm-radius-full: 999px;
+  --tm-shadow-xs:   0 1px 2px oklch(0.3 0.02 60 / 0.06);
+  /* type scale — ~1.25 major third */
+  --tm-fs-h1:   clamp(2.25rem, 1.6rem + 2.6vw, 3.05rem);
+  --tm-fs-h2:   2.441rem;
+  --tm-fs-h3:   1.953rem;
+  --tm-fs-h4:   1.563rem;
+  --tm-fs-h5:      1.25rem;
+  --tm-fs-body-lg: 1.125rem;
+  --tm-fs-body:    1.0625rem;
+  --tm-fs-body-sm:   0.875rem;
+  --tm-fs-body-xs: 0.75rem;
+  --tm-fs-body-2xs:   0.6875rem;
+  /* indigo accent */
+  --tm-indigo:        oklch(0.500 0.175 270);
+  --tm-indigo-strong: oklch(0.440 0.170 270);
+  --tm-indigo-text:   oklch(0.460 0.170 272);
+  --tm-indigo-soft:   oklch(0.955 0.030 272);
+  --tm-indigo-border: oklch(0.880 0.055 272);
+  /* status */
+  --tm-success: oklch(0.560 0.115 150);
+  --tm-error:   oklch(0.560 0.180 27);
+  --tm-warning: oklch(0.700 0.140 75);
+}
+
+/* ============================================================
+   Operator theme = a thin semantic layer over the tokens above.
+   Both themes read opposite ends of the same warm-graphite ramp.
+   Light is the :root default so a no-JS render is sane; themeBoot
+   in layout.templ puts `dark` on <html> for the dark end.
+
+   The role values use oklch() relative color syntax and
+   color-mix(); keeping them symbolic rather than pre-computed is
+   what makes the ramp editable from one place.
+   ============================================================ */
+:root {
+  /* Native widgets the tokens can't reach — the datetime picker's
+     calendar glyph, the select popup, autofill — follow this. */
+  color-scheme: light;
+  --tm-bg:            var(--tm-neutral-50);
+  --tm-surface:       var(--tm-neutral-0);
+  --tm-surface-muted: var(--tm-neutral-100);
+  --tm-border:        var(--tm-neutral-200);
+  --tm-border-strong: var(--tm-neutral-300);
+  --tm-hair:          var(--tm-neutral-150);
+  --tm-text:          var(--tm-neutral-900);
+  --tm-muted:         var(--tm-neutral-600);
+  --tm-faint:         var(--tm-neutral-500);
+  --tm-dim:           var(--tm-neutral-400);
+  --tm-accent:        var(--tm-indigo-text);
+  --tm-accent-strong: var(--tm-indigo-strong);
+  --tm-accent-soft:   var(--tm-indigo-soft);
+  --tm-accent-border: var(--tm-indigo-border);
+  --tm-code-bg:       var(--tm-neutral-100);
+  /* status on light — success/error meet AA as-is; warning is darkened
+     (0.70 amber fails on white as text) while its mark stays bright */
+  --tm-up:   oklch(from var(--tm-success) 0.52 0.12 h);  --tm-up-mark:   var(--tm-success);
+  --tm-down: var(--tm-error);                            --tm-down-mark: var(--tm-error);
+  --tm-warn: oklch(from var(--tm-warning) 0.52 0.14 h);  --tm-warn-mark: var(--tm-warning);
+  --tm-idle: var(--tm-neutral-500);
+  --tm-surface-hover:  var(--tm-neutral-100);
+  --tm-surface-active: var(--tm-neutral-200);
+  --tm-ink-hover:      var(--tm-neutral-800);
+  --tm-ink-active:     var(--tm-neutral-700);
+  /* status soft washes — a status color mixed into the live bg, so the
+     tint follows whichever theme is active (no hardcoded rgba) */
+  --tm-success-soft: color-mix(in oklab, var(--tm-success) 15%, var(--tm-bg));
+  --tm-error-soft:   color-mix(in oklab, var(--tm-error) 15%, var(--tm-bg));
+  --tm-warning-soft: color-mix(in oklab, var(--tm-warning) 15%, var(--tm-bg));
+  --tm-idle-soft:    color-mix(in oklab, var(--tm-neutral-500) 15%, var(--tm-bg));
+}
+
+html.dark {
+  color-scheme: dark;
+  --tm-bg:            var(--tm-neutral-950);
+  --tm-surface:       var(--tm-neutral-900);
+  --tm-surface-muted: var(--tm-neutral-800);
+  --tm-border:        var(--tm-neutral-800);
+  --tm-border-strong: var(--tm-neutral-700);
+  --tm-hair:          var(--tm-neutral-900);
+  --tm-text:          var(--tm-neutral-50);
+  --tm-muted:         var(--tm-neutral-400);
+  --tm-faint:         var(--tm-neutral-500);
+  --tm-dim:           var(--tm-neutral-600);
+  --tm-accent:        oklch(from var(--tm-indigo) 0.72 0.16 h);
+  --tm-accent-strong: oklch(from var(--tm-indigo) 0.82 0.15 h);
+  --tm-accent-soft:   color-mix(in oklab, var(--tm-indigo) 20%, var(--tm-bg));
+  --tm-accent-border: color-mix(in oklab, var(--tm-indigo) 42%, var(--tm-bg));
+  --tm-code-bg:       var(--tm-neutral-950);
+  /* status — same hues, lightened for AA contrast on the dark bg. Text
+     tones lift in lightness; the dot/fill marks stay saturated. */
+  --tm-up:   oklch(from var(--tm-success) 0.80 0.15 h);  --tm-up-mark:   var(--tm-success);
+  --tm-down: oklch(from var(--tm-error)   0.72 0.17 h);  --tm-down-mark: var(--tm-error);
+  --tm-warn: oklch(from var(--tm-warning) 0.82 0.15 h);  --tm-warn-mark: var(--tm-warning);
+  --tm-idle: var(--tm-neutral-400);
+  --tm-surface-hover:  var(--tm-neutral-800);
+  --tm-surface-active: var(--tm-neutral-700);
+  --tm-ink-hover:      var(--tm-neutral-200);
+  --tm-ink-active:     var(--tm-neutral-300);
+  --tm-success-soft: color-mix(in oklab, var(--tm-success) 15%, var(--tm-bg));
+  --tm-error-soft:   color-mix(in oklab, var(--tm-error) 15%, var(--tm-bg));
+  --tm-warning-soft: color-mix(in oklab, var(--tm-warning) 15%, var(--tm-bg));
+  --tm-idle-soft:    color-mix(in oklab, var(--tm-neutral-500) 15%, var(--tm-bg));
+}
+
+/* Optical sizing so the sans and mono faces share an x-height. */
+html {
+  font-size-adjust: 0.5;
+}
+
+::-webkit-scrollbar {
+  height: 10px;
+  width: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--tm-border-strong);
+  border-radius: var(--tm-radius-md);
+}
+
+/* Highlight the currently-selected theme cell in the segmented
+   control. Driven by the `data-theme` attribute set on <html> by
+   the themeBoot + themeToggle scripts in layout.templ — the raw
+   preference, so "system" stays distinguishable from whichever of
+   light/dark it currently resolves to. */
+html[data-theme="light"]  [data-theme-set="light"],
+html[data-theme="dark"]   [data-theme-set="dark"],
+html[data-theme="system"] [data-theme-set="system"] {
+  background-color: var(--tm-border);
+  color: var(--tm-text);
 }
