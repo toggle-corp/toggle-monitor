@@ -502,7 +502,7 @@ func visitRule(
 	chain *ruleChain,
 	vr *valueResolver,
 ) (halt bool) {
-	if !whenMatches(r.When, ing, host) {
+	if !whenMatches(r.When, ing, host, vr.namespaceAnnotations()) {
 		return false
 	}
 	step := label + selectorSummary(r.When)
@@ -746,7 +746,11 @@ func validHTTPMethod(m string) bool {
 
 // whenMatches returns true iff every set field on w matches the
 // Ingress + host. Empty selector ({}) matches everything.
-func whenMatches(w config.KubeMatchWhen, ing *networkingv1.Ingress, host string) bool {
+//
+// nsAnnotations carries the Namespace's annotations, which no field of
+// the Ingress holds; a nil map matches nothing but an empty selector,
+// which is how a caller with no namespace source behaves.
+func whenMatches(w config.KubeMatchWhen, ing *networkingv1.Ingress, host string, nsAnnotations map[string]string) bool {
 	if w.Namespace != "" && !matchGlob(w.Namespace, ing.Namespace) {
 		return false
 	}
@@ -759,11 +763,26 @@ func whenMatches(w config.KubeMatchWhen, ing *networkingv1.Ingress, host string)
 	if w.HostRegex != "" && !matchRegex(w.HostRegex, host) {
 		return false
 	}
-	if len(w.Labels) > 0 {
-		for k, v := range w.Labels {
-			if ing.Labels[k] != v {
-				return false
-			}
+	if !mapContains(ing.Labels, w.Labels) {
+		return false
+	}
+	if !mapContains(ing.Annotations, w.Annotations) {
+		return false
+	}
+	if !mapContains(nsAnnotations, w.NamespaceAnnotations) {
+		return false
+	}
+	return true
+}
+
+// mapContains reports whether have holds every pair in want. An absent
+// key never matches, so `skip: ""` selects only objects that carry the
+// key set to the empty string, not those missing it.
+func mapContains(have, want map[string]string) bool {
+	for k, v := range want {
+		got, ok := have[k]
+		if !ok || got != v {
+			return false
 		}
 	}
 	return true
@@ -790,21 +809,33 @@ func selectorSummary(w config.KubeMatchWhen) string {
 	if w.HostRegex != "" {
 		parts = append(parts, "hostRegex="+w.HostRegex)
 	}
-	if len(w.Labels) > 0 {
-		keys := make([]string, 0, len(w.Labels))
-		for k := range w.Labels {
-			keys = append(keys, k)
-		}
-		// stdlib sort — deterministic chain across reconciles.
-		sort.Strings(keys)
-		for _, k := range keys {
-			parts = append(parts, "labels."+k+"="+w.Labels[k])
-		}
-	}
+	parts = append(parts, mapSummary("labels", w.Labels)...)
+	parts = append(parts, mapSummary("annotations", w.Annotations)...)
+	parts = append(parts, mapSummary("namespaceAnnotations", w.NamespaceAnnotations)...)
 	if len(parts) == 0 {
 		return " ()"
 	}
 	return " (" + strings.Join(parts, ", ") + ")"
+}
+
+// mapSummary renders one map-valued selector dimension as sorted
+// `<field>.<key>=<value>` parts. Map iteration order is
+// non-deterministic; sorting keeps the chain string reproducible across
+// reconciles so the operator-facing /discovery view doesn't flap.
+func mapSummary(field string, m map[string]string) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, field+"."+k+"="+m[k])
+	}
+	return parts
 }
 
 // CurrentPlans returns the scheduler plans for every currently

@@ -120,6 +120,14 @@ func newValueResolver(ingressAnnotations map[string]string, env Env) *valueResol
 	}
 }
 
+// namespaceAnnotations exposes the Namespace annotations the resolver
+// was built with. `when:` selects on the same map (ADR-0014), and the
+// resolver is already threaded through the walk, so the two readers
+// share one copy rather than the walk carrying it twice.
+func (r *valueResolver) namespaceAnnotations() map[string]string {
+	return r.namespace
+}
+
 // apply returns the config block as the merge stack should see it: the
 // original when the rule declares no `*From` block, otherwise a copy
 // with each resolvable source lowered to its literal field.

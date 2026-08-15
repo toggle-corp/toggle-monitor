@@ -1947,3 +1947,55 @@ func TestLoad_kube_watchDebounceOutOfRangeRejected(t *testing.T) {
 		})
 	}
 }
+
+// ADR-0014 — annotation selectors. A rule whose only selector is an
+// annotation map is a real selector, not the root baseline, so it may
+// carry final: true. If the emptiness check missed the new fields this
+// would be rejected as "final with empty when:".
+func TestLoad_kube_acceptsFinalOnAnnotationOnlySelector(t *testing.T) {
+	tree := kubeRootBaseline + `    - when:
+        annotations:
+          monitor.example.test/skip: "true"
+      ignore: true
+      final: true
+    - when:
+        namespaceAnnotations:
+          monitor.example.test/skip: "true"
+      ignore: true
+      final: true
+`
+	if _, err := config.Load(withKubeBlock(tree)); err != nil {
+		t.Fatalf("annotation-only selectors should satisfy the final: invariant, got: %v", err)
+	}
+}
+
+func TestLoad_kube_rejectsInvalidAnnotationSelectorKey(t *testing.T) {
+	for _, field := range []string{"annotations", "namespaceAnnotations"} {
+		t.Run(field, func(t *testing.T) {
+			tree := kubeRootBaseline + `    - when:
+        ` + field + `:
+          "BAD!KEY": "value"
+`
+			_, err := config.Load(withKubeBlock(tree))
+			if err == nil {
+				t.Fatal("expected invalid annotation key to be rejected")
+			}
+			if !strings.Contains(err.Error(), "invalid k8s annotation key") {
+				t.Errorf("error should call out annotation-key syntax, got: %v", err)
+			}
+		})
+	}
+}
+
+// An annotation value is any string — annotations have no value
+// grammar — so a selector must not reject one the way a label would.
+func TestLoad_kube_acceptsArbitraryAnnotationValue(t *testing.T) {
+	tree := kubeRootBaseline + `    - when:
+        annotations:
+          monitor.example.test/reason: "decommissioned 2026-08-15; see TICKET-123"
+      ignore: true
+`
+	if _, err := config.Load(withKubeBlock(tree)); err != nil {
+		t.Fatalf("annotation values are unconstrained, got: %v", err)
+	}
+}

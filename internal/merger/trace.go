@@ -130,7 +130,7 @@ func visitRuleTraced(
 	acc *traceAccumulator,
 	vr *valueResolver,
 ) bool {
-	if !whenMatches(r.When, ing, host) {
+	if !whenMatches(r.When, ing, host, vr.namespaceAnnotations()) {
 		return false
 	}
 	when := selectorSummary(r.When)

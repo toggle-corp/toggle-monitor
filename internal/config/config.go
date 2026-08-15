@@ -192,6 +192,14 @@ type KubeMatchWhen struct {
 	Host           string            `yaml:"host,omitempty"`
 	HostRegex      string            `yaml:"hostRegex,omitempty"`
 	Labels         map[string]string `yaml:"labels,omitempty"`
+
+	// Annotations and NamespaceAnnotations select on the two scopes
+	// ADR-0009 named: the Ingress itself and its Namespace. Matching is
+	// the same as Labels — every pair must be present and equal — which
+	// is what lets an app team's own annotation mean whatever the
+	// operator's rule says it means, and nothing more (ADR-0014).
+	Annotations          map[string]string `yaml:"annotations,omitempty"`
+	NamespaceAnnotations map[string]string `yaml:"namespaceAnnotations,omitempty"`
 }
 
 // KubeConfig is the monitor-field block inside a kube.match rule.
@@ -1863,7 +1871,8 @@ func (c *checker) validateKube(cfg *Config, slackChannels, proxies map[string]st
 // (zero / nil). Used to detect the mandatory root baseline.
 func kubeWhenIsEmpty(w KubeMatchWhen) bool {
 	return w.Namespace == "" && w.NamespaceRegex == "" &&
-		w.Host == "" && w.HostRegex == "" && len(w.Labels) == 0
+		w.Host == "" && w.HostRegex == "" && len(w.Labels) == 0 &&
+		len(w.Annotations) == 0 && len(w.NamespaceAnnotations) == 0
 }
 
 // checkKubeRequiredAtRoot verifies the root rule's Config sets every
@@ -2028,6 +2037,19 @@ func (c *checker) validateKubeWhen(w *KubeMatchWhen, base []any) {
 		if errs := validation.IsQualifiedName(key); len(errs) > 0 {
 			c.errf(append(append([]any{}, base...), "labels", key),
 				"invalid k8s label key %q: %s", key, strings.Join(errs, "; "))
+		}
+	}
+	// Annotation values are unconstrained by k8s, so only the keys are
+	// checked — an annotation may legally hold any string.
+	for field, m := range map[string]map[string]string{
+		"annotations":          w.Annotations,
+		"namespaceAnnotations": w.NamespaceAnnotations,
+	} {
+		for key := range m {
+			if errs := validation.IsQualifiedName(key); len(errs) > 0 {
+				c.errf(append(append([]any{}, base...), field, key),
+					"invalid k8s annotation key %q: %s", key, strings.Join(errs, "; "))
+			}
 		}
 	}
 }
