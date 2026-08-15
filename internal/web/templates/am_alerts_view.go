@@ -279,35 +279,6 @@ func formatDuration(d time.Duration) string {
 	return strconv.Itoa(days) + "d " + strconv.Itoa(hrs) + "h"
 }
 
-// severityBadgeClasses tints the severity chip on the AM rows. The
-// vocabulary covers AM's de-facto common severities; anything else
-// (or empty) falls through to neutral slate.
-func severityBadgeClasses(s string) string {
-	switch strings.ToLower(s) {
-	case "critical", "page":
-		return "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300"
-	case "warning", "warn":
-		return "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
-	case "info":
-		return "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300"
-	default:
-		return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
-	}
-}
-
-// amStatusBadgeClasses tints the firing / resolved chip on the AM
-// listing rows and detail header.
-func amStatusBadgeClasses(s string) string {
-	switch s {
-	case "firing":
-		return "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300"
-	case "resolved":
-		return "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
-	default:
-		return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
-	}
-}
-
 // amStatusLabel renders the loud status word on the detail page
 // header — uppercase for visual weight; the chip remains lowercase
 // on the listing.

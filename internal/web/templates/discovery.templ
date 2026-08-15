@@ -24,9 +24,13 @@ type DiscoveryFilter struct {
 	Status    string // exact match: added | kube-paused | kube-invalid | kube-ignored
 }
 
+// discoveryCols is the snapshot listing's column template: namespace,
+// ingress, host, status, reason, materialized monitor.
+const discoveryCols = ".9fr 1.1fr 1.4fr .9fr 1.6fr 1.1fr"
+
 templ DiscoveryListing(rows []store.DiscoverySnapshotRow, filter DiscoveryFilter, status DiscoveryStatus) {
 	@Layout("Auto-discovery") {
-		<h1 class="text-xl font-semibold mb-3">Auto-discovery snapshot</h1>
+		@Eyebrow("Auto-discovery snapshot · " + summary(rows))
 		if status.KubeEnabled {
 			<form
 				hx-get="/discovery"
@@ -34,70 +38,99 @@ templ DiscoveryListing(rows []store.DiscoverySnapshotRow, filter DiscoveryFilter
 				hx-push-url="true"
 				method="get"
 				action="/discovery"
-				class="flex flex-wrap items-end gap-3 mb-4 bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-3"
 			>
-				<div>
-					<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="ns">Namespace</label>
-					<input id="ns" name="ns" value={ filter.Namespace } class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm" placeholder="exact or glob (e.g. test-*)"/>
-				</div>
-				<div>
-					<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="status">Status</label>
-					<select id="status" name="status" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
-						<option value="" selected?={ filter.Status == "" }>(any)</option>
+				@Toolbar() {
+					<div class="flex-1 min-w-[200px]">
+						@SearchField("ns", "namespace — exact or glob (e.g. test-*)", filter.Namespace)
+					</div>
+					@SelectField("status", "Status") {
+						<option value="" selected?={ filter.Status == "" }>status: any</option>
 						<option value="added" selected?={ filter.Status == "added" }>added</option>
 						<option value="kube-paused" selected?={ filter.Status == "kube-paused" }>kube-paused</option>
 						<option value="kube-invalid" selected?={ filter.Status == "kube-invalid" }>kube-invalid</option>
 						<option value="kube-ignored" selected?={ filter.Status == "kube-ignored" }>kube-ignored</option>
-					</select>
-				</div>
-				<button class="bg-slate-900 dark:bg-slate-200 dark:text-slate-900 text-white text-sm px-3 py-1.5 rounded">Apply</button>
-				if filter.Namespace != "" || filter.Status != "" {
-					<a class="text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100" href="/discovery">Clear filters</a>
+					}
+					@Button("primary", "submit") {
+						apply
+					}
+					if filter.Namespace != "" || filter.Status != "" {
+						@LinkButton("ghost", "/discovery") {
+							clear
+						}
+					}
 				}
 			</form>
 		}
 		if len(rows) == 0 {
 			if filter.Namespace != "" || filter.Status != "" {
-				<div class="rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 text-sm">
-					<p class="text-slate-600 dark:text-slate-400">No discovery rows match the current filters. <a class="text-blue-700 dark:text-blue-400 hover:underline" href="/discovery">Clear filters</a>.</p>
-				</div>
+				@EmptyState("No discovery rows match the current filters") {
+					<a class="text-accent underline underline-offset-2 hover:text-accent-strong" href="/discovery">clear filters</a>
+				}
 			} else {
 				@discoveryEmptyState(status)
 			}
 		} else {
-			<div class="mb-3 text-sm text-slate-600 dark:text-slate-400">{ summary(rows) }</div>
-			<table class="w-full bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 overflow-hidden">
-				<thead>
-					<tr class="bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
-						<th class="py-2 px-3">Namespace</th>
-						<th class="py-2 px-3">Ingress</th>
-						<th class="py-2 px-3">Host</th>
-						<th class="py-2 px-3">Status</th>
-						<th class="py-2 px-3">Reason</th>
-						<th class="py-2 px-3">Monitor</th>
-					</tr>
-				</thead>
-				<tbody>
-					for _, r := range rows {
-						<tr class="border-b border-slate-100 dark:border-slate-800">
-							<td class="py-2 px-3 text-sm">{ r.Namespace }</td>
-							<td class="py-2 px-3 text-sm">{ r.IngressName }</td>
-							<td class="py-2 px-3 text-sm">{ r.Host }</td>
-							<td class="py-2 px-3 text-sm">@DiscoveryBadge(r.Status)</td>
-							<td class="py-2 px-3 text-sm text-slate-500 dark:text-slate-400">
-								if r.Reason != nil {
-									{ *r.Reason }
-								}
-							</td>
-							<td class="py-2 px-3 text-sm">
-								if r.MonitorSlug != nil {
-									<a class="text-blue-700 dark:text-blue-400 hover:underline" href={ templ.URL("/monitor/" + *r.MonitorSlug) }>{ *r.MonitorSlug }</a>
-								}
-							</td>
-						</tr>
+			<div class="overflow-x-auto">
+				@Table(discoveryCols) {
+					@TableRow(true, "") {
+						@TableHeadCell("") {
+							namespace
+						}
+						@TableHeadCell("") {
+							ingress
+						}
+						@TableHeadCell("") {
+							host
+						}
+						@TableHeadCell("") {
+							status
+						}
+						@TableHeadCell("") {
+							reason
+						}
+						@TableHeadCell("") {
+							monitor
+						}
 					}
-				</tbody>
-			</table>
+					for _, r := range rows {
+						@discoveryRow(r)
+					}
+				}
+			</div>
+		}
+	}
+}
+
+// discoveryRow is one snapshot row. The ingress name links to the
+// cascade trace, which is where an operator goes to answer "why did
+// this end up in that state?".
+templ discoveryRow(r store.DiscoverySnapshotRow) {
+	@TableRow(false, DiscoveryTone(r.Status)) {
+		@TableCell("") {
+			<span class="text-muted break-all">{ r.Namespace }</span>
+		}
+		@TableCell("") {
+			<a class="text-accent hover:text-accent-strong hover:underline underline-offset-2 break-all rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.URL("/discovery/" + r.Namespace + "/" + r.IngressName + "/" + r.Host) }>{ r.IngressName }</a>
+		}
+		@TableCell("") {
+			<span class="break-all">{ r.Host }</span>
+		}
+		@TableCell("") {
+			@DiscoveryBadge(r.Status)
+		}
+		@TableCell("") {
+			if r.Reason != nil && *r.Reason != "" {
+				<span class="text-muted break-words">{ *r.Reason }</span>
+			} else {
+				@Dash()
+			}
+		}
+		@TableCell("") {
+			if r.MonitorSlug != nil {
+				<a class="text-accent hover:text-accent-strong hover:underline underline-offset-2 break-all rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.URL("/monitor/" + *r.MonitorSlug) }>{ *r.MonitorSlug }</a>
+			} else {
+				@Dash()
+			}
 		}
 	}
 }
@@ -111,49 +144,45 @@ templ DiscoveryListing(rows []store.DiscoverySnapshotRow, filter DiscoveryFilter
 // resyncInterval is the ceiling when watch-driven reconciles are off.
 templ discoveryEmptyState(s DiscoveryStatus) {
 	if !s.KubeEnabled {
-		<div class="rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 text-sm">
-			<p class="font-medium text-slate-700 dark:text-slate-200 mb-1">Auto-discovery is disabled.</p>
-			<p class="text-slate-500 dark:text-slate-400">The <code class="text-xs">kube</code> block is not set in <code class="text-xs">config.yaml</code>. Add one to start watching cluster ingresses — see <code class="text-xs">docs/config-example.yaml</code>.</p>
-		</div>
+		@EmptyState("Auto-discovery is disabled") {
+			The <span class="text-ink">kube</span> block is not set in <span class="text-ink">config.yaml</span>. Add one to start watching cluster ingresses — see <span class="text-ink">docs/config-example.yaml</span>.
+		}
 	} else {
-		<div class="rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 text-sm">
-			<p class="font-medium text-slate-700 dark:text-slate-200 mb-1">Auto-discovery is enabled — no ingresses observed yet.</p>
-			<p class="text-slate-500 dark:text-slate-400">
-				if s.WatchDebounce > 0 {
-					The watcher picks up a new Ingress about { humanInterval(s.WatchDebounce) } after it appears, and re-reconciles every { humanInterval(s.ResyncInterval) } regardless.
-				} else {
-					The watcher reconciles every { humanInterval(s.ResyncInterval) }.
-				}
-				If your cluster has Ingress resources and this stays empty, check the app logs for <code class="text-xs">kube reconcile failed</code> or RBAC errors on <code class="text-xs">networking.k8s.io/ingresses</code>.
-			</p>
-		</div>
+		@EmptyState("Auto-discovery is enabled — no ingresses observed yet") {
+			if s.WatchDebounce > 0 {
+				The watcher picks up a new Ingress about { humanInterval(s.WatchDebounce) } after it appears, and re-reconciles every { humanInterval(s.ResyncInterval) } regardless.
+			} else {
+				The watcher reconciles every { humanInterval(s.ResyncInterval) }.
+			}
+			If your cluster has Ingress resources and this stays empty, check the app logs for <span class="text-ink">kube reconcile failed</span> or RBAC errors on <span class="text-ink">networking.k8s.io/ingresses</span>.
+		}
 	}
 }
 
 templ DiscoveryDetail(view DiscoveryDetailView) {
 	{{ row := view.Row }}
 	@Layout("Discovery — "+row.IngressName) {
-		<h1 class="text-xl font-semibold mb-3">{ row.Namespace }/{ row.IngressName } · { row.Host }</h1>
-		<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6">
-			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Snapshot</h2>
-			<dl>
-				<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-					<dt class="text-sm text-slate-500 dark:text-slate-400">Status</dt>
-					<dd class="text-sm col-span-2">@DiscoveryBadge(row.Status)</dd>
-				</div>
-				if row.Reason != nil {
-					@kv("Reason", *row.Reason)
+		@Breadcrumb([]Crumb{{Label: "Discovery", Href: "/discovery"}, {Label: row.Namespace + "/" + row.IngressName}})
+		<div class="flex flex-wrap items-center gap-3.5">
+			@PageTitle(true) {
+				@MonitorID(row.Namespace, row.IngressName)
+			}
+			@DiscoveryBadge(row.Status)
+			<span class="font-mono text-xs text-muted">{ row.Host }</span>
+		</div>
+		@List("Snapshot", false) {
+			@KeyValue("status", kvKeyWidth) {
+				@DiscoveryBadge(row.Status)
+			}
+			if row.Reason != nil {
+				@kv("reason", *row.Reason)
+			}
+			if row.MonitorSlug != nil {
+				@KeyValue("materialized monitor", kvKeyWidth) {
+					<a class="text-accent hover:text-accent-strong underline underline-offset-2 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.URL("/monitor/" + *row.MonitorSlug) }>{ *row.MonitorSlug }</a>
 				}
-				if row.MonitorSlug != nil {
-					<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-						<dt class="text-sm text-slate-500 dark:text-slate-400">Materialized monitor</dt>
-						<dd class="text-sm col-span-2 break-words">
-							<a class="text-blue-700 dark:text-blue-400 hover:underline" href={ templ.URL("/monitor/" + *row.MonitorSlug) }>{ *row.MonitorSlug }</a>
-						</dd>
-					</div>
-				}
-			</dl>
-		</section>
+			}
+		}
 		@annotationSources(view)
 		@cascadeSection(view)
 	}
@@ -167,39 +196,43 @@ templ DiscoveryDetail(view DiscoveryDetailView) {
 // entirely for a literals-only cascade.
 templ annotationSources(view DiscoveryDetailView) {
 	if len(view.Provenance) > 0 || len(view.Warnings) > 0 {
-		<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6">
-			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Annotation sources</h2>
+		<section class="flex flex-col gap-3">
+			@SectionHeader("Annotation sources", "")
 			if len(view.Provenance) > 0 {
-				<ul class="text-sm divide-y divide-slate-100 dark:divide-slate-800 mb-2">
+				@List("", false) {
 					for _, p := range view.Provenance {
-						<li class="py-1.5 flex flex-wrap gap-2 items-baseline">
-							<span class="font-medium">{ p.Field }</span>
-							<span class="text-slate-700 dark:text-slate-300">{ p.Value }</span>
-							<span class="text-slate-400 dark:text-slate-500">←</span>
-							<span class="text-slate-500 dark:text-slate-400">{ p.Scope }</span>
-							<code class="font-mono text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">{ p.Key }</code>
-							<span class="ml-auto text-xs text-slate-400 dark:text-slate-500">{ p.Rule }</span>
-						</li>
+						<div class="flex flex-wrap gap-2 items-baseline py-[9px] font-mono text-xs">
+							<span class="text-ink">{ p.Field }</span>
+							<span class="text-muted">{ p.Value }</span>
+							<span class="text-dim" aria-hidden="true">←</span>
+							<span class="text-faint">{ p.Scope }</span>
+							@Chip(ToneNeutral) {
+								{ p.Key }
+							}
+							<span class="ml-auto text-dim">{ p.Rule }</span>
+						</div>
 					}
-				</ul>
+				}
 			}
 			if len(view.Warnings) > 0 {
-				<div class="rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 p-3">
-					<p class="text-sm font-medium text-amber-900 dark:text-amber-200 mb-1">Rejected annotation values</p>
-					<p class="text-xs text-amber-800 dark:text-amber-300 mb-2">The monitor still probes on its cascade value. Fix the annotation to make it take effect.</p>
-					<ul class="text-sm space-y-1">
-						for _, w := range view.Warnings {
-							<li class="flex flex-wrap gap-2 items-baseline">
-								<span class="font-medium">{ w.Field }</span>
-								<span class="text-slate-500 dark:text-slate-400">{ w.Scope }</span>
-								<code class="font-mono text-xs px-1.5 py-0.5 rounded bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300">{ w.Key }</code>
-								<span class="font-medium text-amber-900 dark:text-amber-200">{ w.Value }</span>
-								<span class="text-slate-600 dark:text-slate-400">{ w.Reason }</span>
-								<span class="ml-auto text-xs text-slate-400 dark:text-slate-500">{ w.Rule }</span>
-							</li>
-						}
-					</ul>
-				</div>
+				@Banner(ToneWarn) {
+					<span class="text-ink font-semibold">Rejected annotation values.</span>
+					<span> The monitor still probes on its cascade value. Fix the annotation to make it take effect.</span>
+				}
+				@List("", false) {
+					for _, w := range view.Warnings {
+						<div class="flex flex-wrap gap-2 items-baseline py-[9px] font-mono text-xs">
+							<span class="text-ink">{ w.Field }</span>
+							<span class="text-faint">{ w.Scope }</span>
+							@Chip(ToneNeutral) {
+								{ w.Key }
+							}
+							<span class="text-warn font-semibold">{ w.Value }</span>
+							<span class="text-muted">{ w.Reason }</span>
+							<span class="ml-auto text-dim">{ w.Rule }</span>
+						</div>
+					}
+				}
 			}
 		</section>
 	}
@@ -227,7 +260,7 @@ templ cascadeSection(view DiscoveryDetailView) {
 			@cascadeRules(view.Trace, view.InvalidField)
 			@cascadeResolved(view.Resolved, view.InvalidField, view.Slug)
 		case DiscoveryOutcomeMaterialized:
-			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Match cascade</h2>
+			@SectionHeader("Match cascade", "")
 			@cascadeRules(view.Trace, "")
 			@cascadeResolved(view.Resolved, "", view.Slug)
 	}
@@ -237,10 +270,9 @@ templ cascadeSection(view DiscoveryDetailView) {
 // there's no in-memory match tree to walk. Operators land here
 // usually via a stale link; they need a pointer back to /discovery.
 templ cascadeBannerDisabled() {
-	<div class="rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 p-4 text-sm">
-		<p class="font-medium text-slate-700 dark:text-slate-200 mb-1">Cascade unavailable — kube auto-discovery is disabled.</p>
-		<p class="text-slate-500 dark:text-slate-400">Add a <code class="text-xs">kube:</code> block to <code class="text-xs">config.yaml</code> to enable the live cascade view.</p>
-	</div>
+	@EmptyState("Cascade unavailable — kube auto-discovery is disabled") {
+		Add a <span class="text-ink">kube:</span> block to <span class="text-ink">config.yaml</span> to enable the live cascade view.
+	}
 }
 
 // cascadeBannerStale — the snapshot row exists but the ingress is
@@ -248,10 +280,10 @@ templ cascadeBannerDisabled() {
 // Per the design grilling: hard 410-style banner with no
 // reconstructed cascade.
 templ cascadeBannerStale() {
-	<div class="rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 p-4 text-sm">
-		<p class="font-medium mb-1">Cascade unavailable — ingress no longer present in cluster.</p>
-		<p>The snapshot row above is the last persisted result. To see the live cascade again, re-create the Ingress or wait for the next reconcile to pick it up.</p>
-	</div>
+	@Banner(ToneWarn) {
+		<span class="text-ink font-semibold">Cascade unavailable — ingress no longer present in cluster.</span>
+		<span> The snapshot above is the last persisted result. To see the live cascade again, re-create the Ingress or wait for the next reconcile to pick it up.</span>
+	}
 }
 
 // cascadeBannerNoMatch — should be unreachable in production (the
@@ -259,10 +291,9 @@ templ cascadeBannerStale() {
 // configs do change and we want a graceful message rather than a
 // confusing blank section.
 templ cascadeBannerNoMatch() {
-	<div class="rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 text-sm">
-		<p class="font-medium text-slate-700 dark:text-slate-200 mb-1">No kube.match rule matched this ingress/host.</p>
-		<p class="text-slate-500 dark:text-slate-400">Production configs require a root rule with an empty <code class="text-xs">when:</code>. Check <code class="text-xs">config.yaml</code> — the root rule may be missing or have an unintended selector.</p>
-	</div>
+	@EmptyState("No kube.match rule matched this ingress/host") {
+		Production configs require a root rule with an empty <span class="text-ink">when:</span>. Check <span class="text-ink">config.yaml</span> — the root rule may be missing or have an unintended selector.
+	}
 }
 
 // cascadeBannerIgnored highlights which rule flipped ignore so the
@@ -271,14 +302,14 @@ templ cascadeBannerNoMatch() {
 // the resolved block below reads as "would have materialized as…",
 // which is not true for a host no prober can resolve (ADR-0012).
 templ cascadeBannerIgnored(view DiscoveryDetailView) {
-	<div class="rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 p-4 mb-4 text-sm">
-		<p class="font-medium mb-1">This ingress is ignored — no monitor was materialized.</p>
-		<p>A rule below set <code class="text-xs">ignore: true</code>. The cascade is still shown so you can see <em>which</em> rule made the call.</p>
+	@Banner(ToneWarn) {
+		<span class="text-ink font-semibold">This ingress is ignored — no monitor was materialized.</span>
+		<span> A rule below set <span class="text-ink">ignore: true</span>. The cascade is still shown so you can see which rule made the call.</span>
 		if view.WildcardHost {
-			<p class="mt-1">This host is a wildcard, so no monitor was possible here regardless of the rule — <code class="text-xs">https://{ view.Row.Host }/</code> never resolves.</p>
+			<span> This host is a wildcard, so no monitor was possible here regardless of the rule — <span class="text-ink">https://{ view.Row.Host }/</span> never resolves.</span>
 		}
-	</div>
-	<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Match cascade</h2>
+	}
+	@SectionHeader("Match cascade", "")
 }
 
 // cascadeBannerInvalid surfaces the materialization blocker — a
@@ -287,27 +318,24 @@ templ cascadeBannerIgnored(view DiscoveryDetailView) {
 // resolved value. The rule trace is still rendered so the operator can
 // see which rule wrote the field that triggered a validation failure.
 templ cascadeBannerInvalid(view DiscoveryDetailView) {
-	<div class="rounded border border-rose-300 dark:border-rose-700 bg-rose-50 dark:bg-rose-950/40 text-rose-900 dark:text-rose-200 p-4 mb-4 text-sm">
+	@Banner(ToneDown) {
 		if view.WildcardHost {
-			<p class="font-medium mb-1">Host is not probeable — daemon emitted <code class="text-xs">kube-invalid</code>.</p>
-			<p class="mb-1">Acknowledge it with a matching <code class="text-xs">ignore: true</code> rule to record it as <code class="text-xs">kube-ignored</code> instead.</p>
+			<span class="text-ink font-semibold">Host is not probeable — daemon emitted <span class="text-down">kube-invalid</span>.</span>
+			<span> Acknowledge it with a matching <span class="text-ink">ignore: true</span> rule to record it as <span class="text-ink">kube-ignored</span> instead.</span>
 		} else {
-			<p class="font-medium mb-1">Resolved config is invalid — daemon emitted <code class="text-xs">kube-invalid</code>.</p>
+			<span class="text-ink font-semibold">Resolved config is invalid — daemon emitted <span class="text-down">kube-invalid</span>.</span>
 		}
-		<p class="font-mono text-xs break-words">{ view.InvalidError }</p>
-	</div>
-	<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Match cascade</h2>
+		<span class="block mt-1 break-words">{ view.InvalidError }</span>
+	}
+	@SectionHeader("Match cascade", "")
 }
 
 // cascadeRules renders one card per matched rule. invalidField is
 // passed through so each event card can highlight a row whose key
 // matches the offending field.
 templ cascadeRules(traces []merger.RuleTrace, invalidField string) {
-	<div class="mb-6">
-		for i, rt := range traces {
-			if i > 0 {
-				<div class="mt-3"></div>
-			}
+	<div class="flex flex-col gap-3">
+		for _, rt := range traces {
 			@cascadeRuleCard(rt, invalidField)
 		}
 	</div>
@@ -317,52 +345,47 @@ templ cascadeRules(traces []merger.RuleTrace, invalidField string) {
 // the rule label + selector summary + final flag; body lists the
 // per-key events.
 templ cascadeRuleCard(rt merger.RuleTrace, invalidField string) {
-	<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 overflow-hidden">
-		<header class="flex items-center gap-2 px-4 py-2 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800">
-			<code class="text-sm font-mono text-slate-700 dark:text-slate-200">{ rt.Label }</code>
+	<section class="border border-border rounded-lg overflow-hidden bg-bg">
+		<header class="flex items-center gap-2 px-4 py-2 border-b border-border bg-surface-muted font-mono text-xs">
+			<span class="text-ink">{ rt.Label }</span>
 			if rt.When != " ()" {
-				<span class="text-xs text-slate-500 dark:text-slate-400 font-mono">{ rt.When }</span>
+				<span class="text-faint">{ rt.When }</span>
 			}
 			if rt.Final {
-				<span class="ml-auto inline-block text-xs uppercase tracking-wide px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">final</span>
+				<span class="ml-auto">
+					@Chip(ToneDown) {
+						final
+					}
+				</span>
 			}
 		</header>
 		if len(rt.Events) == 0 {
-			<div class="px-4 py-2 text-xs text-slate-500 dark:text-slate-400 italic">no config writes — selector match only</div>
+			<div class="px-4 py-2 font-mono text-2xs text-faint">no config writes — selector match only</div>
 		} else {
-			<dl class="px-4 py-1">
+			<div class="px-4 [&>*]:border-t [&>*]:border-hair [&>*:first-child]:border-t-0">
 				for _, ev := range rt.Events {
 					@traceEventRow(ev, invalidField)
 				}
-			</dl>
+			</div>
 		}
 	</section>
 }
 
-// traceEventRow renders one (rule, key) write. Layout mirrors the
-// kv() helper so operators read these the same way they read the
-// monitor detail page: 3-column grid, monospace key on the left,
-// value (with diff annotations) on the right.
+// traceEventRow renders one (rule, key) write in the shared key-value
+// shape, so operators read these the same way they read the monitor
+// detail page. The row whose key failed validation carries the down
+// wash, extended to the section's edges so the highlight reads as a
+// band rather than a floating box.
 templ traceEventRow(ev merger.TraceEvent, invalidField string) {
-	if ev.Key == invalidField {
-		<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0 bg-rose-50 dark:bg-rose-900/40 -mx-4 px-4">
-			@traceEventRowBody(ev)
-		</div>
-	} else {
-		<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-			@traceEventRowBody(ev)
-		</div>
-	}
-}
-
-templ traceEventRowBody(ev merger.TraceEvent) {
-	<dt class="text-sm font-mono text-slate-500 dark:text-slate-400 flex items-center gap-2">
-		<span>{ ev.Key }</span>
-		<span class={ "inline-block text-xs font-mono px-1.5 py-0.5 rounded " + TraceActionClass(ev.Action) }>{ string(ev.Action) }</span>
-	</dt>
-	<dd class="text-sm text-slate-900 dark:text-slate-100 col-span-2 break-words">
-		@traceEventValue(ev)
-	</dd>
+	<div class={ "flex py-[9px] font-mono text-xs gap-2", templ.KV("bg-down-soft -mx-4 px-4", ev.Key == invalidField) }>
+		<span style={ "width:" + px(kvKeyWidth) } class="flex-none flex items-center gap-2 text-faint">
+			<span>{ ev.Key }</span>
+			<span class={ "inline-block text-2xs px-1.5 rounded", TraceActionClass(ev.Action) }>{ string(ev.Action) }</span>
+		</span>
+		<span class="text-ink min-w-0 break-words">
+			@traceEventValue(ev)
+		</span>
+	</div>
 }
 
 // traceEventValue picks the right "what changed" rendering for the
@@ -373,58 +396,52 @@ templ traceEventValue(ev merger.TraceEvent) {
 	switch ev.Action {
 		case merger.TraceSet:
 			if len(ev.NewList) > 0 {
-				<code class="font-mono text-xs">{ FormatTraceList(ev.NewList) }</code>
+				{ FormatTraceList(ev.NewList) }
 			} else {
-				<code class="font-mono text-xs">{ ev.NewValue }</code>
+				{ ev.NewValue }
 			}
 		case merger.TraceReplace:
 			if len(ev.NewList) > 0 || len(ev.OldList) > 0 {
-				<code class="font-mono text-xs line-through text-slate-400 dark:text-slate-500">{ FormatTraceList(ev.OldList) }</code>
-				<span class="px-1 text-slate-400">→</span>
-				<code class="font-mono text-xs">{ FormatTraceList(ev.NewList) }</code>
+				<span class="line-through text-dim">{ FormatTraceList(ev.OldList) }</span>
+				<span class="px-1 text-dim" aria-hidden="true">→</span>
+				{ FormatTraceList(ev.NewList) }
 			} else {
-				<code class="font-mono text-xs line-through text-slate-400 dark:text-slate-500">{ ev.OldValue }</code>
-				<span class="px-1 text-slate-400">→</span>
-				<code class="font-mono text-xs">{ ev.NewValue }</code>
+				<span class="line-through text-dim">{ ev.OldValue }</span>
+				<span class="px-1 text-dim" aria-hidden="true">→</span>
+				{ ev.NewValue }
 			}
 		case merger.TraceAdd:
 			for i, v := range ev.Added {
 				if i > 0 {
-					<span class="text-slate-400">, </span>
+					<span class="text-dim">, </span>
 				}
-				<span class="text-emerald-700 dark:text-emerald-300">+ </span>
-				<code class="font-mono text-xs">{ v }</code>
+				<span class="text-up">+ </span>
+				{ v }
 			}
-			<span class="text-slate-400 text-xs ml-2">(now { FormatTraceList(ev.NewList) })</span>
+			<span class="text-dim text-2xs ml-2">(now { FormatTraceList(ev.NewList) })</span>
 		case merger.TraceOverride:
-			<code class="font-mono text-xs line-through text-slate-400 dark:text-slate-500">{ FormatTraceList(ev.OldList) }</code>
-			<span class="px-1 text-slate-400">→</span>
-			<code class="font-mono text-xs">{ FormatTraceList(ev.NewList) }</code>
-			<span class="text-xs text-rose-700 dark:text-rose-300 ml-2">!override</span>
+			<span class="line-through text-dim">{ FormatTraceList(ev.OldList) }</span>
+			<span class="px-1 text-dim" aria-hidden="true">→</span>
+			{ FormatTraceList(ev.NewList) }
+			<span class="text-down text-2xs ml-2">!override</span>
 	}
 }
 
-// cascadeResolved renders the final resolved KubeConfig using the
-// same @kv-shaped row pattern as the monitor detail page. When
-// invalidField is non-empty, the row for that key is tinted red so
-// the operator's eye lands on the failing field. Slug, when
-// non-empty, links to the materialized monitor.
+// cascadeResolved renders the final resolved KubeConfig using the same
+// key-value rows as the monitor detail page. When invalidField is
+// non-empty, the row for that key carries the down wash so the
+// operator's eye lands on the failing field. Slug, when non-empty,
+// links to the materialized monitor.
 templ cascadeResolved(resolved *config.KubeConfig, invalidField, slug string) {
 	if resolved != nil {
-		<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6">
-			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Resolved</h2>
-			<dl>
-				if slug != "" {
-					<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-						<dt class="text-sm text-slate-500 dark:text-slate-400">Monitor slug</dt>
-						<dd class="text-sm text-slate-900 dark:text-slate-100 col-span-2 break-words">
-							<a class="text-blue-700 dark:text-blue-400 hover:underline font-mono" href={ templ.URL("/monitor/" + slug) }>{ slug }</a>
-						</dd>
-					</div>
+		@List("Resolved", false) {
+			if slug != "" {
+				@KeyValue("monitor slug", kvWideKeyWidth) {
+					<a class="text-accent hover:text-accent-strong underline underline-offset-2 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.URL("/monitor/" + slug) }>{ slug }</a>
 				}
-				@resolvedRows(resolved, invalidField)
-			</dl>
-		</section>
+			}
+			@resolvedRows(resolved, invalidField)
+		}
 	}
 }
 
@@ -433,14 +450,12 @@ templ cascadeResolved(resolved *config.KubeConfig, invalidField, slug string) {
 // matching the locked design for the ignored outcome.
 templ cascadeResolvedWouldHaveBeen(resolved *config.KubeConfig) {
 	if resolved != nil {
-		<details class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 mb-6">
-			<summary class="cursor-pointer px-4 py-2 text-sm text-slate-600 dark:text-slate-300 select-none">
-				Would have materialized as… <span class="text-xs text-slate-400">(click to expand)</span>
+		<details class="border border-border rounded-lg overflow-hidden bg-bg">
+			<summary class="cursor-pointer select-none px-[14px] py-[9px] font-mono text-2xs tracking-[.06em] uppercase text-faint hover:text-ink">
+				Would have materialized as… <span class="text-dim">(click to expand)</span>
 			</summary>
-			<div class="px-4 py-3 border-t border-slate-100 dark:border-slate-800">
-				<dl>
-					@resolvedRows(resolved, "")
-				</dl>
+			<div class="px-4 border-t border-border [&>*]:border-t [&>*]:border-hair [&>*:first-child]:border-t-0">
+				@resolvedRows(resolved, "")
 			</div>
 		</details>
 	}
@@ -450,63 +465,61 @@ templ cascadeResolvedWouldHaveBeen(resolved *config.KubeConfig) {
 // the monitor detail page so the Resolved card and the "Show config"
 // dialog read identically. Each scalar runs through the same helper
 // (humanInterval, boolYesNo) the monitor detail page uses; HTTP
-// codes go through @kvHTTPCodes for the colored chip treatment;
-// tags go through @kvTags. The invalidField argument is the YAML
-// key (e.g. "interval") of the field that failed checkResolved —
-// rows whose backing key matches are wrapped in a rose-tinted
-// variant so the operator's eye lands on the failing field.
+// codes go through @kvHTTPCodes for the toned chip treatment; tags go
+// through @kvTags. The invalidField argument is the YAML key (e.g.
+// "interval") of the field that failed checkResolved — rows whose
+// backing key matches carry the down wash so the operator's eye lands
+// on the failing field.
 templ resolvedRows(r *config.KubeConfig, invalidField string) {
-	@resolvedKV("Scheme", r.Scheme, "scheme", invalidField)
-	@resolvedKV("Path", r.Path, "path", invalidField)
-	@resolvedKV("HTTP method", r.HTTPMethod, "httpMethod", invalidField)
+	@resolvedKV("scheme", r.Scheme, "scheme", invalidField)
+	@resolvedKV("path", r.Path, "path", invalidField)
+	@resolvedKV("http method", r.HTTPMethod, "httpMethod", invalidField)
 	if "acceptedStatusCodes" == invalidField {
-		@resolvedKV("Accepted status codes", FormatTraceList(intsToTraceList(r.AcceptedStatusCodes)), "acceptedStatusCodes", invalidField)
+		@resolvedKV("accepted codes", FormatTraceList(intsToTraceList(r.AcceptedStatusCodes)), "acceptedStatusCodes", invalidField)
 	} else if len(r.AcceptedStatusCodes) > 0 {
-		@kvHTTPCodes("Accepted status codes", r.AcceptedStatusCodes)
+		@kvHTTPCodes("accepted codes", r.AcceptedStatusCodes)
 	}
-	@resolvedKV("Interval", humanInterval(r.Interval.AsDuration()), "interval", invalidField)
-	@resolvedKV("Timeout", humanInterval(r.Timeout.AsDuration()), "timeout", invalidField)
-	@resolvedKV("Retries", intToString(r.Retries), "retries", invalidField)
-	@resolvedKV("Retry backoff", humanInterval(r.RetryBackoff.AsDuration()), "retryBackoff", invalidField)
-	@resolvedKV("Follow redirects", boolYesNo(r.FollowRedirects), "followRedirects", invalidField)
-	@resolvedKV("TLS insecure skip verify", boolYesNo(r.TLSInsecureSkipVerify), "tlsInsecureSkipVerify", invalidField)
+	@resolvedKV("interval", humanInterval(r.Interval.AsDuration()), "interval", invalidField)
+	@resolvedKV("timeout", humanInterval(r.Timeout.AsDuration()), "timeout", invalidField)
+	@resolvedKV("retries", intToString(r.Retries), "retries", invalidField)
+	@resolvedKV("retry backoff", humanInterval(r.RetryBackoff.AsDuration()), "retryBackoff", invalidField)
+	@resolvedKV("follow redirects", boolYesNo(r.FollowRedirects), "followRedirects", invalidField)
+	@resolvedKV("tls insecure skip verify", boolYesNo(r.TLSInsecureSkipVerify), "tlsInsecureSkipVerify", invalidField)
 	if r.Proxy != "" {
-		@resolvedKV("Proxy", r.Proxy, "proxy", invalidField)
+		@resolvedKV("proxy", r.Proxy, "proxy", invalidField)
 	}
-	@resolvedKV("Reminder interval", humanInterval(r.ReminderInterval.AsDuration()), "reminderInterval", invalidField)
+	@resolvedKV("reminder interval", humanInterval(r.ReminderInterval.AsDuration()), "reminderInterval", invalidField)
 	if r.Scheme == "" || r.Scheme == "https" {
-		@resolvedKV("SSL alert threshold", humanInterval(r.SSLAlertThreshold.AsDuration()), "sslAlertThreshold", invalidField)
-		@resolvedKV("SSL escalation threshold", humanInterval(r.SSLEscalationThreshold.AsDuration()), "sslEscalationThreshold", invalidField)
-		@resolvedKV("SSL reminder interval", humanInterval(r.SSLReminderInterval.AsDuration()), "sslReminderInterval", invalidField)
+		@resolvedKV("ssl alert threshold", humanInterval(r.SSLAlertThreshold.AsDuration()), "sslAlertThreshold", invalidField)
+		@resolvedKV("ssl escalation threshold", humanInterval(r.SSLEscalationThreshold.AsDuration()), "sslEscalationThreshold", invalidField)
+		@resolvedKV("ssl reminder interval", humanInterval(r.SSLReminderInterval.AsDuration()), "sslReminderInterval", invalidField)
 	}
-	@resolvedKV("Slack channel", r.Slack, "slack", invalidField)
+	@resolvedKV("slack channel", r.Slack, "slack", invalidField)
 	if len(r.Notify.Values) > 0 {
-		@resolvedKV("Notify", FormatTraceList(r.Notify.Values), "notify", invalidField)
+		@resolvedKV("notify", FormatTraceList(r.Notify.Values), "notify", invalidField)
 	}
 	if "tags" == invalidField {
-		@resolvedKV("Tags", FormatTraceList(r.Tags.Values), "tags", invalidField)
+		@resolvedKV("tags", FormatTraceList(r.Tags.Values), "tags", invalidField)
 	} else if len(r.Tags.Values) > 0 {
-		@kvTags("Tags", r.Tags.Values)
+		@kvTags("tags", r.Tags.Values, kvWideKeyWidth)
 	}
 	if len(r.DependsOn.Values) > 0 {
-		@resolvedKV("Depends on", FormatTraceList(r.DependsOn.Values), "dependsOn", invalidField)
+		@resolvedKV("depends on", FormatTraceList(r.DependsOn.Values), "dependsOn", invalidField)
 	}
 }
 
 // resolvedKV renders one resolved-config field. The non-highlighted
-// branch delegates straight to the shared kv() helper so the Resolved
-// card visually matches every other kv row across the app. The
-// highlighted branch carries the same markup with a rose tint +
-// negative-margin/padding extension so the highlight reaches the
-// section's edges (matching the existing archived-row pattern on the
-// monitor detail page).
+// branch delegates straight to the shared KeyValue row so the Resolved
+// card matches every other key-value row across the app; the
+// highlighted branch carries the same shape plus the down wash,
+// extended to the container's edges.
 templ resolvedKV(label, value, key, invalidField string) {
 	if key == invalidField {
-		<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0 bg-rose-50 dark:bg-rose-900/40 -mx-4 px-4">
-			<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
-			<dd class="text-sm text-slate-900 dark:text-slate-100 col-span-2 break-words">{ value }</dd>
+		<div class="flex py-[9px] font-mono text-xs gap-2 bg-down-soft -mx-4 px-4">
+			<span style={ "width:" + px(kvWideKeyWidth) } class="flex-none text-faint">{ label }</span>
+			<span class="text-ink min-w-0 break-words">{ value }</span>
 		</div>
 	} else {
-		@kv(label, value)
+		@kvWide(label, value)
 	}
 }

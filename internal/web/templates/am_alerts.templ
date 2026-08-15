@@ -5,18 +5,21 @@ import (
 	"time"
 )
 
+// amListingCols is the /alerts column template: started, alertname,
+// severity, key labels, channel, status, duration.
+const amListingCols = "130px 1.3fr .7fr 1.6fr .8fr .7fr .7fr"
+
 // AMAlertsListing renders the /alerts page — filter form, table, paginator.
 templ AMAlertsListing(view AMListingView) {
 	@Layout("Alerts") {
-		<div class="flex items-center gap-3 mb-4">
-			<h1 class="text-xl font-semibold">Alerts</h1>
-			<span class="text-sm text-slate-500 dark:text-slate-400">Alertmanager-sourced incidents</span>
-		</div>
+		@Eyebrow("Alerts · Alertmanager-sourced incidents")
 		@amListingFilterForm(view.Filter)
 		if len(view.Incidents) == 0 {
 			@amListingEmptyState(view)
 		} else {
-			@amListingTable(view.Incidents)
+			<div class="overflow-x-auto">
+				@amListingTable(view.Incidents)
+			</div>
 			@amListingPaginator(view)
 		}
 	}
@@ -26,44 +29,53 @@ templ AMAlertsListing(view AMListingView) {
 // listing filter form. Plain GET with name= attributes that round-trip
 // the query string; the handler swallows unknown values.
 templ amListingFilterForm(f AMListingFilter) {
-	<form method="get" action="/alerts" class="flex flex-wrap items-end gap-3 mb-4 bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-3">
-		<div>
-			<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="status">Status</label>
-			<select id="status" name="status" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
-				<option value="" selected?={ f.Status == "" }>(any)</option>
+	<form method="get" action="/alerts">
+		@Toolbar() {
+			@SelectField("status", "Status") {
+				<option value="" selected?={ f.Status == "" }>status: any</option>
 				<option value="firing" selected?={ f.Status == "firing" }>firing</option>
 				<option value="resolved" selected?={ f.Status == "resolved" }>resolved</option>
-			</select>
-		</div>
-		<div>
-			<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="severity">Severity</label>
-			<input id="severity" name="severity" value={ f.Severity } class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm" placeholder="critical / warning / …"/>
-		</div>
-		<div>
-			<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="alertname">Alertname</label>
-			<input id="alertname" name="alertname" value={ f.Alertname } class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm" placeholder="exact match"/>
-		</div>
-		<div>
-			<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="channel">Channel</label>
-			<input id="channel" name="channel" value={ f.Channel } class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm" placeholder="channel slug"/>
-		</div>
-		<div>
-			<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="receiver">Receiver</label>
-			<input id="receiver" name="receiver" value={ f.Receiver } class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm" placeholder="receiver name"/>
-		</div>
-		<div>
-			<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="from">From</label>
-			<input id="from" name="from" type="datetime-local" value={ f.From } class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm"/>
-		</div>
-		<div>
-			<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="to">To</label>
-			<input id="to" name="to" type="datetime-local" value={ f.To } class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm"/>
-		</div>
-		<button class="bg-slate-900 dark:bg-slate-200 dark:text-slate-900 text-white text-sm px-3 py-1.5 rounded">Apply</button>
-		if !f.IsEmpty() {
-			<a class="text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100" href="/alerts">Clear filters</a>
+			}
+			<div class="min-w-[150px]">
+				@SearchField("severity", "severity", f.Severity)
+			</div>
+			<div class="flex-1 min-w-[170px]">
+				@SearchField("alertname", "alertname — exact", f.Alertname)
+			</div>
+			<div class="min-w-[150px]">
+				@SearchField("channel", "channel slug", f.Channel)
+			</div>
+			<div class="min-w-[150px]">
+				@SearchField("receiver", "receiver", f.Receiver)
+			</div>
+			@amDateField("from", "From", f.From)
+			@amDateField("to", "To", f.To)
+			@Button("primary", "submit") {
+				apply
+			}
+			if !f.IsEmpty() {
+				@LinkButton("ghost", "/alerts") {
+					clear
+				}
+			}
 		}
 	</form>
+}
+
+// amDateField is a native datetime-local input in the design's
+// clothing. The visible label sits inside the control because a
+// bare datetime picker gives no hint which end of the range it is.
+templ amDateField(name, label, value string) {
+	<label class="inline-flex items-center gap-2 border border-border rounded-md px-3 py-[7px] min-h-[34px] font-mono text-[12.5px] focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-accent">
+		<span class="text-faint">{ label }</span>
+		<input
+			id={ name }
+			name={ name }
+			type="datetime-local"
+			value={ value }
+			class="border-0 bg-transparent outline-none text-ink font-mono text-[12.5px]"
+		/>
+	</label>
 }
 
 // amListingEmptyState — distinguishes "no AM alerts have ever fired"
@@ -71,103 +83,122 @@ templ amListingFilterForm(f AMListingFilter) {
 // empty-state pattern.
 templ amListingEmptyState(view AMListingView) {
 	if view.Empty {
-		<div class="rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 text-sm">
-			<p class="font-medium text-slate-700 dark:text-slate-200 mb-1">No AM alerts have ever fired.</p>
-			<p class="text-slate-500 dark:text-slate-400">As soon as Alertmanager posts to <code class="text-xs">/webhooks/alertmanager</code>, incidents will appear here.</p>
-		</div>
+		@EmptyState("No AM alerts have ever fired") {
+			As soon as Alertmanager posts to <span class="text-ink">/webhooks/alertmanager</span>, incidents will appear here.
+		}
 	} else {
-		<div class="rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 text-sm">
-			<p class="text-slate-600 dark:text-slate-400">No alerts match your filters. <a class="text-blue-700 dark:text-blue-400 hover:underline" href="/alerts">Clear filters</a>.</p>
-		</div>
+		@EmptyState("No alerts match your filters") {
+			<a class="text-accent underline underline-offset-2 hover:text-accent-strong" href="/alerts">clear filters</a>
+		}
 	}
 }
 
 // amListingTable is the main table — columns from the spec: Started ↓,
 // Alertname, Severity, Labels chips, Channel, Status, Duration.
 templ amListingTable(rows []AMIncidentRow) {
-	<table class="w-full bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 overflow-hidden">
-		<thead>
-			<tr class="bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
-				<th class="py-2 px-3">Started ↓</th>
-				<th class="py-2 px-3">Alertname</th>
-				<th class="py-2 px-3">Severity</th>
-				<th class="py-2 px-3">Labels</th>
-				<th class="py-2 px-3">Channel</th>
-				<th class="py-2 px-3">Status</th>
-				<th class="py-2 px-3">Duration</th>
-			</tr>
-		</thead>
-		<tbody>
-			for _, r := range rows {
-				@amListingRow(r)
+	@Table(amListingCols) {
+		@TableRow(true, "") {
+			@TableHeadCell("descending") {
+				started ↓
 			}
-		</tbody>
-	</table>
+			@TableHeadCell("") {
+				alertname
+			}
+			@TableHeadCell("") {
+				severity
+			}
+			@TableHeadCell("") {
+				labels
+			}
+			@TableHeadCell("") {
+				channel
+			}
+			@TableHeadCell("") {
+				status
+			}
+			@TableHeadCell("") {
+				duration
+			}
+		}
+		for _, r := range rows {
+			@amListingRow(r)
+		}
+	}
 }
 
 templ amListingRow(r AMIncidentRow) {
-	<tr class="border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/60 align-top">
-		<td class="py-2 px-3 text-sm whitespace-nowrap text-slate-500 dark:text-slate-400">
-			<span title={ r.StartedAt.UTC().Format(time.RFC3339) }>{ r.StartedAt.UTC().Format("2006-01-02 15:04") }</span>
-		</td>
-		<td class="py-2 px-3 text-sm">
-			<a class="text-blue-700 dark:text-blue-400 hover:underline" href={ templ.URL("/alert/" + strconv.FormatInt(r.ID, 10)) }>{ r.Alertname }</a>
-		</td>
-		<td class="py-2 px-3 text-sm">
+	@TableRow(false, AMStatusTone(r.Status)) {
+		@TableCell("") {
+			<span class="text-muted whitespace-nowrap" title={ r.StartedAt.UTC().Format(time.RFC3339) }>{ r.StartedAt.UTC().Format("2006-01-02 15:04") }</span>
+		}
+		@TableCell("") {
+			<a class="text-accent hover:text-accent-strong hover:underline underline-offset-2 break-words rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.URL("/alert/" + strconv.FormatInt(r.ID, 10)) }>{ r.Alertname }</a>
+		}
+		@TableCell("") {
 			if r.Severity != "" {
 				@AMSeverityChip(r.Severity)
 			} else {
-				<span class="text-slate-400 dark:text-slate-600">—</span>
+				@Dash()
 			}
-		</td>
-		<td class="py-2 px-3 text-sm">
+		}
+		@TableCell("") {
 			if len(r.KeyLabels) == 0 {
-				<span class="text-slate-400 dark:text-slate-600">—</span>
+				@Dash()
 			} else {
-				<div class="flex flex-wrap gap-1">
+				<span class="flex flex-wrap gap-1">
 					for _, kv := range r.KeyLabels {
-						<code class="font-mono text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">{ kv.Key }: { kv.Value }</code>
+						@Chip(ToneNeutral) {
+							{ kv.Key }: { kv.Value }
+						}
 					}
-				</div>
+				</span>
 			}
-		</td>
-		<td class="py-2 px-3 text-sm">
+		}
+		@TableCell("") {
 			if r.ChannelSlug == "" {
-				<span class="text-slate-400 dark:text-slate-600">—</span>
+				@Dash()
 			} else {
-				<code class="font-mono text-xs">{ r.ChannelSlug }</code>
+				<span class="text-muted break-all">{ r.ChannelSlug }</span>
 			}
-		</td>
-		<td class="py-2 px-3 text-sm">@AMStatusChip(r.Status)</td>
-		<td class="py-2 px-3 text-sm text-slate-500 dark:text-slate-400 whitespace-nowrap">
-			{ amRowDurationText(r) }
-		</td>
-	</tr>
+		}
+		@TableCell("") {
+			@AMStatusChip(r.Status)
+		}
+		@TableCell("") {
+			<span class="text-muted whitespace-nowrap">{ amRowDurationText(r) }</span>
+		}
+	}
 }
 
-// AMSeverityChip renders the severity label with severity-specific
-// tint. Used by the listing row and the detail page header.
+// AMSeverityChip renders the severity label with its severity tone.
+// Used by the listing row and the detail page header.
 templ AMSeverityChip(severity string) {
-	<span class={ "inline-block px-2 py-0.5 rounded text-xs font-medium", severityBadgeClasses(severity) }>{ severity }</span>
+	@Chip(AMSeverityTone(severity)) {
+		{ severity }
+	}
 }
 
-// AMStatusChip renders the firing/resolved chip on the listing row.
+// AMStatusChip renders the firing/resolved state. It is a full badge
+// rather than a chip: this is the row's status, and the status
+// vocabulary always carries a mark plus a label.
 templ AMStatusChip(status string) {
-	<span class={ "inline-block px-2 py-0.5 rounded text-xs font-medium", amStatusBadgeClasses(status) }>{ status }</span>
+	@Badge(AMStatusTone(status), status)
 }
 
 // amListingPaginator is a prev/next link pair with per-page indicator.
 // We don't have a precomputed total, so HasNext drives visibility.
 templ amListingPaginator(view AMListingView) {
-	<div class="mt-4 flex items-center gap-3 text-sm text-slate-600 dark:text-slate-400">
-		if view.Page > 1 {
-			<a class="text-blue-700 dark:text-blue-400 hover:underline" href={ templ.SafeURL(AMListingURL(view.Filter, view.Page-1, view.PerPage)) }>← Previous</a>
-		}
-		<span>Page { strconv.Itoa(view.Page) }</span>
-		if view.HasNext {
-			<a class="text-blue-700 dark:text-blue-400 hover:underline" href={ templ.SafeURL(AMListingURL(view.Filter, view.Page+1, view.PerPage)) }>Next →</a>
-		}
-	</div>
+	<nav aria-label="Pagination" class="flex items-center justify-between font-mono text-xs text-muted">
+		<span>page { strconv.Itoa(view.Page) }</span>
+		<span class="flex gap-2">
+			if view.Page > 1 {
+				@paginatorStep(templ.SafeURL(AMListingURL(view.Filter, view.Page-1, view.PerPage)), "prev")
+			}
+			if view.HasNext {
+				@paginatorStep(templ.SafeURL(AMListingURL(view.Filter, view.Page+1, view.PerPage)), "next")
+			}
+		</span>
+	</nav>
 }
 
 // AMAlertDetail renders /alert/{id}. Mirrors the layout sketched in
@@ -176,176 +207,171 @@ templ amListingPaginator(view AMListingView) {
 templ AMAlertDetail(view AMDetailView) {
 	{{ inc := view.Incident }}
 	@Layout("Alert — "+inc.Alertname) {
-		<div class="flex items-center gap-3 mb-4 flex-wrap">
-			<h1 class="text-xl font-semibold inline-flex items-center gap-2">
-				<span aria-hidden="true">@amSeverityEmoji(inc.Severity)</span>
+		@Breadcrumb([]Crumb{{Label: "Alerts", Href: "/alerts"}, {Label: inc.Alertname}})
+		<div class="flex flex-wrap items-center gap-3.5">
+			@PageTitle(true) {
+				<span aria-hidden="true">
+					@amSeverityEmoji(inc.Severity)
+				</span>
 				<span>{ inc.Alertname }</span>
-			</h1>
+			}
 			if inc.Severity != "" {
 				@AMSeverityChip(inc.Severity)
 			}
 			@AMStatusChip(inc.Status)
-			<span class="text-xs text-slate-500 dark:text-slate-400 font-mono break-all">fingerprint: { inc.Fingerprint }</span>
+			<span class="font-mono text-2xs text-faint break-all">fingerprint: { inc.Fingerprint }</span>
 		</div>
-
-		@amDetailStatusPanel(inc)
-		@amDetailSummaryPanel(inc)
-		@amDetailLabelsPanel(inc)
-		@amDetailRoutingPanel(inc)
-		@amDetailSlackPanel(inc)
-		@amDetailHistorySection(view.History, inc.ID)
+		<div class="grid grid-cols-1 lg:grid-cols-[1.45fr_1fr] gap-4 items-start">
+			<div class="flex flex-col gap-4 min-w-0">
+				@amDetailStatusPanel(inc)
+				@amDetailSummaryPanel(inc)
+				@amDetailLabelsPanel(inc)
+			</div>
+			<div class="flex flex-col gap-4 min-w-0">
+				@amDetailRoutingPanel(inc)
+				@amDetailSlackPanel(inc)
+				@amDetailHistorySection(view.History, inc.ID)
+			</div>
+		</div>
 		@amDetailRawPayloadSection(view.RawPayload)
 	}
 }
 
 templ amDetailStatusPanel(inc AMIncidentDetail) {
-	<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6">
-		<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Status</h2>
-		<dl>
-			@kvTime("Started", inc.StartedAt)
-			<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-				<dt class="text-sm text-slate-500 dark:text-slate-400">Status</dt>
-				<dd class="text-sm col-span-2">
-					<span class={ "inline-block px-2 py-0.5 rounded text-xs font-medium", amStatusBadgeClasses(inc.Status) }>{ amStatusLabel(inc.Status) }</span>
-					<span class="text-slate-500 dark:text-slate-400 ml-2">{ amDurationLabel(inc) }</span>
-				</dd>
-			</div>
-			if inc.EndedAt != nil {
-				@kvTime("Resolved", *inc.EndedAt)
+	@List("Status", false) {
+		@kvTime("started", inc.StartedAt)
+		@KeyValue("status", kvKeyWidth) {
+			@Badge(AMStatusTone(inc.Status), amStatusLabel(inc.Status))
+			<span class="text-muted ml-2">{ amDurationLabel(inc) }</span>
+		}
+		if inc.EndedAt != nil {
+			@kvTime("resolved", *inc.EndedAt)
+		}
+		if inc.Receiver != "" {
+			@kv("receiver", inc.Receiver)
+		}
+		if inc.ExternalURL != "" {
+			@KeyValue("via", kvKeyWidth) {
+				@ExternalLink(inc.ExternalURL, "Open "+inc.ExternalURL) {
+					<span class="break-all">{ inc.ExternalHost() }</span>
+				}
 			}
-			if inc.Receiver != "" {
-				@kv("Receiver", inc.Receiver)
-			}
-			if inc.ExternalURL != "" {
-				<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-					<dt class="text-sm text-slate-500 dark:text-slate-400">Via</dt>
-					<dd class="text-sm col-span-2 break-all">
-						<a class="text-blue-700 dark:text-blue-400 hover:underline" href={ templ.URL(inc.ExternalURL) } target="_blank" rel="noopener noreferrer">{ inc.ExternalHost() }</a>
-					</dd>
-				</div>
-			}
-		</dl>
-	</section>
+		}
+	}
 }
 
 templ amDetailSummaryPanel(inc AMIncidentDetail) {
 	{{ summary := inc.AnnotationByKey("summary") }}
 	{{ description := inc.AnnotationByKey("description") }}
 	{{ runbook := inc.AnnotationByKey("runbook_url") }}
-	<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6">
-		<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Summary</h2>
-		if summary != "" {
-			<p class="text-sm text-slate-900 dark:text-slate-100 mb-3">{ summary }</p>
-		} else {
-			<p class="text-sm text-slate-500 dark:text-slate-400 italic mb-3">No summary.</p>
-		}
-		if description != "" {
-			<h3 class="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">Description</h3>
-			<p class="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap mb-3">{ description }</p>
-		}
-		if runbook != "" {
-			<p class="text-sm">
-				<a class="text-blue-700 dark:text-blue-400 hover:underline break-all" href={ templ.URL(runbook) } target="_blank" rel="noopener noreferrer">Runbook: { runbook }</a>
-			</p>
-		}
-	</section>
+	@Card("Summary") {
+		<div class="p-4 flex flex-col gap-3">
+			if summary != "" {
+				<p class="text-xs text-ink">{ summary }</p>
+			} else {
+				<p class="font-mono text-xs text-faint">No summary.</p>
+			}
+			if description != "" {
+				<div>
+					<div class="font-mono text-2xs tracking-[.06em] uppercase text-faint mb-1">Description</div>
+					<p class="text-xs text-muted whitespace-pre-wrap">{ description }</p>
+				</div>
+			}
+			if runbook != "" {
+				@ExternalLink(runbook, "Open runbook") {
+					<span class="break-all">Runbook: { runbook }</span>
+				}
+			}
+		</div>
+	}
 }
 
 templ amDetailLabelsPanel(inc AMIncidentDetail) {
 	if len(inc.Labels) > 0 {
-		<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6">
-			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Labels</h2>
-			<dl>
-				for _, kv := range inc.Labels {
-					<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-						<dt class="text-sm font-mono text-slate-500 dark:text-slate-400 break-all">{ kv.Key }</dt>
-						<dd class="text-sm text-slate-900 dark:text-slate-100 col-span-2 break-words font-mono">{ kv.Value }</dd>
-					</div>
+		@List("Labels", false) {
+			for _, kv := range inc.Labels {
+				@KeyValue(kv.Key, kvKeyWidth) {
+					{ kv.Value }
 				}
-			</dl>
-		</section>
+			}
+		}
 	}
 }
 
 templ amDetailRoutingPanel(inc AMIncidentDetail) {
-	<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6">
-		<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Routing</h2>
-		<dl>
-			if inc.RuleChain != "" {
-				@kv("Matched rules", inc.RuleChain)
-			}
-			@kv("Channel", inc.ChannelSlug)
-			if len(inc.ResolvedNotify) > 0 {
-				<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-					<dt class="text-sm text-slate-500 dark:text-slate-400">Notify</dt>
-					<dd class="text-sm col-span-2 flex flex-wrap gap-1.5">
-						for _, n := range inc.ResolvedNotify {
-							<code class="font-mono text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">{ n }</code>
+	@List("Routing", false) {
+		if inc.RuleChain != "" {
+			@kv("matched rules", inc.RuleChain)
+		}
+		@kv("channel", inc.ChannelSlug)
+		if len(inc.ResolvedNotify) > 0 {
+			@KeyValue("notify", kvKeyWidth) {
+				@Cluster() {
+					for _, n := range inc.ResolvedNotify {
+						@Chip(ToneNeutral) {
+							{ n }
 						}
-					</dd>
-				</div>
+					}
+				}
 			}
-		</dl>
-	</section>
+		}
+	}
 }
 
 templ amDetailSlackPanel(inc AMIncidentDetail) {
 	if inc.SlackChannel != "" || inc.SlackTS != "" {
-		<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6">
-			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Slack</h2>
-			<dl>
-				if inc.SlackChannel != "" {
-					@kv("Channel ID", inc.SlackChannel)
+		@List("Slack", false) {
+			if inc.SlackChannel != "" {
+				@kv("channel id", inc.SlackChannel)
+			}
+			if inc.SlackTS != "" {
+				@kv("message ts", inc.SlackTS)
+			}
+			if inc.SlackPermalink != "" {
+				@KeyValue("permalink", kvKeyWidth) {
+					@ExternalLink(inc.SlackPermalink, "Open in Slack") {
+						Open in Slack
+					}
 				}
-				if inc.SlackTS != "" {
-					@kv("Message TS", inc.SlackTS)
-				}
-				if inc.SlackPermalink != "" {
-					<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-						<dt class="text-sm text-slate-500 dark:text-slate-400">Permalink</dt>
-						<dd class="text-sm col-span-2 break-all">
-							<a class="text-blue-700 dark:text-blue-400 hover:underline" href={ templ.URL(inc.SlackPermalink) } target="_blank" rel="noopener noreferrer">Open in Slack</a>
-						</dd>
-					</div>
-				}
-			</dl>
-		</section>
+			}
+		}
 	}
 }
 
 templ amDetailHistorySection(history []AMIncidentRow, currentID int64) {
-	<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6">
-		<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Fingerprint history</h2>
+	@List("Fingerprint history", false) {
 		if len(history) == 0 {
-			<p class="text-sm text-slate-500 dark:text-slate-400 italic">No prior incidents for this fingerprint.</p>
+			<div class="py-[11px] font-mono text-xs text-faint">No prior incidents for this fingerprint.</div>
 		} else {
-			<ul class="divide-y divide-slate-100 dark:divide-slate-800">
-				for _, r := range history {
-					if r.ID != currentID {
-						<li class="py-2 text-sm flex flex-wrap items-center gap-3">
-							<a class="text-blue-700 dark:text-blue-400 hover:underline font-mono text-xs" href={ templ.URL("/alert/" + strconv.FormatInt(r.ID, 10)) }>#{ strconv.FormatInt(r.ID, 10) }</a>
-							@AMStatusChip(r.Status)
-							<span title={ r.StartedAt.UTC().Format(time.RFC3339) } class="text-slate-500 dark:text-slate-400">{ r.StartedAt.UTC().Format("2006-01-02 15:04") }</span>
-							<span class="text-slate-500 dark:text-slate-400">{ amRowDurationText(r) }</span>
-						</li>
-					}
+			for _, r := range history {
+				if r.ID != currentID {
+					<div class="py-[11px] flex flex-wrap items-center gap-3 font-mono text-xs">
+						<a class="text-accent hover:text-accent-strong underline underline-offset-2 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.URL("/alert/" + strconv.FormatInt(r.ID, 10)) }>#{ strconv.FormatInt(r.ID, 10) }</a>
+						@AMStatusChip(r.Status)
+						<span title={ r.StartedAt.UTC().Format(time.RFC3339) } class="text-muted">{ r.StartedAt.UTC().Format("2006-01-02 15:04") }</span>
+						<span class="ml-auto text-dim">{ amRowDurationText(r) }</span>
+					</div>
 				}
-			</ul>
+			}
 		}
-	</section>
+	}
 }
 
 templ amDetailRawPayloadSection(payload string) {
-	<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6">
-		<details>
-			<summary class="cursor-pointer text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 select-none">Raw payload <span class="text-xs text-slate-400 normal-case">(click to expand)</span></summary>
+	<details class="border border-border rounded-lg overflow-hidden bg-bg">
+		<summary class="cursor-pointer select-none px-[14px] py-[9px] font-mono text-2xs tracking-[.06em] uppercase text-faint hover:text-ink">
+			Raw payload <span class="text-dim">(click to expand)</span>
+		</summary>
+		<div class="p-4 border-t border-border">
 			if payload == "" {
-				<p class="mt-3 text-sm text-slate-500 dark:text-slate-400 italic">No webhook event recorded for this incident yet.</p>
+				<p class="font-mono text-xs text-faint">No webhook event recorded for this incident yet.</p>
 			} else {
-				<pre class="mt-3 bg-slate-50 dark:bg-slate-950 rounded p-3 overflow-auto text-xs"><code>{ payload }</code></pre>
+				@Code() {
+					{ payload }
+				}
 			}
-		</details>
-	</section>
+		</div>
+	</details>
 }
 
 // amSeverityEmoji surfaces the severity hint the Slack header uses, so

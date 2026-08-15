@@ -125,22 +125,21 @@ func invalidFieldFromError(msg string) string {
 	return ""
 }
 
-// TraceActionClass maps a merger.TraceAction to a Tailwind chip
-// fragment for the action label rendered in the cascade card. Kept
-// near the outcome constants so the visual vocabulary stays in one
-// place.
+// TraceActionClass maps a merger.TraceAction to the class fragment for
+// the action label rendered in the cascade card. Kept near the outcome
+// constants so the visual vocabulary stays in one place. The washes
+// escalate with how destructive the write is: a first set is neutral,
+// a replace discards a value, an override discards a whole list.
 func TraceActionClass(a merger.TraceAction) string {
 	switch a {
-	case merger.TraceSet:
-		return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
 	case merger.TraceReplace:
-		return "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+		return "bg-warn-soft text-warn"
 	case merger.TraceAdd:
-		return "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
+		return "bg-up-soft text-up"
 	case merger.TraceOverride:
-		return "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300"
+		return "bg-down-soft text-down"
 	default:
-		return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+		return "bg-surface-muted text-muted"
 	}
 }
 
