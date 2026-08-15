@@ -7,6 +7,7 @@ The binary refuses to start if any required field is missing or fails validation
 > **Partially superseded by ADRs.** Treat the linked ADRs as authoritative where they conflict with the prose below:
 >
 > - **[ADR-0009](./adr/0009-from-value-sources-for-kube-discovery.md)** partially amends ADR-0002's "annotations contribute nothing": a `config:` block may now declare that `path`, `slack`, `notify` or `tags` takes its value from an Ingress or Namespace annotation via a `*From` block. The tree still decides *which* field is set where. See §"Annotation value sources (`*From`)" below.
+> - **[ADR-0014](./adr/0014-annotation-selectors-in-the-kube-match-tree.md)** adds `annotations:` and `namespaceAnnotations:` to a `kube.match` rule's `when:`, alongside `labels:`. Pairing one with `ignore: true` is how an app team opts its own object out of monitoring. The annotation selects; the operator's rule still decides what selecting means. See the selector table below.
 > - **[ADR-0013](./adr/0013-from-value-sources-for-alertmanager-routing.md)** carries the same `*From` mechanism into `alertmanager.match`: a rule's `config:` may source `slack` / `notify` from a Namespace annotation, keyed off the alert's namespace label. Namespace scope only, and it requires a `kube:` block. See §"Annotation value sources under `alertmanager.match`" below.
 > - **[ADR-0010](./adr/0010-self-alerting-on-issues-via-prometheusrule.md)** exports the `/issues` sources as a `toggle_monitor_issues{source="…"}` gauge and ships an optional `PrometheusRule` in the Helm chart (`prometheusRule.enabled`).
 > - **[ADR-0011](./adr/0011-watch-driven-kube-removal-detection.md)** adds `kube.watchDebounce`: Ingress add/delete events trigger a debounced reconcile, so `kube.resyncInterval` is no longer the only thing that decides how late a removal is noticed.
@@ -386,10 +387,29 @@ Each rule is a map with up to five keys:
 | `host` | string | Glob (`path.Match`) against the Ingress host. |
 | `hostRegex` | string | Go regexp, auto-anchored. |
 | `labels` | map[string]string | Exact key=value pairs on `ingress.metadata.labels`. Multiple keys AND together. |
+| `annotations` | map[string]string | Exact key=value pairs on `ingress.metadata.annotations`. Multiple keys AND together. |
+| `namespaceAnnotations` | map[string]string | Exact key=value pairs on the **Namespace's** `metadata.annotations`. Multiple keys AND together. |
 
 - Within a single `when:`, all set fields AND together.
-- `labels` matches the Ingress's **own** `metadata.labels` only — not labels on the backing Service / Deployment / Pod.
+- `labels` and `annotations` match the Ingress's **own** metadata only — not that of the backing Service / Deployment / Pod.
+- An absent key never matches. `skip: ""` selects objects carrying the key set to the empty string, not objects missing it.
 - No `name:` selector in v1 — namespace + labels cover realistic cases.
+
+**Annotation selectors are how an app team opts out (ADR-0014).** The
+binary attaches no meaning to any annotation key; the operator's rule
+does, by pairing one with `ignore: true`:
+
+```yaml
+- when:
+    annotations:
+      monitor.example.test/skip: "true"
+  ignore: true
+  final: true
+```
+
+The team then sets that annotation on the Ingress it owns. Skipped
+hosts are listed under "Skipped ingresses" on `/issues` with the rule
+chain that produced them, so a too-broad rule is visible.
 
 ### Evaluation: multi-match accumulate
 
@@ -466,6 +486,8 @@ Scope the selector as tightly as the situation allows — `when: { namespace: "s
 | `kube.match[].when.host` | string | — | valid glob | Mutually exclusive with `hostRegex`. |
 | `kube.match[].when.hostRegex` | string | — | valid Go regexp; auto-anchored | Mutually exclusive with `host`. |
 | `kube.match[].when.labels` | map[string]string | — | valid k8s label key syntax for each key | Matched against `ingress.metadata.labels`; all keys AND. |
+| `kube.match[].when.annotations` | map[string]string | — | valid k8s annotation key syntax for each key; values unconstrained | Matched against `ingress.metadata.annotations`; all keys AND. |
+| `kube.match[].when.namespaceAnnotations` | map[string]string | — | valid k8s annotation key syntax for each key; values unconstrained | Matched against the Namespace's `metadata.annotations`; all keys AND. |
 | `kube.match[].config` | object | — | see config-field table below | Optional contribution to the merge stack. |
 | `kube.match[].nested` | list[rule] | — | each entry follows the same rule shape | Recursive. |
 | `kube.match[].ignore` | bool | — | default unset | Cascades; deepest matching rule wins. Resolved `true` → no monitor, `kube-ignored` discovery row. |
@@ -603,7 +625,7 @@ Operators find the rules in the YAML and reason from there.
 
 **No per-field provenance in v1.** Deferred until a real debugging session demands it; the rule chain gets 80% of the way for free.
 
-**CLI `toggle-monitor explain` subcommand.** Resolves the rule chain + final config either for a live cluster Ingress or for a hypothetical `(namespace, labels, host)` tuple:
+**CLI `toggle-monitor explain` subcommand.** Resolves the rule chain + final config either for a live cluster Ingress or for a hypothetical `(namespace, labels, annotations, host)` tuple:
 
 ```
 toggle-monitor explain --ingress acme-service-a-eoapi-3/web
@@ -612,7 +634,15 @@ toggle-monitor explain \
   --namespace acme-service-a-eoapi-3 \
   --labels app.kubernetes.io/name=minio \
   --host api.example.com
+toggle-monitor explain \
+  --namespace acme-service-a-eoapi-3 \
+  --annotations monitor.example.test/skip=true \
+  --host api.example.com
 ```
+
+Live mode reads both annotation scopes off the cluster;
+`--annotations` / `--namespace-annotations` supply them for an object
+that does not exist yet.
 
 Output is human-readable YAML by default. `--from-file`, `--json`, and per-field provenance are deferred.
 

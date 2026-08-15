@@ -96,6 +96,25 @@ kube:
       ignore: true
       final: true
 
+    # ── App-team opt-out by annotation (ADR-0014) ──────────────────
+    # The same kill switch on the annotation channel, for charts that
+    # template annotations more readily than labels. Nothing in the
+    # binary knows this key — this rule is what gives it meaning, so
+    # the capability is visible to whoever reviews this file. Skipped
+    # hosts are listed under "Skipped ingresses" on /issues.
+    - when:
+        annotations:
+          monitor.togglecorp.com/skip: "true"
+      ignore: true
+      final: true
+    # The Namespace-scoped twin: the namespace owner opts out
+    # everything the namespace contains.
+    - when:
+        namespaceAnnotations:
+          monitor.togglecorp.com/skip: "true"
+      ignore: true
+      final: true
+
     # ── Skip short-lived test namespaces ───────────────────────────
     # `ignore:` cascades like a scalar, so a child can flip it back
     # to `false` to un-ignore a specific subset (e.g., test-critical-*).
