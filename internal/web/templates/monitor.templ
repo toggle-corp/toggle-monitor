@@ -44,56 +44,66 @@ type MentionDisplay struct {
 	Raw  string // <!here>, <!channel>, etc.; empty for slug-backed mentions
 }
 
+// kvKeyWidth is the label column for the detail page's state panel;
+// kvWideKeyWidth is the config dialog's, whose labels run longer
+// ("SSL escalation threshold").
+const (
+	kvKeyWidth     = 140
+	kvWideKeyWidth = 190
+)
+
 templ kv(label, value string) {
-	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
-		<dd class="text-sm text-slate-900 dark:text-slate-100 col-span-2 break-words">{ value }</dd>
-	</div>
+	@KeyValue(label, kvKeyWidth) {
+		{ value }
+	}
+}
+
+// kvWide is kv with the config dialog's label column.
+templ kvWide(label, value string) {
+	@KeyValue(label, kvWideKeyWidth) {
+		{ value }
+	}
 }
 
 // kvTime is the same row shape as kv but the value is an
 // RFC3339 + (Xago) Timestamp instead of a plain string.
 templ kvTime(label string, t time.Time) {
-	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
-		<dd class="text-sm text-slate-900 dark:text-slate-100 col-span-2">@Timestamp(t)</dd>
-	</div>
+	@KeyValue(label, kvKeyWidth) {
+		@Timestamp(t)
+	}
 }
 
 // kvHTTPCode is the same row shape as kv but renders an HTTP status
-// code as a colored chip.
+// code as a toned chip.
 templ kvHTTPCode(label string, code int) {
-	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
-		<dd class="text-sm col-span-2">@HTTPStatusBadge(code)</dd>
-	</div>
+	@KeyValue(label, kvKeyWidth) {
+		@HTTPStatusBadge(code)
+	}
 }
 
 // kvHTTPCodes is the multi-code variant of kvHTTPCode: each accepted
-// status code renders as its own colored chip so the dialog matches
-// the "Last status code" treatment on the detail page.
+// status code renders as its own chip so the dialog matches the "Last
+// status code" treatment on the detail page.
 templ kvHTTPCodes(label string, codes []int) {
-	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
-		<dd class="text-sm col-span-2 flex flex-wrap gap-1.5">
+	@KeyValue(label, kvWideKeyWidth) {
+		@Cluster() {
 			for _, c := range codes {
 				@HTTPStatusBadge(c)
 			}
-		</dd>
-	</div>
+		}
+	}
 }
 
-// kvTags renders the monitor's tag set as a flex-wrap of mono chips.
-// Empty list renders nothing — callers wrap in if len(m.Tags) > 0.
-templ kvTags(label string, tags []string) {
-	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
-		<dd class="text-sm col-span-2 flex flex-wrap gap-1.5">
+// kvTags renders the monitor's tag set as a cluster of chips. Empty
+// list renders nothing — callers wrap in if len(m.Tags) > 0.
+templ kvTags(label string, tags []string, keyWidth int) {
+	@KeyValue(label, keyWidth) {
+		@Cluster() {
 			for _, t := range tags {
 				@TagChip(t)
 			}
-		</dd>
-	</div>
+		}
+	}
 }
 
 // AppearsOnEntry is one chip in the monitor detail page's "Appears
@@ -110,9 +120,8 @@ type AppearsOnEntry struct {
 // linking to /status/<slug>, capped at 5 with "+N more" overflow. See
 // ADR-0003 §"Web layer / Monitor detail".
 templ kvAppearsOn(label string, entries []AppearsOnEntry) {
-	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
-		<dd class="text-sm col-span-2 flex flex-wrap items-center gap-1.5">
+	@KeyValue(label, kvKeyWidth) {
+		@Cluster() {
 			{{ shown := entries }}
 			{{ overflow := 0 }}
 			if len(entries) > 5 {
@@ -120,103 +129,99 @@ templ kvAppearsOn(label string, entries []AppearsOnEntry) {
 				{{ overflow = len(entries) - 5 }}
 			}
 			for _, e := range shown {
-				<a class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800" href={ templ.URL("/status/" + e.Slug) }>
+				<a class="inline-flex items-center gap-1.5 border border-border rounded px-[7px] py-px text-2xs font-semibold text-accent hover:bg-surface-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.URL("/status/" + e.Slug) }>
 					if e.Color != "" {
 						<span class="inline-block w-2 h-2 rounded-full shrink-0" style={ "background-color: " + e.Color }></span>
 					}
-					<span>{ e.FriendlyName }</span>
-					<code class="font-mono text-xs px-1 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">{ e.Slug }</code>
+					{ e.FriendlyName }
 				</a>
 			}
 			if overflow > 0 {
-				<span class="text-xs text-slate-500 dark:text-slate-400">+{ fmt.Sprint(overflow) } more</span>
+				<span class="text-2xs text-faint">+{ fmt.Sprint(overflow) } more</span>
 			}
-		</dd>
-	</div>
+		}
+	}
 }
 
-// kvSlugLinks renders a list of monitor slugs as comma-separated
-// links to each monitor's detail page. Used by "Depends on" and the
-// gating-parents row so the operator can hop straight to the upstream
-// monitor that's pausing or being depended on.
-templ kvSlugLinks(label string, slugs []string) {
-	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
-		<dd class="text-sm text-slate-900 dark:text-slate-100 col-span-2 break-words">
-			for i, s := range slugs {
-				if i > 0 {
-					<span>, </span>
-				}
-				<a class="text-blue-700 dark:text-blue-400 hover:underline" href={ templ.URL("/monitor/" + s) }>{ s }</a>
+// kvSlugLinks renders a list of monitor slugs as links to each
+// monitor's detail page. Used by "Depends on" and the gating-parents
+// row so the operator can hop straight to the upstream monitor that's
+// pausing or being depended on.
+templ kvSlugLinks(label string, slugs []string, keyWidth int) {
+	@KeyValue(label, keyWidth) {
+		@Cluster() {
+			for _, s := range slugs {
+				<a class="text-accent hover:text-accent-strong underline underline-offset-2 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.URL("/monitor/" + s) }>{ s }</a>
 			}
-		</dd>
-	</div>
+		}
+	}
 }
 
-// kvMentions renders each mention as "<slug> <code>U…</code>" so the
-// operator can map a Slack ID back to the configured slug without
-// hunting through userMapping. Raw markers (<!here>, <!channel>)
-// render as a plain code chip — no slug to show.
+// kvMentions renders each mention as "<slug> <id>" so the operator can
+// map a Slack ID back to the configured slug without hunting through
+// userMapping. Raw markers (<!here>, <!channel>) render as a bare chip
+// — no slug to show.
 templ kvMentions(label string, mentions []MentionDisplay) {
-	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
-		<dd class="text-sm col-span-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+	@KeyValue(label, kvWideKeyWidth) {
+		@Cluster() {
 			for _, m := range mentions {
 				<span class="inline-flex items-center gap-1.5">
 					if m.Raw != "" {
-						<code class="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-xs font-mono">{ m.Raw }</code>
+						@Chip(ToneNeutral) {
+							{ m.Raw }
+						}
 					} else {
 						if m.Slug != "" {
 							<span>{ m.Slug }</span>
 						}
-						<code class="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-xs font-mono">{ m.ID }</code>
+						@Chip(ToneNeutral) {
+							{ m.ID }
+						}
 					}
 				</span>
 			}
-		</dd>
-	</div>
+		}
+	}
 }
 
-// kvSSL renders the SSL status as a colored chip.
-templ kvSSL(label, status string) {
-	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
-		<dd class="text-sm col-span-2">@SSLBadge(status)</dd>
-	</div>
+// kvSSL renders the SSL status through the same short-label treatment
+// the listings use, so "ssl-expiring" reads as "expiring" (or
+// "expired") here too rather than as its raw persisted value.
+templ kvSSL(label, status string, expiresAt *time.Time) {
+	@KeyValue(label, kvKeyWidth) {
+		@SSLCell(status, expiresAt)
+	}
 }
 
 // kvURL renders the value as a clickable external link, opening in a
 // new tab so the operator's monitor-detail tab stays put.
-templ kvURL(label, href string) {
-	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
-		<dd class="text-sm col-span-2 break-all"><a class="text-blue-700 dark:text-blue-400 hover:underline" href={ templ.URL(href) } target="_blank" rel="noopener noreferrer">{ href }</a></dd>
-	</div>
+templ kvURL(label, href string, keyWidth int) {
+	@KeyValue(label, keyWidth) {
+		@ExternalLink(href, "Open "+href) {
+			<span class="break-all">{ href }</span>
+		}
+	}
 }
 
-// archivedBanner is the amber warning rendered between the title row
-// and the "Last known state" card on the detail page for soft-deleted
-// monitors. The reason line is omitted when archive_reason is nil or
-// empty so legacy rows don't display a "Reason: " stub.
+// archivedBanner is the warning rendered between the title row and the
+// "Last known state" panel for soft-deleted monitors. The reason line
+// is omitted when archive_reason is nil or empty so legacy rows don't
+// display a "Reason: " stub.
 templ archivedBanner(m store.MonitorRow) {
-	<div class="rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 p-4 mb-6">
-		<p class="font-semibold mb-1">This monitor has been archived.</p>
+	@Banner(ToneWarn) {
+		<span class="text-ink font-semibold">This monitor has been archived.</span>
 		if m.ArchiveReason != nil && *m.ArchiveReason != "" {
-			<p class="text-sm mb-1">
-				Reason: { *m.ArchiveReason }
-				if m.ArchivedAt != nil {
-					<span> — </span>
-					@Timestamp(*m.ArchivedAt)
-				}
-			</p>
-		} else if m.ArchivedAt != nil {
-			<p class="text-sm mb-1">
-				<span>Archived </span>
+			<span> { *m.ArchiveReason }</span>
+			if m.ArchivedAt != nil {
+				<span> — </span>
 				@Timestamp(*m.ArchivedAt)
-			</p>
+			}
+		} else if m.ArchivedAt != nil {
+			<span> archived </span>
+			@Timestamp(*m.ArchivedAt)
 		}
-		<p class="text-sm">The state below reflects its last known values and is no longer updating.</p>
-	</div>
+		<span> · The state below reflects its last known values and is no longer updating.</span>
+	}
 }
 
 // DiscoveredFrom is the (namespace, ingress, host) triple a kube-
@@ -232,12 +237,9 @@ type DiscoveredFrom struct {
 }
 
 templ kvDiscoveredFrom(label string, d DiscoveredFrom) {
-	<div class="py-1.5 grid grid-cols-3 gap-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-		<dt class="text-sm text-slate-500 dark:text-slate-400">{ label }</dt>
-		<dd class="text-sm col-span-2 break-words">
-			<a class="text-blue-700 dark:text-blue-400 hover:underline font-mono" href={ templ.URL("/discovery/" + d.Namespace + "/" + d.IngressName + "/" + d.Host) }>{ d.Namespace }/{ d.IngressName } · { d.Host }</a>
-		</dd>
-	</div>
+	@KeyValue(label, kvWideKeyWidth) {
+		<a class="text-accent hover:text-accent-strong underline underline-offset-2 break-words rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.URL("/discovery/" + d.Namespace + "/" + d.IngressName + "/" + d.Host) }>{ d.Namespace }/{ d.IngressName } · { d.Host }</a>
+	}
 }
 
 templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []string, history []store.AlertEventRow, appearsOn []AppearsOnEntry, discoveredFrom *DiscoveredFrom) {
@@ -246,10 +248,11 @@ templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []stri
 		{{ layoutTitle = "[archived] " + m.FriendlyName }}
 	}
 	@Layout(layoutTitle) {
-		<div class="flex items-center gap-3 mb-4">
-			<h1 class="text-xl font-semibold inline-flex items-center gap-2">
+		@Breadcrumb([]Crumb{{Label: "Monitors", Href: "/monitors"}, {Label: m.Slug}})
+		<div class="flex flex-wrap items-center gap-3.5">
+			@PageTitle(true) {
 				@MonitorName(m.FriendlyName)
-			</h1>
+			}
 			if m.Archived {
 				@ArchivedChip()
 			} else {
@@ -259,187 +262,219 @@ templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []stri
 				@KindBadge(string(m.Kind))
 			}
 			if cfg != nil {
-				<button
-					type="button"
-					class="ml-auto text-sm px-3 py-1 rounded border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
-					onclick="document.getElementById('monitor-config-dialog').showModal()"
-				>Show config</button>
+				<button type="button" data-config-open class={ "ml-auto", buttonClasses("secondary") }>Show config</button>
 			}
 		</div>
-
 		if m.Archived {
 			@archivedBanner(m)
-		}
-
-		<section class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 mb-6">
-			if m.Archived {
-				<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Last known state</h2>
-			} else {
-				<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Current state</h2>
-			}
-			<dl class={ templ.KV("opacity-60", m.Archived) }>
-				@kv("Slug", m.Slug)
-				@kvURL("URL", m.URL)
-				if m.Kind == store.KindSMTP {
-					@kv("TLS", m.TLSMode)
+		} else if m.LastError != nil && *m.LastError != "" {
+			@Banner(ToneDown) {
+				if m.LastStatusCode != nil && *m.LastStatusCode != 0 {
+					<span class="text-ink">{ fmt.Sprint(*m.LastStatusCode) }</span>
+					<span> </span>
 				}
-				@kv("Source", string(m.Source))
+				{ *m.LastError }
+				if m.OpenedAt != nil {
+					<span> · opened { humanDuration(*m.OpenedAt) }</span>
+				}
+			}
+		}
+		<div class="grid grid-cols-1 lg:grid-cols-[1.45fr_1fr] gap-4 items-start">
+			@List(currentStateLabel(m.Archived), false) {
+				@kv("slug", m.Slug)
+				@kvURL("url", m.URL, kvKeyWidth)
+				if m.Kind == store.KindSMTP {
+					@kv("tls", m.TLSMode)
+				}
+				@kv("source", string(m.Source))
 				if len(m.Tags) > 0 {
-					@kvTags("Tags", m.Tags)
+					@kvTags("tags", m.Tags, kvKeyWidth)
 				}
 				if len(appearsOn) > 0 {
-					@kvAppearsOn("Appears on", appearsOn)
+					@kvAppearsOn("appears on", appearsOn)
 				}
 				if cfg != nil && cfg.Preset != "" {
-					@kv("Preset", cfg.Preset)
+					@kv("preset", cfg.Preset)
 				}
 				if len(m.DependsOn) > 0 {
-					@kvSlugLinks("Depends on", m.DependsOn)
+					@kvSlugLinks("depends on", m.DependsOn, kvKeyWidth)
 				}
 				if string(m.Status) == "temporary-paused" && len(gatingParents) > 0 {
-					@kvSlugLinks("Gated by (currently down)", gatingParents)
+					@kvSlugLinks("gated by (down)", gatingParents, kvKeyWidth)
 				}
 				if m.LastCheckedAt != nil {
-					@kvTime("Last checked", *m.LastCheckedAt)
+					@kvTime("last checked", *m.LastCheckedAt)
 				}
 				if m.LastStatusCode != nil {
-					@kvHTTPCode("Last status code", *m.LastStatusCode)
+					@kvHTTPCode("last code", *m.LastStatusCode)
 				}
 				if m.LastError != nil && *m.LastError != "" {
-					@kv("Last error", *m.LastError)
+					@KeyValue("last error", kvKeyWidth) {
+						<span class="text-down">{ *m.LastError }</span>
+					}
 				}
 				if m.OpenedAt != nil {
-					@kvTime("Opened at", *m.OpenedAt)
+					@kvTime("opened at", *m.OpenedAt)
 				}
 				if m.SSLStatus != nil {
-					@kvSSL("SSL status", string(*m.SSLStatus))
+					@kvSSL("ssl", string(*m.SSLStatus), m.SSLExpiresAt)
 				}
 				if m.SSLExpiresAt != nil {
-					@kvTime("SSL expires at", *m.SSLExpiresAt)
+					@kvTime("ssl expires", *m.SSLExpiresAt)
 				}
 				if m.SSLIssuer != nil && *m.SSLIssuer != "" {
-					@kv("SSL issuer", *m.SSLIssuer)
+					@kv("ssl issuer", *m.SSLIssuer)
 				}
-			</dl>
-		</section>
-
+			}
+			@List("Alert history", false) {
+				if len(history) == 0 {
+					<div class="py-[11px] font-mono text-xs text-faint">No alert history yet.</div>
+				} else {
+					for _, ev := range history {
+						@historyEntry(ev)
+					}
+				}
+			}
+		</div>
 		if cfg != nil {
 			@configDialog(m, *cfg, discoveredFrom)
+			@showConfigDialog()
 		}
-
-		<section>
-			<h2 class="text-sm uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">Alert history</h2>
-			if len(history) == 0 {
-				<p class="text-sm text-slate-500 dark:text-slate-400">No alert history yet.</p>
-			} else {
-				<ul class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 divide-y divide-slate-100 dark:divide-slate-800">
-					for _, ev := range history {
-						<li class="py-2 px-3 text-sm flex flex-wrap items-center gap-3">
-							<span class="w-20">@EventTypeBadge(string(ev.Type))</span>
-							<span class="text-slate-500 dark:text-slate-400">@Timestamp(ev.At)</span>
-							if ev.StatusCode != nil {
-								@HTTPStatusBadge(*ev.StatusCode)
-							}
-							if ev.Error != nil && *ev.Error != "" {
-								<span class="text-rose-700 dark:text-rose-400">{ *ev.Error }</span>
-							}
-							if ev.DowntimeSeconds != nil {
-								<span class="text-slate-500 dark:text-slate-400">downtime { fmt.Sprint(*ev.DowntimeSeconds) }s</span>
-							}
-						</li>
-					}
-				</ul>
-			}
-		</section>
 	}
+}
+
+// currentStateLabel names the state panel. An archived monitor's values
+// are frozen, and the heading is what says so before the operator reads
+// a stale timestamp as live.
+func currentStateLabel(archived bool) string {
+	if archived {
+		return "Last known state"
+	}
+	return "Current state"
+}
+
+// historyEntry is one alert event in the per-monitor history: what
+// happened and its code on the first line, the detail underneath.
+templ historyEntry(ev store.AlertEventRow) {
+	<div class="py-[11px] font-mono text-xs">
+		<div class="flex items-baseline gap-2.5">
+			@EventTypeBadge(string(ev.Type))
+			if ev.StatusCode != nil && *ev.StatusCode != 0 {
+				<span class="text-muted">{ fmt.Sprint(*ev.StatusCode) }</span>
+			}
+			<span class="ml-auto text-dim whitespace-nowrap" title={ ev.At.UTC().Format(time.RFC3339) }>{ humanDuration(ev.At) }</span>
+		</div>
+		<div class="text-faint mt-[3px] break-words">
+			if ev.Error != nil && *ev.Error != "" {
+				{ *ev.Error }
+			} else if ev.DowntimeSeconds != nil {
+				recovered after { humanInterval(time.Duration(*ev.DowntimeSeconds) * time.Second) }
+			}
+		</div>
+	</div>
+}
+
+// showConfigDialog wires the header's "Show config" button to the
+// pre-rendered <dialog>. Kept out of the button markup so the page has
+// no inline onclick handler.
+script showConfigDialog() {
+	(function () {
+		var d = document.getElementById('monitor-config-dialog');
+		if (!d) return;
+		document.querySelectorAll('[data-config-open]').forEach(function (btn) {
+			btn.addEventListener('click', function () { d.showModal(); });
+		});
+	})();
 }
 
 // configDialog renders the effective scheduler.Plan for `m` inside a
 // native <dialog>. The detail page pre-renders it (hidden) and the
-// "Show config" button calls showModal(). ESC + backdrop-click close
-// the dialog via the small inline JS handler at the bottom.
+// "Show config" button calls showModal(); Escape and a backdrop click
+// both close it.
 templ configDialog(m store.MonitorRow, cfg MonitorConfig, discoveredFrom *DiscoveredFrom) {
-	<dialog
-		id="monitor-config-dialog"
-		class="w-[calc(100%-2rem)] max-w-4xl rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-2xl backdrop:bg-slate-900/60 p-0"
-	>
-		<form method="dialog" class="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-6 py-4 rounded-t-xl">
-			<h2 class="text-sm uppercase tracking-wide font-semibold text-slate-500 dark:text-slate-400">Effective configuration</h2>
-			<button class="text-sm px-3 py-1.5 rounded border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" aria-label="Close">Close</button>
-		</form>
-		<div class="px-6 py-5 max-h-[70vh] overflow-y-auto">
-			<dl class="[&>div]:py-2.5">
-				@kv("Slug", m.Slug)
-				@kvURL("URL", m.URL)
-				@kv("Source", string(m.Source))
+	@Modal("monitor-config-dialog", "Effective config · "+m.Slug) {
+		<div class="max-h-[70vh] overflow-y-auto">
+			@List("", false) {
+				@kvWide("slug", m.Slug)
+				@kvURL("url", m.URL, kvWideKeyWidth)
+				@kvWide("source", string(m.Source))
 				if discoveredFrom != nil {
-					@kvDiscoveredFrom("Discovered from", *discoveredFrom)
+					@kvDiscoveredFrom("discovered from", *discoveredFrom)
 				}
 				if len(m.Tags) > 0 {
-					@kvTags("Tags", m.Tags)
+					@kvTags("tags", m.Tags, kvWideKeyWidth)
 				}
 				if cfg.Preset != "" {
-					@kv("Preset", cfg.Preset)
+					@kvWide("preset", cfg.Preset)
 				}
 				if len(m.DependsOn) > 0 {
-					@kvSlugLinks("Depends on", m.DependsOn)
+					@kvSlugLinks("depends on", m.DependsOn, kvWideKeyWidth)
 				}
 				if cfg.HTTPMethod != "" {
-					@kv("HTTP method", cfg.HTTPMethod)
+					@kvWide("method", cfg.HTTPMethod)
 				}
 				if len(cfg.AcceptedStatusCodes) > 0 {
-					@kvHTTPCodes("Accepted status codes", cfg.AcceptedStatusCodes)
+					@kvHTTPCodes("accepted codes", cfg.AcceptedStatusCodes)
 				}
 				if cfg.Interval > 0 {
-					@kv("Interval", humanInterval(cfg.Interval))
+					@kvWide("interval", humanInterval(cfg.Interval))
 				}
 				if cfg.Timeout > 0 {
-					@kv("Timeout", humanInterval(cfg.Timeout))
+					@kvWide("timeout", humanInterval(cfg.Timeout))
 				}
-				@kv("Retries", strconv.Itoa(cfg.Retries))
+				@kvWide("retries", strconv.Itoa(cfg.Retries))
 				if cfg.RetryBackoff > 0 {
-					@kv("Retry backoff", humanInterval(cfg.RetryBackoff))
+					@kvWide("retry backoff", humanInterval(cfg.RetryBackoff))
 				}
-				@kv("Follow redirects", boolYesNo(cfg.FollowRedirects))
+				@kvWide("follow redirects", boolYesNo(cfg.FollowRedirects))
 				if cfg.IsHTTPS {
-					@kv("TLS insecure skip verify", boolYesNo(cfg.TLSInsecureSkipVerify))
+					@kvWide("tls insecure skip verify", boolYesNo(cfg.TLSInsecureSkipVerify))
 				}
 				if cfg.Proxy != "" {
-					@kv("Proxy", cfg.Proxy)
+					@kvWide("proxy", cfg.Proxy)
 				}
 				if cfg.ReminderInterval > 0 {
-					@kv("Reminder interval", humanInterval(cfg.ReminderInterval))
+					@kvWide("reminder interval", humanInterval(cfg.ReminderInterval))
 				}
 				if cfg.SlackChannelSlug != "" {
-					@kv("Slack channel", cfg.SlackChannelSlug)
+					@kvWide("slack channel", cfg.SlackChannelSlug)
 				}
 				if len(cfg.Mentions) > 0 {
-					@kvMentions("Mentions", cfg.Mentions)
+					@kvMentions("mentions", cfg.Mentions)
 				}
 				if cfg.IsHTTPS && cfg.SSLAlertThreshold > 0 {
-					@kv("SSL alert threshold", humanInterval(cfg.SSLAlertThreshold))
+					@kvWide("ssl alert threshold", humanInterval(cfg.SSLAlertThreshold))
 				}
 				if cfg.IsHTTPS && cfg.SSLEscalationThreshold > 0 {
-					@kv("SSL escalation threshold", humanInterval(cfg.SSLEscalationThreshold))
+					@kvWide("ssl escalation threshold", humanInterval(cfg.SSLEscalationThreshold))
 				}
 				if cfg.IsHTTPS && cfg.SSLReminderInterval > 0 {
-					@kv("SSL reminder interval", humanInterval(cfg.SSLReminderInterval))
+					@kvWide("ssl reminder interval", humanInterval(cfg.SSLReminderInterval))
 				}
 				if cfg.UserAgent != "" {
-					@kv("User agent", cfg.UserAgent)
+					@kvWide("user agent", cfg.UserAgent)
 				}
-			</dl>
+			}
 		</div>
-		<script>
-			(function () {
-				var d = document.getElementById('monitor-config-dialog');
-				if (!d) return;
-				d.addEventListener('click', function (e) {
-					var r = d.getBoundingClientRect();
-					var inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
-					if (!inside) d.close();
-				});
-			})();
-		</script>
-	</dialog>
+		<div class="pt-3.5 flex justify-end">
+			<form method="dialog">
+				@Button("secondary", "submit") {
+					Close
+				}
+			</form>
+		</div>
+	}
+	@dismissOnBackdrop()
+}
+
+// dismissOnBackdrop closes the config dialog when the click lands
+// outside its panel. <dialog> already handles Escape.
+script dismissOnBackdrop() {
+	(function () {
+		var d = document.getElementById('monitor-config-dialog');
+		if (!d) return;
+		d.addEventListener('click', function (e) {
+			if (e.target === d) d.close();
+		});
+	})();
 }

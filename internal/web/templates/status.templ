@@ -214,18 +214,10 @@ func statusBadgeLabel(kind string) string {
 	}
 }
 
-func statusBadgeClasses(kind string) string {
-	switch kind {
-	case "down":
-		return "border-rose-300 dark:border-rose-700 bg-rose-50/60 dark:bg-rose-950/40 text-rose-800 dark:text-rose-300"
-	case "warn":
-		return "border-amber-300 dark:border-amber-700 bg-amber-50/60 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300"
-	case "none":
-		return "border-slate-300 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-900/40 text-slate-600 dark:text-slate-400"
-	default:
-		return "border-emerald-300 dark:border-emerald-700 bg-emerald-50/60 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300"
-	}
-}
+// statusSectionCols is the column template for a status page's
+// per-section table: the monitor and its URLs take the width, SSL and
+// status sit at their natural size.
+const statusSectionCols = "2fr .8fr .9fr"
 
 // pageTitle returns the configured FriendlyName or a sensible default.
 func pageTitle(cfg *StatusConfig) string {
@@ -243,88 +235,107 @@ func pageTitle(cfg *StatusConfig) string {
 templ StatusPage(cfg *StatusConfig, sections []StatusSection, stats StatusPageStats) {
 	@Layout(pageTitle(cfg)) {
 		if cfg == nil {
-			<div class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-6 text-sm text-slate-500 dark:text-slate-400 text-center">
-				<p>No status pages configured.</p>
-				<p class="text-xs mt-1">Add a <code class="font-mono">statusPages:</code> block to config.yaml to populate this page.</p>
-			</div>
+			@EmptyState("No status pages configured") {
+				Add a <span class="text-ink">statusPages:</span> block to config.yaml to populate this page.
+			}
 		} else {
 			{{ kind := statusBadgeKind(sections) }}
-			<div class={ "flex items-stretch gap-4 rounded border bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 p-4 mb-4" }>
-				if cfg.Color != "" {
-					<div class="w-1 rounded shrink-0" style={ "background-color: " + cfg.Color }></div>
-				}
+			<header class="bg-surface border border-border border-t-[3px] border-t-accent rounded-lg px-7 py-[26px] flex items-center gap-3.5">
 				if cfg.LogoURL != "" {
-					<img src={ cfg.LogoURL } alt="" class="h-12 w-12 object-contain shrink-0"/>
+					<img src={ cfg.LogoURL } alt="" class="w-[46px] h-[46px] rounded-md object-contain shrink-0"/>
+				} else {
+					@Avatar(firstInitial(pageTitle(cfg)), avatarColor(cfg.Color), 46)
 				}
-				<div class="flex-1 min-w-0">
-					<div class="flex flex-wrap items-center gap-2">
-						<h1 class="text-2xl font-semibold">{ pageTitle(cfg) }</h1>
-						<span class="inline-block px-2 py-0.5 rounded text-xs font-mono bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">{ cfg.Slug }</span>
-						<span class={ "ml-auto inline-block px-2 py-0.5 rounded text-sm font-medium border", statusBadgeClasses(kind) }>
-							{ statusBadgeLabel(kind) }
-						</span>
+				<div class="min-w-0">
+					<div class="flex flex-wrap items-center gap-2.5">
+						<h1 class="m-0 text-[22px] font-extrabold text-ink tracking-[-.01em]">{ pageTitle(cfg) }</h1>
+						<span class="font-mono text-2xs text-faint border border-border rounded-md px-[7px] py-px">/status/{ cfg.Slug }</span>
 					</div>
 					if cfg.Description != "" {
-						<p class="text-sm text-slate-600 dark:text-slate-400 mt-1">{ cfg.Description }</p>
+						<p class="text-[13px] text-muted mt-1">{ cfg.Description }</p>
 					}
 				</div>
+				<span class="ml-auto shrink-0">
+					@Badge(statusTone(kind), statusBadgeLabel(kind))
+				</span>
+			</header>
+			<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+				@MetricTileLink(ToneNeutral, "total", stats.Total, statusListingURL(cfg.Slug, -1, ""), false)
+				@MetricTileLink(ToneUp, "up", stats.Up, statusListingURL(cfg.Slug, -1, "up"), true)
+				@MetricTileLink(ToneDown, "down", stats.Down, statusListingURL(cfg.Slug, -1, "down"), false)
+				@MetricTileLink(TonePaused, "paused", stats.TemporaryPaused, statusListingURL(cfg.Slug, -1, "temporary-paused"), false)
+				@MetricTileLink(ToneWarn, "ssl exp", stats.SSLExpiring, statusListingURL(cfg.Slug, -1, "ssl-expiring"), false)
+				@MetricTileLink(ToneDown, "expired", stats.SSLExpired, statusListingURL(cfg.Slug, -1, "expired"), false)
 			</div>
-
-			<div class="grid grid-cols-2 md:grid-cols-6 gap-3 mb-6">
-				@statTile("Total", stats.Total, "", statusListingURL(cfg.Slug, -1, ""))
-				@statTile("Up", stats.Up, "up", statusListingURL(cfg.Slug, -1, "up"))
-				@statTile("Down", stats.Down, "down", statusListingURL(cfg.Slug, -1, "down"))
-				@statTile("Paused", stats.TemporaryPaused, "warn", statusListingURL(cfg.Slug, -1, "temporary-paused"))
-				@statTile("SSL expiring", stats.SSLExpiring, "warn", statusListingURL(cfg.Slug, -1, "ssl-expiring"))
-				@statTile("SSL expired", stats.SSLExpired, "down", statusListingURL(cfg.Slug, -1, "expired"))
-			</div>
-
 			for idx, sec := range sections {
-				<section class="mb-6">
-					<h2 class="text-lg font-semibold mb-2">
-						<a href={ templ.SafeURL(sectionListingURL(cfg.Slug, idx)) } class="hover:underline">{ sec.Title }</a>
-					</h2>
+				<section class="flex flex-col gap-2.5">
+					<a href={ templ.SafeURL(sectionListingURL(cfg.Slug, idx)) } class="w-fit rounded-sm hover:underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+						@SectionHeader(sec.Title, monitorCountLabel(len(sec.Monitors)))
+					</a>
 					if len(sec.Monitors) == 0 {
-						<div class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4 text-sm text-slate-500 dark:text-slate-400">
-							No monitors in this section.
-						</div>
+						@EmptyState("No monitors in this section") {
+							Nothing on this status page matches this section's selectors.
+						}
 					} else {
-						<table class="w-full bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 overflow-hidden">
-							<thead>
-								<tr class="bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
-									<th class="py-2 px-3">Monitor</th>
-									<th class="py-2 px-3 text-right">SSL</th>
-									<th class="py-2 px-3 text-right">Status</th>
-								</tr>
-							</thead>
-							<tbody>
-								for _, m := range sec.Monitors {
-									<tr class="border-b border-slate-100 dark:border-slate-800 last:border-0 align-top">
-										<td class="py-2 px-3">
-											<div class="flex flex-col gap-0.5 min-w-0">
-												<a href={ templ.SafeURL("/monitor/" + m.Slug) } class="font-medium hover:underline inline-flex items-center gap-1.5">
-													@MonitorName(m.FriendlyName)
-												</a>
-												@MonitorURLCell(m.URL)
-											</div>
-										</td>
-										<td class="py-2 px-3 text-sm text-right whitespace-nowrap">
-											{{ var sslStatus string }}
-											if m.SSLStatus != nil {
-												{{ sslStatus = string(*m.SSLStatus) }}
-											}
-											@SSLCell(sslStatus, m.SSLExpiresAt)
-										</td>
-										<td class="py-2 px-3 text-right">@StatusBadge(string(m.Status))</td>
-									</tr>
+						@Table(statusSectionCols) {
+							@TableRow(true, "") {
+								@TableHeadCell("") {
+									monitor
 								}
-							</tbody>
-						</table>
+								@TableHeadCell("") {
+									ssl
+								}
+								@TableHeadCell("") {
+									status
+								}
+							}
+							for _, m := range sec.Monitors {
+								@statusMonitorRow(m)
+							}
+						}
 					}
 				</section>
 			}
+			<p class="font-mono text-2xs text-dim text-center">powered by toggle-monitor</p>
 		}
 	}
+}
+
+// statusMonitorRow is one monitor on a status page: its name over the
+// two URLs it implies, then SSL and live status.
+templ statusMonitorRow(m store.MonitorRow) {
+	@TableRow(false, MonitorTone(string(m.Status), m.Archived)) {
+		@TableCell("") {
+			<div class="flex flex-col gap-0.5 min-w-0">
+				<a href={ templ.SafeURL("/monitor/" + m.Slug) } class="w-fit hover:underline underline-offset-2 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+					@MonitorName(m.FriendlyName)
+				</a>
+				@MonitorURLCell(m.URL)
+			</div>
+		}
+		@TableCell("") {
+			{{ var sslStatus string }}
+			if m.SSLStatus != nil {
+				{{ sslStatus = string(*m.SSLStatus) }}
+			}
+			@SSLCell(sslStatus, m.SSLExpiresAt)
+		}
+		@TableCell("") {
+			if m.Archived {
+				@ArchivedChip()
+			} else {
+				@StatusBadge(string(m.Status))
+			}
+		}
+	}
+}
+
+// monitorCountLabel is the dim meta beside a section heading.
+func monitorCountLabel(n int) string {
+	if n == 1 {
+		return "1 monitor →"
+	}
+	return fmt.Sprintf("%d monitors →", n)
 }
 
 // sectionListingURL is the operator drill-down URL for a specific
@@ -384,35 +395,30 @@ func sectionIndexString(idx int) string {
 // this template can stay pure.
 templ StatusIndexPage(entries []StatusPageStats) {
 	@Layout("Status pages") {
-		<div class="max-w-screen-xl mx-auto">
-			<header class="flex flex-wrap items-end justify-between gap-3 pb-5 mb-6 border-b border-slate-200 dark:border-slate-800">
-				<div>
-					<h1 class="text-2xl font-semibold tracking-tight">Status pages</h1>
-					<p class="text-sm text-slate-500 dark:text-slate-400 mt-1.5">Per-app rollups across the system. Pick one to drill into its sections.</p>
-				</div>
-				if len(entries) > 0 {
-					<span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 tabular-nums">
-						{ fmt.Sprint(len(entries)) }
-						if len(entries) == 1 {
-							&nbsp;page
-						} else {
-							&nbsp;pages
-						}
-					</span>
-				}
-			</header>
-			if len(entries) == 0 {
-				<div class="bg-white dark:bg-slate-900 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 p-10 text-center">
-					<p class="text-sm font-medium text-slate-600 dark:text-slate-300">No status pages configured.</p>
-					<p class="text-xs mt-2 text-slate-500 dark:text-slate-400">Add a <code class="font-mono px-1 rounded bg-slate-100 dark:bg-slate-800">statusPages:</code> block to <code class="font-mono">config.yaml</code> to populate this view.</p>
-				</div>
-			} else {
-				<div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-					for _, e := range entries {
-						@statusPageTile(e)
-					}
-				</div>
+		<div class="flex items-baseline gap-2.5">
+			@PageTitle(false) {
+				Status pages
 			}
+			<span class="font-mono text-xs text-faint">{ pageCountLabel(len(entries)) }</span>
 		</div>
+		if len(entries) == 0 {
+			@EmptyState("No status pages configured") {
+				Add a <span class="text-ink">statusPages:</span> block to config.yaml to populate this view.
+			}
+		} else {
+			<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+				for _, e := range entries {
+					@statusPageTile(e)
+				}
+			</div>
+		}
 	}
+}
+
+// pageCountLabel is the dim meta beside the /status heading.
+func pageCountLabel(n int) string {
+	if n == 1 {
+		return "1 configured"
+	}
+	return fmt.Sprintf("%d configured", n)
 }

@@ -8,14 +8,16 @@ import (
 	"github.com/toggle-corp/toggle-monitor/internal/store"
 )
 
-// statTile renders one of the Overview cards. The whole card is a
-// link to /monitors with a pre-applied filter. kind drives the accent
-// (emerald/rose/amber/slate) and only activates when count > 0.
-templ statTile(label string, count int, kind, href string) {
-	<a href={ templ.URL(href) } class={ "block rounded border bg-white dark:bg-slate-900 p-4 transition hover:shadow-sm", statTileAccent(kind, count) }>
-		<div class="text-sm text-slate-500 dark:text-slate-400">{ label }</div>
-		<div class={ "text-2xl font-semibold mt-1 tabular-nums", statTileCount(kind, count) }>{ fmt.Sprint(count) }</div>
-	</a>
+// alertsFeedCols is the column template for the homepage's latest-alerts
+// table: event kind, monitor, code, message, and a right-aligned time.
+const alertsFeedCols = "104px 1.5fr 58px 2fr 76px"
+
+// trackedMonitors is the count the Overview eyebrow and its total tile
+// report. A monitor is in exactly one of up / down / temporary-paused,
+// so those sum; the SSL counts are a separate facet of the same
+// monitors and would double-count if added.
+func trackedMonitors(s store.HomepageStats) int {
+	return s.Up + s.Down + s.TemporaryPaused
 }
 
 // StatusPageStats is the per-status-page rollup — same metric
@@ -70,130 +72,63 @@ func firstInitial(s string) string {
 	return "?"
 }
 
-// statusPageTile renders one status-page card on the /status index.
-// Layout: a top stripe in the page colour, then a header band with
-// logo + name + slug + 3-state badge, then optional description,
-// then a stats footer with a large Total + only-when-non-zero
-// problem chips so healthy pages stay calm.
+// avatarColor is the fill for a status page's letter mark. Pages
+// without a configured color borrow the indigo accent rather than
+// inventing a palette entry.
+func avatarColor(color string) string {
+	if color == "" {
+		return "var(--tm-indigo)"
+	}
+	return color
+}
+
+// statusPageTile renders one status-page card on the /status index:
+// letter mark, name, slug, description, then a footer band carrying the
+// rollup badge and — only when something is wrong — a problem chip.
 templ statusPageTile(s StatusPageStats) {
 	{{ kind := pageBadgeKind(s) }}
-	<a href={ templ.URL("/status/" + s.Slug) } class="group block rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden transition hover:shadow-md hover:-translate-y-0.5 hover:border-slate-300 dark:hover:border-slate-600">
-		if s.Color != "" {
-			<div class="h-1.5 w-full" style={ "background-color: " + s.Color }></div>
-		} else {
-			<div class="h-1.5 w-full bg-slate-200 dark:bg-slate-700"></div>
-		}
-		<div class="p-5 space-y-4">
-			<div class="flex items-start gap-3">
+	<a href={ templ.URL("/status/" + s.Slug) } class="block border border-border rounded-lg overflow-hidden bg-bg transition-colors hover:border-border-strong focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+		<div class="px-4 py-[15px] flex flex-col gap-3">
+			<div class="flex items-center gap-2.5">
 				if s.LogoURL != "" {
-					<img src={ s.LogoURL } alt="" class="h-11 w-11 rounded-md object-contain shrink-0 bg-slate-50 dark:bg-slate-800 p-1 border border-slate-200 dark:border-slate-700"/>
+					<img src={ s.LogoURL } alt="" class="w-[30px] h-[30px] rounded-md object-contain shrink-0 bg-surface-muted p-0.5 border border-border"/>
 				} else {
-					<div class={ "h-11 w-11 rounded-md flex items-center justify-center shrink-0 text-base font-semibold border border-slate-200 dark:border-slate-700", logoFallbackClasses(s.Color) } style={ logoFallbackStyle(s.Color) }>
-						{ firstInitial(s.FriendlyName) }
-					</div>
+					@Avatar(firstInitial(s.FriendlyName), avatarColor(s.Color), 30)
 				}
-				<div class="flex-1 min-w-0">
-					<div class="flex items-center gap-2 flex-wrap">
-						<h3 class="text-base font-semibold text-slate-900 dark:text-slate-100 truncate leading-tight">{ s.FriendlyName }</h3>
-						<code class="font-mono text-[11px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 shrink-0">{ s.Slug }</code>
-					</div>
-					if s.Description != "" {
-						<p class="text-xs text-slate-500 dark:text-slate-400 mt-1 line-clamp-2 leading-relaxed">{ s.Description }</p>
-					}
-				</div>
-				<span class={ "shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border", statusBadgeClasses(kind) }>
-					<span class={ "inline-block w-2 h-2 rounded-full", badgeDotClasses(kind) }></span>
-					{ statusBadgeLabel(kind) }
-				</span>
-			</div>
-			<div class="flex items-end justify-between gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
-				<div class="shrink-0">
-					<div class="text-3xl font-semibold tabular-nums text-slate-900 dark:text-slate-100 leading-none">{ fmt.Sprint(s.Total) }</div>
-					<div class="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 mt-1.5">
-						if s.Total == 1 {
-							monitor
-						} else {
-							monitors
-						}
-					</div>
-				</div>
-				<div class="flex flex-wrap items-center gap-1.5 justify-end">
-					if s.Total == 0 {
-						<span class="text-xs text-slate-500 dark:text-slate-400 italic">no monitors selected</span>
-					} else {
-						@problemChip("down", s.Down, "down")
-						@problemChip("paused", s.TemporaryPaused, "warn")
-						@problemChip("SSL expiring", s.SSLExpiring, "warn")
-						@problemChip("SSL skipped", s.SSLSkipped, "")
-						if s.Down == 0 && s.TemporaryPaused == 0 && s.SSLExpiring == 0 {
-							<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
-								all { fmt.Sprint(s.Up) } up
-							</span>
-						}
-					}
+				<div class="min-w-0">
+					<div class="text-sm font-bold text-ink leading-tight truncate">{ s.FriendlyName }</div>
+					<div class="font-mono text-2xs text-faint truncate">/status/{ s.Slug }</div>
 				</div>
 			</div>
+			<div class="text-xs text-muted leading-snug min-h-[34px]">
+				if s.Description != "" {
+					{ s.Description }
+				}
+			</div>
+		</div>
+		<div class="px-4 py-[11px] border-t border-hair flex items-center gap-2">
+			@Badge(statusTone(kind), statusBadgeLabel(kind))
+			<span class="ml-auto flex flex-wrap justify-end gap-1">
+				@problemChip("down", s.Down, ToneDown)
+				@problemChip("paused", s.TemporaryPaused, ToneWarn)
+				@problemChip("ssl exp", s.SSLExpiring, ToneWarn)
+				@problemChip("ssl skipped", s.SSLSkipped, ToneNeutral)
+				if s.Total > 0 && s.Down == 0 && s.TemporaryPaused == 0 && s.SSLExpiring == 0 {
+					<span class="font-mono text-2xs text-faint">all { fmt.Sprint(s.Up) } up</span>
+				}
+			</span>
 		</div>
 	</a>
 }
 
-// problemChip renders a small chip — only when count > 0 — so a
-// healthy page card stays visually quiet and a degraded one
-// surfaces what's wrong at a glance.
-templ problemChip(label string, count int, kind string) {
+// problemChip renders a chip only when count > 0, so a healthy page
+// card stays quiet and a degraded one says what's wrong at a glance.
+templ problemChip(label string, count int, tone Tone) {
 	if count > 0 {
-		<span class={ "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium border", chipClasses(kind) }>
-			<span class="tabular-nums font-semibold">{ fmt.Sprint(count) }</span>
-			<span>{ label }</span>
-		</span>
+		@Chip(tone) {
+			{ fmt.Sprint(count) } { label }
+		}
 	}
-}
-
-// chipClasses returns the colour palette for a problem chip. Empty
-// kind is the neutral slate variant for "SSL skipped" which isn't an
-// active problem, just an audited fact.
-func chipClasses(kind string) string {
-	switch kind {
-	case "down":
-		return "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800"
-	case "warn":
-		return "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800"
-	default:
-		return "bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700"
-	}
-}
-
-// badgeDotClasses returns the indicator-dot colour for the page
-// badge. Solid emerald/rose, amber for warn, slate for none.
-func badgeDotClasses(kind string) string {
-	switch kind {
-	case "down":
-		return "bg-rose-500"
-	case "warn":
-		return "bg-amber-500"
-	case "none":
-		return "bg-slate-400"
-	default:
-		return "bg-emerald-500"
-	}
-}
-
-// logoFallbackClasses styles the initial-letter avatar that stands in
-// when a status page lacks a logoUrl. When the page has a color, we
-// render a colored chip with white text via inline style (so any hex
-// works); otherwise fall back to a neutral slate panel.
-func logoFallbackClasses(color string) string {
-	if color != "" {
-		return "text-white"
-	}
-	return "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300"
-}
-
-func logoFallbackStyle(color string) string {
-	if color == "" {
-		return ""
-	}
-	return "background-color: " + color
 }
 
 // MappingEntry is the per-row payload the homepage renders in the
@@ -269,72 +204,73 @@ type MissingParent struct {
 
 templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page, perPage int, mapping MappingHealth) {
 	@Layout("Home") {
-		<section class="mb-8">
-			<h1 class="text-xl font-semibold mb-3">Overview</h1>
-			<div class="grid grid-cols-2 md:grid-cols-5 gap-3">
-				@statTile("Up", stats.Up, "up", "/monitors?status=up")
-				@statTile("Down", stats.Down, "down", "/monitors?status=down")
-				@statTile("Paused", stats.TemporaryPaused, "warn", "/monitors?status=temporary-paused")
-				@statTile("SSL expiring", stats.SSLExpiring, "warn", "/monitors?ssl=ssl-expiring")
-				@statTile("SSL skipped", stats.SSLSkipped, "", "/monitors?ssl=ssl-skipped")
-			</div>
-			<div class="mt-3 flex flex-wrap gap-4 text-sm">
-				<a href="/monitors" class="text-blue-700 dark:text-blue-400 hover:underline">All monitors →</a>
-				<a href="/status" class="text-blue-700 dark:text-blue-400 hover:underline">Status pages →</a>
-			</div>
-		</section>
-
+		@Eyebrow(fmt.Sprintf("Overview · %d monitors", trackedMonitors(stats)))
+		<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+			@MetricTileLink(ToneUp, "up", stats.Up, "/monitors?status=up", true)
+			@MetricTileLink(ToneDown, "down", stats.Down, "/monitors?status=down", false)
+			@MetricTileLink(TonePaused, "paused", stats.TemporaryPaused, "/monitors?status=temporary-paused", false)
+			@MetricTileLink(ToneWarn, "ssl exp", stats.SSLExpiring, "/monitors?ssl=ssl-expiring", false)
+			@MetricTileLink(ToneArchived, "ssl skipped", stats.SSLSkipped, "/monitors?ssl=ssl-skipped", false)
+			@MetricTileLink(ToneNeutral, "total", trackedMonitors(stats), "/monitors", false)
+		</div>
 		if len(mapping.Invalid) > 0 {
-			<section class="mb-6">
-				<h2 class="text-lg font-semibold mb-2 text-rose-700 dark:text-rose-400">Slack mapping issues</h2>
-				<div class="bg-white dark:bg-slate-900 rounded border border-rose-200 dark:border-rose-800 p-4">
-					<p class="text-sm text-slate-500 dark:text-slate-400 mb-2">
-						{ fmt.Sprint(len(mapping.Invalid)) } userMapping entry/entries failed validation. Fix the IDs in config.yaml or your workspace and re-run the validator (next pass: every 24h, or restart the binary).
-					</p>
-					<ul class="text-sm divide-y divide-slate-100 dark:divide-slate-800">
-						for _, e := range mapping.Invalid {
-							<li class="py-2 flex gap-3">
-								<span class="font-medium w-32">{ e.Slug }</span>
-								<code class="text-slate-700 dark:text-slate-300 w-32">{ e.ID }</code>
-								<span class="text-rose-700 dark:text-rose-400">{ e.Reason }</span>
-							</li>
-						}
-					</ul>
-					if !mapping.LastRun.IsZero() {
-						<p class="text-xs text-slate-400 dark:text-slate-500 mt-2">
-							<span>Last checked </span>
-							@Timestamp(mapping.LastRun)
-						</p>
-					}
-				</div>
-			</section>
+			@Banner(ToneDown) {
+				{ fmt.Sprint(len(mapping.Invalid)) } userMapping entr{ plural(len(mapping.Invalid), "y", "ies") } failed validation ·
+				<a class="text-accent underline underline-offset-2 hover:text-accent-strong" href="/issues">review on /issues</a>
+			}
 		}
-
-		<section>
-			<h2 class="text-lg font-semibold mb-2">Latest alerts</h2>
+		<div class="flex flex-col gap-3">
+			<div class="flex items-baseline justify-between gap-3">
+				@SectionHeader("Latest alerts", fmt.Sprintf("%d total", alerts.Total))
+				@Link("/monitors") {
+					all monitors →
+				}
+			</div>
 			if len(alerts.Items) == 0 {
-				<p class="text-sm text-slate-500 dark:text-slate-400">No alerts yet.</p>
+				@EmptyState("No alerts yet") {
+					Every monitor has been healthy since the last restart.
+				}
 			} else {
-				<ul class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 divide-y divide-slate-100 dark:divide-slate-800">
+				@Table(alertsFeedCols) {
 					for _, ev := range alerts.Items {
-						<li class="py-2 px-3 text-sm flex flex-wrap items-center gap-3">
-							<span class="w-24 shrink-0">@EventTypeBadge(string(ev.Type))</span>
-							<a class="text-blue-700 dark:text-blue-400 hover:underline inline-flex items-center gap-1.5 min-w-0 max-w-[28rem]" href={ templ.URL("/monitor/" + ev.MonitorSlug) }>
-								@MonitorName(ev.FriendlyName)
-							</a>
-							<span class="text-slate-500 dark:text-slate-400 shrink-0">@Timestamp(ev.At)</span>
-							if ev.StatusCode != nil {
-								@HTTPStatusBadge(*ev.StatusCode)
-							}
-							if ev.Error != nil && *ev.Error != "" {
-								<span class="text-rose-700 dark:text-rose-400 truncate min-w-0">{ *ev.Error }</span>
-							}
-						</li>
+						@alertFeedRow(ev)
 					}
-				</ul>
+				}
 				@Paginator("/", page, perPage, alerts.Total, nil)
 			}
-		</section>
+		</div>
+	}
+}
+
+// alertFeedRow is one entry of the homepage feed: what happened, to
+// which monitor, with which code, why, and when.
+templ alertFeedRow(ev store.AlertEventRow) {
+	@TableRow(false, "") {
+		@TableCell("") {
+			@EventTypeBadge(string(ev.Type))
+		}
+		@TableCell("") {
+			<a class="hover:underline underline-offset-2 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.URL("/monitor/" + ev.MonitorSlug) }>
+				@MonitorName(ev.FriendlyName)
+			</a>
+		}
+		@TableCell("") {
+			if ev.StatusCode != nil && *ev.StatusCode != 0 {
+				@HTTPStatusBadge(*ev.StatusCode)
+			} else {
+				@Dash()
+			}
+		}
+		@TableCell("") {
+			if ev.Error != nil && *ev.Error != "" {
+				<span class="text-muted line-clamp-2 break-words">{ *ev.Error }</span>
+			} else {
+				@Dash()
+			}
+		}
+		@TableCell("right") {
+			<span class="text-dim whitespace-nowrap" title={ ev.At.UTC().Format(time.RFC3339) }>{ humanDuration(ev.At) }</span>
+		}
 	}
 }
 
@@ -358,152 +294,161 @@ templ IssuesPage(view IssuesView) {
 	{{ ignoredDiscovery := view.IgnoredDiscovery }}
 	{{ missingParents := view.MissingParents }}
 	@Layout("Issues") {
-		<h1 class="text-xl font-semibold mb-4 inline-flex items-center gap-2">
-			Issues
-			if total := view.Total(); total > 0 {
-				<span class="inline-flex items-center justify-center min-w-[1.5rem] px-2 py-0.5 rounded-full text-sm font-medium bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300 tabular-nums">{ fmt.Sprint(total) }</span>
-			}
-		</h1>
+		@Eyebrow(fmt.Sprintf("Issues · %d open", view.Total()))
 		if view.Total() == 0 {
-			<div class="bg-white dark:bg-slate-900 rounded border border-emerald-200 dark:border-emerald-800 p-6 text-center text-sm text-slate-500 dark:text-slate-400">
-				<p>No issues detected.</p>
-				<p class="text-xs mt-1">Slack mapping is healthy and no kube ingresses are in an invalid state.</p>
-			</div>
+			@EmptyState("No issues detected") {
+				Slack mapping is healthy and no kube ingresses are in an invalid state.
+			}
 		}
 		if len(mapping.Invalid) > 0 {
-			<section class="mb-6">
-				<h2 class="text-lg font-semibold mb-2 text-rose-700 dark:text-rose-400">Slack mapping ({ fmt.Sprint(len(mapping.Invalid)) })</h2>
-				<div class="bg-white dark:bg-slate-900 rounded border border-rose-200 dark:border-rose-800 p-4">
-					<p class="text-sm text-slate-500 dark:text-slate-400 mb-2">
-						userMapping entries that failed validation. Fix the IDs in config.yaml or your workspace.
-					</p>
-					<ul class="text-sm divide-y divide-slate-100 dark:divide-slate-800">
-						for _, e := range mapping.Invalid {
-							<li class="py-2 flex flex-wrap gap-3">
-								<span class="font-medium w-32">{ e.Slug }</span>
-								<code class="text-slate-700 dark:text-slate-300 w-32">{ e.ID }</code>
-								<span class="text-rose-700 dark:text-rose-400">{ e.Reason }</span>
-							</li>
-						}
-					</ul>
-					if !mapping.LastRun.IsZero() {
-						<p class="text-xs text-slate-400 dark:text-slate-500 mt-2">
-							<span>Last checked </span>
-							@Timestamp(mapping.LastRun)
-						</p>
+			@issueSection("Slack mapping", len(mapping.Invalid), ToneDown, "", "") {
+				<p class="font-mono text-xs text-muted">
+					userMapping entries that failed validation. Fix the IDs in config.yaml or your workspace.
+				</p>
+				@List("", false) {
+					for _, e := range mapping.Invalid {
+						<div class="flex flex-wrap gap-3 py-[9px] font-mono text-xs">
+							<span class="text-ink w-32">{ e.Slug }</span>
+							<span class="text-muted w-32">{ e.ID }</span>
+							<span class="text-down">{ e.Reason }</span>
+						</div>
 					}
-				</div>
-			</section>
+				}
+				if !mapping.LastRun.IsZero() {
+					<p class="font-mono text-2xs text-dim">
+						<span>last checked </span>
+						@Timestamp(mapping.LastRun)
+					</p>
+				}
+			}
 		}
 		if len(invalidDiscovery) > 0 {
-			<section class="mb-6">
-				<h2 class="text-lg font-semibold mb-2 text-rose-700 dark:text-rose-400">
-					Kube-invalid ingresses ({ fmt.Sprint(len(invalidDiscovery)) })
-					<a class="text-sm font-normal ml-2 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100" href="/discovery?status=kube-invalid">View all →</a>
-				</h2>
-				<div class="bg-white dark:bg-slate-900 rounded border border-rose-200 dark:border-rose-800 p-4">
-					<p class="text-sm text-slate-500 dark:text-slate-400 mb-2">
-						Ingresses the watcher saw but couldn't materialize into a monitor — a resolved value that failed validation, or a wildcard host no prober can resolve. Fix the value in <code class="font-mono">kube.match</code>; a wildcard host has no value to fix, so acknowledge it with a matching <code class="font-mono">ignore: true</code> rule instead.
-					</p>
-					<ul class="text-sm divide-y divide-slate-100 dark:divide-slate-800">
-						for _, row := range invalidDiscovery {
-							<li class="py-2 flex flex-wrap gap-3">
-								<code class="font-mono text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">{ row.Namespace }</code>
-								<span class="font-medium">{ row.IngressName }</span>
-								<span class="text-slate-500 dark:text-slate-400">{ row.Host }</span>
-								if row.Reason != nil {
-									<span class="text-rose-700 dark:text-rose-400">{ *row.Reason }</span>
-								}
-							</li>
-						}
-					</ul>
-				</div>
-			</section>
+			@issueSection("Kube-invalid ingresses", len(invalidDiscovery), ToneDown, "/discovery?status=kube-invalid", "view all →") {
+				<p class="font-mono text-xs text-muted">
+					Ingresses the watcher saw but couldn't materialize into a monitor — a resolved value that failed validation, or a wildcard host no prober can resolve. Fix the value in <span class="text-ink">kube.match</span>; a wildcard host has no value to fix, so acknowledge it with a matching <span class="text-ink">ignore: true</span> rule instead.
+				</p>
+				@List("", false) {
+					for _, row := range invalidDiscovery {
+						<div class="flex flex-wrap items-baseline gap-3 py-[9px] font-mono text-xs">
+							@Chip(ToneNeutral) {
+								{ row.Namespace }
+							}
+							<span class="text-ink">{ row.IngressName }</span>
+							<span class="text-muted">{ row.Host }</span>
+							if row.Reason != nil {
+								<span class="text-down">{ *row.Reason }</span>
+							}
+						</div>
+					}
+				}
+			}
 		}
 		if len(view.Annotations) > 0 {
-			<section class="mb-6">
-				<h2 class="text-lg font-semibold mb-2 text-amber-700 dark:text-amber-400">
-					Rejected annotation values ({ fmt.Sprint(len(view.Annotations)) })
-				</h2>
-				<div class="bg-white dark:bg-slate-900 rounded border border-amber-200 dark:border-amber-800 p-4">
-					<p class="text-sm text-slate-500 dark:text-slate-400 mb-2">
-						Values an app team's chart put in an annotation that toggle-monitor could not use. Each monitor still probes on its cascade value, so this is a misconfiguration to fix — not an outage. Fix the annotation on the Ingress or Namespace.
-					</p>
-					<ul class="text-sm divide-y divide-slate-100 dark:divide-slate-800">
-						for _, ai := range view.Annotations {
-							<li class="py-2 flex flex-wrap gap-3 items-baseline">
-								<code class="font-mono text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">{ ai.Namespace }</code>
-								<a class="font-medium text-blue-700 dark:text-blue-400 hover:underline" href={ templ.SafeURL("/discovery/" + ai.Namespace + "/" + ai.IngressName + "/" + ai.Host) }>{ ai.IngressName }</a>
-								<span class="text-slate-500 dark:text-slate-400">{ ai.Host }</span>
-								<span class="text-slate-500 dark:text-slate-400">{ ai.Scope }</span>
-								<code class="font-mono text-xs text-slate-700 dark:text-slate-300">{ ai.Key }</code>
-								<span class="font-medium text-amber-800 dark:text-amber-300">{ ai.Value }</span>
-								<span class="text-slate-600 dark:text-slate-400">{ ai.Reason }</span>
-								<span class="ml-auto text-xs text-slate-400 dark:text-slate-500">→ { ai.Field }</span>
-							</li>
-						}
-					</ul>
-				</div>
-			</section>
+			@issueSection("Rejected annotation values", len(view.Annotations), ToneWarn, "", "") {
+				<p class="font-mono text-xs text-muted">
+					Values an app team's chart put in an annotation that toggle-monitor could not use. Each monitor still probes on its cascade value, so this is a misconfiguration to fix — not an outage. Fix the annotation on the Ingress or Namespace.
+				</p>
+				@List("", false) {
+					for _, ai := range view.Annotations {
+						<div class="flex flex-wrap items-baseline gap-3 py-[9px] font-mono text-xs">
+							@Chip(ToneNeutral) {
+								{ ai.Namespace }
+							}
+							<a class="text-accent hover:text-accent-strong hover:underline underline-offset-2" href={ templ.SafeURL("/discovery/" + ai.Namespace + "/" + ai.IngressName + "/" + ai.Host) }>{ ai.IngressName }</a>
+							<span class="text-muted">{ ai.Host }</span>
+							<span class="text-muted">{ ai.Scope }</span>
+							<span class="text-ink">{ ai.Key }</span>
+							<span class="text-warn font-semibold">{ ai.Value }</span>
+							<span class="text-muted">{ ai.Reason }</span>
+							<span class="ml-auto text-dim">→ { ai.Field }</span>
+						</div>
+					}
+				}
+			}
 		}
 		if len(missingParents) > 0 {
-			<section class="mb-6">
-				<h2 class="text-lg font-semibold mb-2 text-rose-700 dark:text-rose-400">
-					Missing dependsOn parents ({ fmt.Sprint(len(missingParents)) })
-				</h2>
-				<div class="bg-white dark:bg-slate-900 rounded border border-rose-200 dark:border-rose-800 p-4">
-					<p class="text-sm text-slate-500 dark:text-slate-400 mb-2">
-						Monitors reference these slugs in <code class="font-mono">dependsOn</code> but no such monitor exists in the DB. The dependent monitor still runs (the gate is skipped), but the typo silently bypasses the intended pause behavior.
-					</p>
-					<ul class="text-sm divide-y divide-slate-100 dark:divide-slate-800">
-						for _, mp := range missingParents {
-							<li class="py-2 flex flex-wrap gap-3">
-								<code class="font-mono text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">{ mp.Parent }</code>
-								<span class="text-slate-500 dark:text-slate-400">referenced by</span>
-								<span class="font-medium">{ strings.Join(mp.Children, ", ") }</span>
-								if !mp.LastSeen.IsZero() {
-									<span class="ml-auto text-xs text-slate-400 dark:text-slate-500">
-										<span>last seen </span>
-										@Timestamp(mp.LastSeen)
-									</span>
-								}
-							</li>
-						}
-					</ul>
-				</div>
-			</section>
+			@issueSection("Missing dependsOn parents", len(missingParents), ToneDown, "", "") {
+				<p class="font-mono text-xs text-muted">
+					Monitors reference these slugs in <span class="text-ink">dependsOn</span> but no such monitor exists in the DB. The dependent monitor still runs (the gate is skipped), but the typo silently bypasses the intended pause behavior.
+				</p>
+				@List("", false) {
+					for _, mp := range missingParents {
+						<div class="flex flex-wrap items-baseline gap-3 py-[9px] font-mono text-xs">
+							@Chip(ToneNeutral) {
+								{ mp.Parent }
+							}
+							<span class="text-muted">referenced by</span>
+							<span class="text-ink">{ strings.Join(mp.Children, ", ") }</span>
+							if !mp.LastSeen.IsZero() {
+								<span class="ml-auto text-dim">
+									<span>last seen </span>
+									@Timestamp(mp.LastSeen)
+								</span>
+							}
+						</div>
+					}
+				}
+			}
 		}
 		if view.IgnoredTotal > 0 {
-			<section class="mb-6">
-				<h2 class="text-lg font-semibold mb-2 text-slate-600 dark:text-slate-400">
-					Skipped ingresses ({ fmt.Sprint(view.IgnoredTotal) })
-					<a class="text-sm font-normal ml-2 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100" href="/discovery?status=kube-ignored">View all →</a>
-				</h2>
-				<div class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-4">
-					<p class="text-sm text-slate-500 dark:text-slate-400 mb-2">
-						Ingresses a matching <code class="font-mono">ignore: true</code> rule deliberately excluded from monitoring. Listed for review, not action — an entry here that you don't recognize means the rule is broader than intended.
-					</p>
-					<ul class="text-sm divide-y divide-slate-100 dark:divide-slate-800">
-						for _, row := range ignoredDiscovery {
-							<li class="py-2 flex flex-wrap gap-3">
-								<code class="font-mono text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">{ row.Namespace }</code>
-								<a class="font-medium text-blue-700 dark:text-blue-400 hover:underline" href={ templ.SafeURL("/discovery/" + row.Namespace + "/" + row.IngressName + "/" + row.Host) }>{ row.IngressName }</a>
-								<span class="text-slate-500 dark:text-slate-400">{ row.Host }</span>
-								if row.Reason != nil {
-									<span class="text-slate-500 dark:text-slate-400">{ *row.Reason }</span>
-								}
-							</li>
-						}
-					</ul>
-					if rest := view.IgnoredTotal - len(ignoredDiscovery); rest > 0 {
-						<p class="text-xs text-slate-400 dark:text-slate-500 mt-2">
-							… and { fmt.Sprint(rest) } more —
-							<a class="text-blue-700 dark:text-blue-400 hover:underline" href="/discovery?status=kube-ignored">see the full listing</a>
-						</p>
+			@issueSection("Skipped ingresses", view.IgnoredTotal, ToneArchived, "/discovery?status=kube-ignored", "view all →") {
+				<p class="font-mono text-xs text-muted">
+					Ingresses a matching <span class="text-ink">ignore: true</span> rule deliberately excluded from monitoring. Listed for review, not action — an entry here that you don't recognize means the rule is broader than intended.
+				</p>
+				@List("", false) {
+					for _, row := range ignoredDiscovery {
+						<div class="flex flex-wrap items-baseline gap-3 py-[9px] font-mono text-xs">
+							@Chip(ToneNeutral) {
+								{ row.Namespace }
+							}
+							<a class="text-accent hover:text-accent-strong hover:underline underline-offset-2" href={ templ.SafeURL("/discovery/" + row.Namespace + "/" + row.IngressName + "/" + row.Host) }>{ row.IngressName }</a>
+							<span class="text-muted">{ row.Host }</span>
+							if row.Reason != nil {
+								<span class="text-muted">{ *row.Reason }</span>
+							}
+						</div>
 					}
-				</div>
-			</section>
+				}
+				if rest := view.IgnoredTotal - len(ignoredDiscovery); rest > 0 {
+					<p class="font-mono text-2xs text-dim">
+						… and { fmt.Sprint(rest) } more —
+						<a class="text-accent hover:text-accent-strong underline underline-offset-2" href="/discovery?status=kube-ignored">see the full listing</a>
+					</p>
+				}
+			}
 		}
 	}
 }
 
+// issueSection is one block of the /issues page: a titled header with a
+// toned count, an optional "view all" link out to the listing that owns
+// this class of problem, and the rows themselves.
+templ issueSection(title string, count int, tone Tone, href, linkLabel string) {
+	<section class="flex flex-col gap-3">
+		<div class="flex items-center gap-2.5">
+			@SectionHeader(title, "")
+			<span data-issue-count={ fmt.Sprint(count) }>
+				@Chip(tone) {
+					{ fmt.Sprint(count) }
+				}
+			</span>
+			if href != "" {
+				<span class="ml-auto">
+					@Link(href) {
+						{ linkLabel }
+					}
+				</span>
+			}
+		</div>
+		{ children... }
+	</section>
+}
+
+// plural picks a suffix for a count, so a banner reads "1 entry" rather
+// than "1 entry/entries".
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}

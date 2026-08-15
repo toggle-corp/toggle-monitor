@@ -3,6 +3,7 @@ package templates
 import (
 	"fmt"
 	"net/url"
+	"time"
 
 	"github.com/toggle-corp/toggle-monitor/internal/store"
 )
@@ -46,6 +47,25 @@ func tagPickerLabel(n int) string {
 		return "Add tags…"
 	}
 	return fmt.Sprintf("%d selected", n)
+}
+
+// ariaSortFor reports the aria-sort value for a sortable column:
+// "ascending"/"descending" on the active column, "" on the others.
+func ariaSortFor(key string, f MonitorsFilter) string {
+	if f.Sort != key {
+		return ""
+	}
+	if f.SortDesc {
+		return "descending"
+	}
+	return "ascending"
+}
+
+// filterIsActive reports whether the listing is showing anything other
+// than the unfiltered default, which is what gates the "clear" action.
+func (f MonitorsFilter) filterIsActive() bool {
+	return f.Search != "" || f.Status != "" || f.SSL != "" || f.Page != "" ||
+		len(f.Tags) > 0 || (f.Archived != "" && f.Archived != "active")
 }
 
 // tagFilter wires the popover-based tag picker on /monitors. The
@@ -140,7 +160,14 @@ script tagFilter() {
 					if (!btn) return;
 					var tag = btn.getAttribute("data-tag-chip-remove");
 					if (!tag) return;
-					var cb = root.querySelector("input[name='tag'][value=\"" + tag.replace(/"/g, '\\"') + "\"]");
+					// Match on the value property rather than building a
+					// CSS selector: tag values are operator-supplied and
+					// need no quoting or escaping this way.
+					var boxes = Array.prototype.slice.call(root.querySelectorAll("input[name='tag']"));
+					var cb = null;
+					for (var i = 0; i < boxes.length; i++) {
+						if (boxes[i].value === tag) { cb = boxes[i]; break; }
+					}
 					if (cb) {
 						cb.checked = false;
 						refresh();
@@ -167,13 +194,19 @@ script tagFilter() {
 	})();
 }
 
-// sortableHeader renders one <th> as a clickable link that toggles
-// the sort direction when the header is already active, or sets a
-// default ascending sort otherwise. The active column gets an
-// ASCII ↑ / ↓ indicator so the current state is visible at a glance.
+// monitorsCols is the listing's shared column template. Name and URL
+// take the slack; the machine-value columns are sized to their content
+// so the eye can run straight down them.
+const monitorsCols = "1.6fr .9fr .7fr 1.7fr .5fr .8fr .9fr .9fr"
+
+// sortableHeader renders one header cell as a clickable link that
+// toggles the sort direction when the column is already active, or
+// sets a default ascending sort otherwise. The active column gets an
+// ASCII ↑ / ↓ indicator plus aria-sort, so the current state is visible
+// both to the eye and to a screen reader.
 templ sortableHeader(label, key string, f MonitorsFilter) {
-	<th class="py-2 px-3">
-		<a class="inline-flex items-center gap-1 hover:text-slate-900 dark:hover:text-slate-100" href={ templ.URL(sortHref(key, f)) }>
+	@TableHeadCell(ariaSortFor(key, f)) {
+		<a class="inline-flex items-center gap-1 hover:text-ink rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.URL(sortHref(key, f)) }>
 			{ label }
 			if f.Sort == key {
 				if f.SortDesc {
@@ -183,7 +216,7 @@ templ sortableHeader(label, key string, f MonitorsFilter) {
 				}
 			}
 		</a>
-	</th>
+	}
 }
 
 // Paginator renders prev/next controls plus a "page X of Y" indicator.
@@ -193,150 +226,247 @@ templ Paginator(basePath string, page, perPage, total int, extraParams url.Value
 	if total <= perPage && page == 1 {
 		// Nothing to paginate.
 	} else {
-		<div class="mt-3 flex items-center gap-3 text-sm">
-			<span class="text-slate-500 dark:text-slate-400">Page { fmt.Sprint(page) } of { fmt.Sprint(pageCount(total, perPage)) } · { fmt.Sprint(total) } total</span>
-			if page > 1 {
-				<a class="text-blue-700 dark:text-blue-400 hover:underline" href={ paginatorLink(basePath, extraParams, page-1) }>← Prev</a>
-			}
-			if page*perPage < total {
-				<a class="text-blue-700 dark:text-blue-400 hover:underline" href={ paginatorLink(basePath, extraParams, page+1) }>Next →</a>
-			}
-		</div>
+		<nav aria-label="Pagination" class="flex items-center justify-between font-mono text-xs text-muted">
+			<span>page { fmt.Sprint(page) } of { fmt.Sprint(pageCount(total, perPage)) } · { fmt.Sprint(total) } total</span>
+			<span class="flex gap-2">
+				if page > 1 {
+					@paginatorStep(paginatorLink(basePath, extraParams, page-1), "prev")
+				}
+				if page*perPage < total {
+					@paginatorStep(paginatorLink(basePath, extraParams, page+1), "next")
+				}
+			</span>
+		</nav>
 	}
+}
+
+templ paginatorStep(href templ.SafeURL, label string) {
+	<a href={ href } class="px-3 py-1.5 border border-border rounded-md text-ink hover:bg-surface-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">{ label }</a>
 }
 
 templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPages []*StatusConfig, distinctTags []string, page, perPage int) {
 	@Layout("Monitors") {
-		<h1 class="text-xl font-semibold mb-3">Monitors</h1>
+		@Eyebrow(fmt.Sprintf("Monitors · %d total", listing.Total))
 		<form
 			hx-get="/monitors"
 			hx-target="body"
 			hx-push-url="true"
 			method="get"
 			action="/monitors"
-			class="mb-4 bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-3"
+			class="flex flex-col gap-3"
 		>
-			<div class="flex flex-wrap items-end gap-3">
-				<div>
-					<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="q">Search</label>
-					<input id="q" name="q" value={ filter.Search } class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm" placeholder="name or slug"/>
+			@Toolbar() {
+				<div class="flex-1 min-w-[200px]">
+					@SearchField("q", "search name or slug…", filter.Search)
 				</div>
-				<div>
-					<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="status">Status</label>
-					<select id="status" name="status" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
-						<option value="" selected?={ filter.Status == "" }>(any)</option>
-						<option value="up" selected?={ filter.Status == "up" }>up</option>
-						<option value="down" selected?={ filter.Status == "down" }>down</option>
-						<option value="temporary-paused" selected?={ filter.Status == "temporary-paused" }>temporary-paused</option>
-					</select>
-				</div>
-				<div>
-					<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="ssl">SSL</label>
-					<select id="ssl" name="ssl" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
-						<option value="" selected?={ filter.SSL == "" }>(any)</option>
-						<option value="ok" selected?={ filter.SSL == "ok" }>ok</option>
-						<option value="ssl-expiring" selected?={ filter.SSL == "ssl-expiring" }>ssl-expiring</option>
-						<option value="expired" selected?={ filter.SSL == "expired" }>expired</option>
-						<option value="ssl-skipped" selected?={ filter.SSL == "ssl-skipped" }>ssl-skipped</option>
-					</select>
-				</div>
-				<div>
-					<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="status_page">Status page</label>
-					<select id="status_page" name="status_page" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
-						<option value="" selected?={ filter.Page == "" }>(any)</option>
-						for _, p := range statusPages {
-							<option value={ p.Slug } selected?={ filter.Page == p.Slug }>{ p.FriendlyName }</option>
-						}
-					</select>
-				</div>
+				@SelectField("status", "Status") {
+					<option value="" selected?={ filter.Status == "" }>status: any</option>
+					<option value="up" selected?={ filter.Status == "up" }>up</option>
+					<option value="down" selected?={ filter.Status == "down" }>down</option>
+					<option value="temporary-paused" selected?={ filter.Status == "temporary-paused" }>temporary-paused</option>
+				}
+				@SelectField("ssl", "SSL") {
+					<option value="" selected?={ filter.SSL == "" }>ssl: any</option>
+					<option value="ok" selected?={ filter.SSL == "ok" }>ok</option>
+					<option value="ssl-expiring" selected?={ filter.SSL == "ssl-expiring" }>ssl-expiring</option>
+					<option value="expired" selected?={ filter.SSL == "expired" }>expired</option>
+					<option value="ssl-skipped" selected?={ filter.SSL == "ssl-skipped" }>ssl-skipped</option>
+				}
+				@SelectField("status_page", "Status page") {
+					<option value="" selected?={ filter.Page == "" }>page: any</option>
+					for _, p := range statusPages {
+						<option value={ p.Slug } selected?={ filter.Page == p.Slug }>{ p.FriendlyName }</option>
+					}
+				}
 				if len(distinctTags) > 0 {
-					<div data-tag-filter>
-						<div class="text-xs text-slate-500 dark:text-slate-400 mb-1">Tags <span class="text-slate-400 dark:text-slate-500">· AND match</span></div>
-						<details class="relative">
-							<summary class="list-none cursor-pointer inline-flex items-center gap-2 border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm min-w-[10rem]">
-								<span class="flex-1" data-tag-label>{ tagPickerLabel(len(filter.Tags)) }</span>
-								<span aria-hidden="true" class="text-slate-400">▾</span>
-							</summary>
-							<div class="absolute z-10 mt-1 w-72 max-h-80 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded shadow-lg flex flex-col">
-								<div class="p-2 border-b border-slate-200 dark:border-slate-700">
-									<input type="text" placeholder="Filter tags…" data-tag-search class="w-full border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm"/>
-								</div>
-								<div class="overflow-y-auto flex-1" data-tag-options>
-									for _, t := range distinctTags {
-										<label data-tag-option data-tag={ t } class="flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800">
-											<input type="checkbox" name="tag" value={ t } checked?={ filter.hasTag(t) } class="rounded border-slate-300 dark:border-slate-700"/>
-											<span>{ t }</span>
-										</label>
-									}
-									<div data-tag-empty hidden class="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">No matching tags</div>
-								</div>
-								<div class="p-2 border-t border-slate-200 dark:border-slate-700 flex justify-end">
-									<button type="button" data-tag-clear class="text-xs text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100">Clear all tags</button>
-								</div>
-							</div>
-						</details>
-					</div>
+					@tagPicker(filter, distinctTags)
 				}
-				<div>
-					<label class="block text-xs text-slate-500 dark:text-slate-400 mb-1" for="archived">Archived</label>
-					<select id="archived" name="archived" class="border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 rounded px-2 py-1 text-sm">
-						<option value="" selected?={ filter.Archived == "" || filter.Archived == "active" }>active</option>
-						<option value="archived" selected?={ filter.Archived == "archived" }>archived</option>
-						<option value="any" selected?={ filter.Archived == "any" }>any</option>
-					</select>
-				</div>
-				<button class="bg-slate-900 dark:bg-slate-200 dark:text-slate-900 text-white text-sm px-3 py-1.5 rounded">Apply</button>
-				if filter.Search != "" || filter.Status != "" || filter.SSL != "" || filter.Page != "" || len(filter.Tags) > 0 || (filter.Archived != "" && filter.Archived != "active") {
-					<a class="text-sm text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100" href="/monitors">Clear filters</a>
+				@SelectField("archived", "Archived") {
+					<option value="" selected?={ filter.Archived == "" || filter.Archived == "active" }>active</option>
+					<option value="archived" selected?={ filter.Archived == "archived" }>archived</option>
+					<option value="any" selected?={ filter.Archived == "any" }>any</option>
 				}
-			</div>
+				@Button("primary", "submit") {
+					apply
+				}
+				if filter.filterIsActive() {
+					@LinkButton("ghost", "/monitors") {
+						clear
+					}
+				}
+			}
 			if len(distinctTags) > 0 {
-				<div data-tag-chips class={ "mt-3 flex flex-wrap gap-1.5", templ.KV("hidden", len(filter.Tags) == 0) }>
+				<div data-tag-chips class={ "flex flex-wrap gap-2", templ.KV("hidden", len(filter.Tags) == 0) }>
 					for _, t := range filter.Tags {
-						<span data-tag-chip-for={ t } class="inline-flex items-center gap-1 pl-2.5 pr-1 py-0.5 rounded-full border text-xs border-slate-900 dark:border-slate-200 bg-slate-900 dark:bg-slate-200 text-white dark:text-slate-900">
-							<span data-tag-chip-label>{ t }</span>
-							<button type="button" data-tag-chip-remove={ t } aria-label={ "Remove " + t } class="inline-flex items-center justify-center w-4 h-4 rounded-full hover:bg-slate-700 dark:hover:bg-slate-400 text-white dark:text-slate-900 leading-none">×</button>
-						</span>
+						@selectedTagChip(t)
 					}
 				</div>
 				<template data-tag-chip-template>
-					<span data-tag-chip-for="" class="inline-flex items-center gap-1 pl-2.5 pr-1 py-0.5 rounded-full border text-xs border-slate-900 dark:border-slate-200 bg-slate-900 dark:bg-slate-200 text-white dark:text-slate-900">
-						<span data-tag-chip-label></span>
-						<button type="button" data-tag-chip-remove="" aria-label="Remove tag" class="inline-flex items-center justify-center w-4 h-4 rounded-full hover:bg-slate-700 dark:hover:bg-slate-400 text-white dark:text-slate-900 leading-none">×</button>
-					</span>
+					@selectedTagChip("")
 				</template>
 			}
 		</form>
 		@tagFilter()
-
 		if len(listing.Items) == 0 {
-			<div class="bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 p-6 text-center text-sm text-slate-500 dark:text-slate-400">
-				<p>No monitors match your filters.</p>
-				<a class="text-blue-700 dark:text-blue-400 hover:underline" href="/monitors">Clear filters</a>
-			</div>
+			@EmptyState("No monitors match your filters") {
+				<a class="text-accent underline underline-offset-2 hover:text-accent-strong" href="/monitors">clear filters</a>
+			}
 		} else {
-			<div class="overflow-x-auto bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700">
-				<table class="w-full">
-					<thead>
-						<tr class="bg-slate-50 dark:bg-slate-800 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
-							@sortableHeader("Name", "name", filter)
-							<th class="py-2 px-3">Tags</th>
-							@sortableHeader("Status", "status", filter)
-							@sortableHeader("URL", "url", filter)
-							@sortableHeader("Code", "code", filter)
-							@sortableHeader("Last checked", "checked", filter)
-							<th class="py-2 px-3">Depends on</th>
-							@sortableHeader("SSL expires", "ssl_expires", filter)
-						</tr>
-					</thead>
-					<tbody>
-						for _, m := range listing.Items {
-							@MonitorRow(m)
+			<div class="overflow-x-auto">
+				@Table(monitorsCols) {
+					@TableRow(true, "") {
+						@sortableHeader("name", "name", filter)
+						@TableHeadCell("") {
+							tags
 						}
-					</tbody>
-				</table>
+						@sortableHeader("status", "status", filter)
+						@sortableHeader("url", "url", filter)
+						@sortableHeader("code", "code", filter)
+						@sortableHeader("checked", "checked", filter)
+						@TableHeadCell("") {
+							depends on
+						}
+						@sortableHeader("ssl", "ssl_expires", filter)
+					}
+					for _, m := range listing.Items {
+						@MonitorRow(m)
+					}
+				}
 			</div>
 			@Paginator("/monitors", page, perPage, listing.Total, paramsFromFilter(filter))
 		}
 	}
+}
+
+// MonitorRow is one row in the listing. The URL is a real clickable
+// link (target=_blank so the operator's listing tab stays open), and
+// the last error — when present — sits under the name so a glance at
+// the listing is enough to triage a flood of failures. Down rows carry
+// a soft wash so they stay findable in a long page.
+templ MonitorRow(m store.MonitorRow) {
+	{{ tone := MonitorTone(string(m.Status), m.Archived) }}
+	@TableRow(false, tone) {
+		@TableCell("") {
+			<span class="flex flex-wrap items-center gap-2">
+				<a class="hover:underline underline-offset-2 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.URL("/monitor/" + m.Slug) }>
+					@MonitorName(m.FriendlyName)
+				</a>
+				if m.Archived {
+					@ArchivedChip()
+				}
+			</span>
+			if m.LastError != nil && *m.LastError != "" {
+				<div class="text-2xs text-down mt-[3px] break-words">{ *m.LastError }</div>
+			}
+		}
+		@TableCell("") {
+			if len(m.Tags) == 0 {
+				@Dash()
+			} else {
+				<span class="flex flex-wrap gap-1">
+					for _, t := range m.Tags {
+						@TagChip(t)
+					}
+				</span>
+			}
+		}
+		@TableCell("") {
+			if m.Archived {
+				@ArchivedChip()
+			} else {
+				@StatusBadge(string(m.Status))
+			}
+		}
+		@TableCell("") {
+			<a class="text-faint hover:text-accent hover:underline underline-offset-2 break-all rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.URL(m.URL) } target="_blank" rel="noopener noreferrer">{ m.URL }</a>
+		}
+		@TableCell("") {
+			if m.LastStatusCode != nil && *m.LastStatusCode != 0 {
+				@HTTPStatusBadge(*m.LastStatusCode)
+			} else {
+				@Dash()
+			}
+		}
+		@TableCell("") {
+			if m.LastCheckedAt != nil {
+				<span class="text-muted whitespace-nowrap" title={ m.LastCheckedAt.UTC().Format(time.RFC3339) }>{ humanDuration(*m.LastCheckedAt) }</span>
+			} else {
+				@Dash()
+			}
+		}
+		@TableCell("") {
+			if len(m.DependsOn) > 0 {
+				<span class="flex flex-wrap gap-x-1 gap-y-0.5 text-2xs">
+					for i, dep := range m.DependsOn {
+						if i > 0 {
+							<span class="text-dim" aria-hidden="true">·</span>
+						}
+						<a class="text-muted hover:text-accent hover:underline underline-offset-2 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.URL("/monitor/" + dep) }>{ dep }</a>
+					}
+				</span>
+			} else {
+				@Dash()
+			}
+		}
+		@TableCell("") {
+			{{ var sslStatus string }}
+			if m.SSLStatus != nil {
+				{{ sslStatus = string(*m.SSLStatus) }}
+			}
+			@SSLCell(sslStatus, m.SSLExpiresAt)
+		}
+	}
+}
+
+// selectedTagChip is one removable chip in the tag-filter preview row.
+// The same markup backs the <template> the picker's JS clones, so the
+// server-rendered and client-rendered chips can't drift.
+templ selectedTagChip(tag string) {
+	<span data-tag-chip-for={ tag } class="inline-flex items-center gap-1 pl-2.5 pr-1 py-0.5 rounded-full border border-ink bg-ink text-bg font-mono text-2xs font-semibold">
+		<span data-tag-chip-label>{ tag }</span>
+		<button
+			type="button"
+			data-tag-chip-remove={ tag }
+			if tag != "" {
+				aria-label={ "Remove " + tag }
+			} else {
+				aria-label="Remove tag"
+			}
+			class="inline-flex items-center justify-center w-4 h-4 rounded-full hover:bg-ink-active leading-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+		>×</button>
+	</span>
+}
+
+// tagPicker is the popover-backed multi-select for the AND tag filter.
+// The checkboxes are the source of truth; without JS the native
+// <details> disclosure still submits them through the form's apply
+// button.
+templ tagPicker(filter MonitorsFilter, distinctTags []string) {
+	<div data-tag-filter>
+		<details class="relative">
+			<summary class="list-none cursor-pointer inline-flex items-center gap-2 border border-border rounded-md px-[11px] py-2 min-h-[34px] font-mono text-[12.5px] text-ink min-w-[10rem] hover:bg-surface-hover hover:border-border-strong">
+				<span class="flex-1" data-tag-label>{ tagPickerLabel(len(filter.Tags)) }</span>
+				<span class="text-faint flex" aria-hidden="true">
+					@Icon("chevron-down", 12)
+				</span>
+			</summary>
+			<div class="absolute z-10 mt-1 w-72 max-h-80 bg-surface border border-border rounded-lg shadow-xs flex flex-col overflow-hidden">
+				<div class="p-2 border-b border-border">
+					<input type="text" placeholder="Filter tags…" data-tag-search class="w-full bg-transparent border border-border rounded-md px-2 py-1 font-mono text-xs text-ink placeholder:text-dim focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"/>
+				</div>
+				<div class="overflow-y-auto flex-1" data-tag-options>
+					for _, t := range distinctTags {
+						<label data-tag-option data-tag={ t } class="flex items-center gap-2 px-3 py-1.5 font-mono text-xs text-ink cursor-pointer hover:bg-surface-hover">
+							<input type="checkbox" name="tag" value={ t } checked?={ filter.hasTag(t) } class="rounded border-border-strong accent-[--tm-accent]"/>
+							<span>{ t }</span>
+						</label>
+					}
+					<div data-tag-empty hidden class="px-3 py-2 font-mono text-xs text-faint">No matching tags</div>
+				</div>
+				<div class="p-2 border-t border-border flex justify-end">
+					<button type="button" data-tag-clear class="font-mono text-2xs text-muted hover:text-ink rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">clear all tags</button>
+				</div>
+			</div>
+		</details>
+	</div>
 }
