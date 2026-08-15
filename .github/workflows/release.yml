@@ -32,9 +32,6 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          submodules: true
 
       - name: Derive release version
         id: release
@@ -53,33 +50,20 @@ jobs:
             echo "is_prerelease=${is_prerelease}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Install typos
-        # Required by fugit/configs/cliff.toml line 111: a commit
-        # preprocessor runs `typos --write-changes -` against every
-        # commit message to auto-fix spelling on the way to the
-        # changelog. Without typos on PATH the preprocessor's shell
-        # command fails and git-cliff silently drops commits,
-        # producing an empty release body.
-        uses: taiki-e/install-action@v2
-        with:
-          tool: typos
+      # release.sh renders CHANGELOG.md and commits it in the tagged commit, so
+      # the release notes are its topmost section. Re-rendering here with
+      # `git-cliff --latest` instead would diverge: --latest resolves the
+      # previous release to the adjacent tag, so a stable release cut right
+      # after a `-dev` tag renders an empty body.
+      - name: Extract the release notes
+        shell: bash
+        run: |
+          awk '/^## /{ section++ } section == 1' CHANGELOG.md > RELEASE_NOTES.md
 
-      - name: Generate changelog
-        id: git-cliff
-        uses: orhun/git-cliff-action@v4
-        with:
-          config: fugit/configs/cliff.toml
-          # NOTE: no --no-exec. fugit/configs/cliff.toml uses git-cliff
-          # postprocessors that shell out to `sed` to substitute <REPO>
-          # placeholders for real commit/PR URLs, and a preprocessor
-          # that runs `typos` against commit messages. --no-exec
-          # disables both, leaving literal "<REPO>" strings AND empty
-          # bodies (typos failure causes commits to be dropped).
-          args: -vv --latest --strip all --github-repo ${{ github.repository }}
-        env:
-          OUTPUT: CHANGELOG.latest.md
-          FUGIT_REMOTE_BASE_URL: https://github.com/${{ github.repository }}
-          FUGIT_REMOTE_PLATFORM_URL: https://github.com
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "::error::No release notes found in CHANGELOG.md"
+            exit 1
+          fi
 
       - name: Build extended changelog
         shell: bash
@@ -91,8 +75,10 @@ jobs:
             echo "> Helm Target Revision: \`${{ needs.build.outputs.helm_target_revision }}\`"
             echo "> Docker image: \`${{ needs.build.outputs.docker_image }}\`"
             echo
-            cat "${{ steps.git-cliff.outputs.changelog }}"
+            cat RELEASE_NOTES.md
           } > CHANGELOG.extended.md
+
+          cat CHANGELOG.extended.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
