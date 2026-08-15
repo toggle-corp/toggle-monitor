@@ -307,7 +307,7 @@ templ statusMonitorRow(m store.MonitorRow) {
 	@TableRow(false, MonitorTone(string(m.Status), m.Archived)) {
 		@TableCell("") {
 			<div class="flex flex-col gap-0.5 min-w-0">
-				<a href={ templ.SafeURL("/monitor/" + m.Slug) } class="w-fit hover:underline underline-offset-2 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+				<a href={ templ.SafeURL("/monitor/" + m.Slug) } class="w-fit text-[13px] hover:underline underline-offset-2 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
 					@MonitorName(m.FriendlyName)
 				</a>
 				@MonitorURLCell(m.URL)
@@ -417,8 +417,5 @@ templ StatusIndexPage(entries []StatusPageStats) {
 
 // pageCountLabel is the dim meta beside the /status heading.
 func pageCountLabel(n int) string {
-	if n == 1 {
-		return "1 configured"
-	}
 	return fmt.Sprintf("%d configured", n)
 }

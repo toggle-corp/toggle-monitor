@@ -1,7 +1,8 @@
 // Tailwind config for the toggle-monitor UI. Scans every .templ source
 // + every .go file under templates/ (covers both the templ-generated
 // *_templ.go and hand-written helpers like helpers.go that build
-// classnames as Go string literals — e.g. statusToneClasses).
+// classnames as Go string literals — e.g. TraceActionClass in
+// discovery_view.go).
 //
 // Every color resolves to a --tm-* semantic role defined in input.css, so
 // `bg-surface` / `text-muted` mean the same thing in both themes and no

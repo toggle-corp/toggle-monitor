@@ -267,8 +267,12 @@ templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []stri
 		</div>
 		if m.Archived {
 			@archivedBanner(m)
-		} else if m.LastError != nil && *m.LastError != "" {
-			@Banner(ToneDown) {
+		} else if statusTone := MonitorTone(string(m.Status), false); statusTone != ToneUp && m.LastError != nil && *m.LastError != "" {
+			// Toned by the monitor's own status, so a gated monitor's
+			// banner matches the paused badge above it rather than
+			// reading as a live outage. A recovered monitor's stale
+			// error stays in the state panel below and gets no banner.
+			@Banner(statusTone) {
 				if m.LastStatusCode != nil && *m.LastStatusCode != 0 {
 					<span class="text-ink">{ fmt.Sprint(*m.LastStatusCode) }</span>
 					<span> </span>
@@ -353,6 +357,16 @@ func currentStateLabel(archived bool) string {
 	return "Current state"
 }
 
+// downtimeLabel renders a resolve event's downtime. A recovery inside a
+// single check reads as "<1s"; humanInterval answers "n/a" for a
+// non-positive duration, which reads as missing data.
+func downtimeLabel(seconds int64) string {
+	if seconds <= 0 {
+		return "<1s"
+	}
+	return humanInterval(time.Duration(seconds) * time.Second)
+}
+
 // historyEntry is one alert event in the per-monitor history: what
 // happened and its code on the first line, the detail underneath.
 templ historyEntry(ev store.AlertEventRow) {
@@ -368,7 +382,7 @@ templ historyEntry(ev store.AlertEventRow) {
 			if ev.Error != nil && *ev.Error != "" {
 				{ *ev.Error }
 			} else if ev.DowntimeSeconds != nil {
-				recovered after { humanInterval(time.Duration(*ev.DowntimeSeconds) * time.Second) }
+				recovered after { downtimeLabel(*ev.DowntimeSeconds) }
 			}
 		</div>
 	</div>

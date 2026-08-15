@@ -64,7 +64,7 @@ templ DiscoveryListing(rows []store.DiscoverySnapshotRow, filter DiscoveryFilter
 		if len(rows) == 0 {
 			if filter.Namespace != "" || filter.Status != "" {
 				@EmptyState("No discovery rows match the current filters") {
-					<a class="text-accent underline underline-offset-2 hover:text-accent-strong" href="/discovery">clear filters</a>
+					<a class="text-accent underline underline-offset-2 hover:text-accent-strong rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href="/discovery">clear filters</a>
 				}
 			} else {
 				@discoveryEmptyState(status)

@@ -17,10 +17,10 @@ type NavMeta struct {
 	Active string
 }
 
-// navSection maps a request path onto the nav link that owns it, so
+// NavSection maps a request path onto the nav link that owns it, so
 // /monitor/<slug> lights up "Monitors" and /alert/<id> lights up
-// "Alerts".
-func navSection(path string) string {
+// "Alerts". The Server's nav middleware calls it once per request.
+func NavSection(path string) string {
 	switch {
 	case path == "/":
 		return "/"
@@ -38,10 +38,6 @@ func navSection(path string) string {
 		return ""
 	}
 }
-
-// NavSectionFor is navSection, exported for the Server's nav
-// middleware.
-func NavSectionFor(path string) string { return navSection(path) }
 
 type navCtxKey struct{}
 

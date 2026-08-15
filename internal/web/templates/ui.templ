@@ -25,7 +25,7 @@ templ Badge(tone Tone, label string) {
 	<span data-status={ string(tone) } class={ "inline-flex items-center gap-1.5 font-mono text-xs font-semibold whitespace-nowrap", toneText(tone) }>
 		@Dot(tone)
 		if label == "" {
-			{ toneLabel(tone) }
+			{ badgeLabel(tone) }
 		} else {
 			{ label }
 		}
@@ -43,15 +43,15 @@ templ Chip(tone Tone) {
 
 // MonitorID renders a monitor's identity as a path — "auth/login-api",
 // or "/login-api" when it has no scope. The scope is dimmed so the name
-// itself is what the eye lands on when scanning a column.
+// itself is what the eye lands on when scanning a column. The font size
+// is inherited so the same component reads as a heading inside
+// PageTitle and as a cell inside a TableRow.
+//
+// The two spans sit on one line with no `if` between them: templ turns
+// the whitespace at the end of a conditional block into a rendered
+// space, which would put a gap after the separating slash.
 templ MonitorID(scope, name string) {
-	<span class="font-mono text-[13px] text-ink inline-flex items-baseline min-w-0">
-		if scope != "" {
-			<span class="text-muted shrink-0">{ scope }/</span>
-		} else {
-			<span class="text-muted shrink-0">/</span>
-		}<span class="truncate">{ name }</span>
-	</span>
+	<span class="font-mono text-ink inline-flex items-baseline min-w-0"><span class="text-muted shrink-0">{ scopePath(scope) }</span><span class="truncate">{ name }</span></span>
 }
 
 // MetricTile is one cell of an overview rollup: a status mark, an
@@ -155,10 +155,12 @@ templ List(label string, flush bool) {
 
 // KeyValue is one row of a List: a fixed-width dim label and a value.
 // keyWidth is the label column in pixels — widen it for a panel whose
-// labels run long rather than letting them wrap.
+// labels run long rather than letting them wrap. The label breaks
+// anywhere rather than overflowing its track: Alertmanager label keys
+// are arbitrary underscore-joined names with no soft-break opportunity.
 templ KeyValue(label string, keyWidth int) {
 	<div class="flex py-[9px] font-mono text-xs gap-2">
-		<span style={ "width:" + px(keyWidth) } class="flex-none text-faint">{ label }</span>
+		<span style={ "width:" + px(keyWidth) } class="flex-none text-faint break-all">{ label }</span>
 		<span class="text-ink min-w-0 break-words">{ children... }</span>
 	</div>
 }
@@ -197,9 +199,10 @@ templ SectionHeader(title, meta string) {
 }
 
 // Eyebrow is the small uppercase line that names a screen and its
-// scale ("Monitors · 48 total").
+// scale ("Monitors · 48 total"). It is the h1 of the listing screens,
+// which carry no other top-level heading.
 templ Eyebrow(text string) {
-	<div class="font-mono text-xs uppercase tracking-[.04em] text-faint">{ text }</div>
+	<h1 class="m-0 font-mono text-xs font-normal uppercase tracking-[.04em] text-faint">{ text }</h1>
 }
 
 // PageTitle is a screen's main heading. Machine-derived titles (a

@@ -662,7 +662,7 @@ func statusMonitorRow(m store.MonitorRow) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "\" class=\"w-fit hover:underline underline-offset-2 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "\" class=\"w-fit text-[13px] hover:underline underline-offset-2 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -955,9 +955,6 @@ func StatusIndexPage(entries []StatusPageStats) templ.Component {
 
 // pageCountLabel is the dim meta beside the /status heading.
 func pageCountLabel(n int) string {
-	if n == 1 {
-		return "1 configured"
-	}
 	return fmt.Sprintf("%d configured", n)
 }
 

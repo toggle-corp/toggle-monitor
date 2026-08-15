@@ -32,10 +32,19 @@ script themeBoot() {
 	})();
 }
 
-// themeToggleScript wires the three nav buttons. Highlight comes from
-// the `data-theme` attribute set by themeBoot + this handler.
+// themeToggleScript wires the three nav buttons. The highlight comes
+// from the `data-theme` attribute set by themeBoot + this handler;
+// aria-pressed carries the same selection for assistive tech, and is
+// set here rather than in themeBoot because the buttons do not exist
+// yet while <head> runs.
 script themeToggle() {
 	(function() {
+		var cells = document.querySelectorAll("[data-theme-set]");
+		function mark(pref) {
+			cells.forEach(function(btn) {
+				btn.setAttribute("aria-pressed", btn.getAttribute("data-theme-set") === pref ? "true" : "false");
+			});
+		}
 		function apply(pref) {
 			try { localStorage.setItem("toggle-monitor-theme", pref); } catch (_) {}
 			var resolved = pref;
@@ -44,10 +53,12 @@ script themeToggle() {
 			}
 			document.documentElement.classList.toggle("dark", resolved === "dark");
 			document.documentElement.setAttribute("data-theme", pref);
+			mark(pref);
 		}
-		document.querySelectorAll("[data-theme-set]").forEach(function(btn) {
+		cells.forEach(function(btn) {
 			btn.addEventListener("click", function() { apply(btn.getAttribute("data-theme-set")); });
 		});
+		mark(document.documentElement.getAttribute("data-theme") || "system");
 	})();
 }
 
@@ -126,7 +137,7 @@ templ navLink(l Crumb, nav NavMeta) {
 // raw preference so "system" stays distinct from whichever of
 // light/dark it currently resolves to.
 templ themeSwitcher() {
-	<div class="ml-auto inline-flex items-center rounded-md border border-border overflow-hidden font-mono text-2xs font-medium" role="group" aria-label="Theme">
+	<div class="ml-auto inline-flex items-center rounded-md border border-border overflow-hidden font-mono text-2xs font-semibold" role="group" aria-label="Theme">
 		@themeSwitcherCell("light", "☀", "Light theme")
 		@themeSwitcherCell("dark", "☾", "Dark theme")
 		@themeSwitcherCell("system", "⌂", "System theme")
@@ -139,6 +150,7 @@ templ themeSwitcherCell(pref, glyph, label string) {
 		data-theme-set={ pref }
 		title={ label }
 		aria-label={ label }
+		aria-pressed="false"
 		class="inline-flex items-center px-2.5 py-1 min-h-[28px] text-muted transition-colors hover:bg-surface-hover hover:text-ink border-l border-border first:border-l-0 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
 	>{ glyph }</button>
 }
@@ -186,8 +198,12 @@ templ HTTPStatusBadge(code int) {
 // the per-monitor history (open/resolve/reminder + ssl_ variants). It
 // is bare colored text rather than a chip: the event kind is the first
 // column of the feed and reads as a heading for its row.
+//
+// Its hook is `data-event`, not `data-status`: the tone here describes
+// what happened, not what a monitor currently is, and a page carries
+// both.
 templ EventTypeBadge(t string) {
-	<span data-status={ string(EventTone(t)) } class={ "font-mono text-xs font-semibold", toneText(EventTone(t)) }>{ t }</span>
+	<span data-event={ t } data-tone={ string(EventTone(t)) } class={ "font-mono text-xs font-semibold", toneText(EventTone(t)) }>{ t }</span>
 }
 
 // SSLCell renders the compact SSL column used in both /monitors and

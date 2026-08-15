@@ -469,14 +469,14 @@ func monitorHost(s string) string {
 }
 
 // navWrap injects per-request NavMeta (the issue count and the active
-// nav section) into ctx so the operator-side Layout can render the nav
-// without each handler having to compute it. Skipped for the public
-// /status page, which uses its own bare layout.
+// nav section) into ctx so the Layout can render the nav without each
+// handler having to compute it. Every UI route goes through it,
+// including /status, which renders inside the same operator layout.
 func (s *Server) navWrap(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		meta := templates.NavMeta{
 			IssueCount: s.issueCount(r.Context()),
-			Active:     templates.NavSectionFor(r.URL.Path),
+			Active:     templates.NavSection(r.URL.Path),
 		}
 		h(w, r.WithContext(templates.WithNav(r.Context(), meta)))
 	}

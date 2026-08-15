@@ -220,7 +220,7 @@ func TestMonitorDetail_renders(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("monitor detail status: got %d, want 200", resp.StatusCode)
 	}
-	for _, want := range []string{"API", "http://api/health", "Service Unavailable", "503", `data-status="down"`, "open"} {
+	for _, want := range []string{"API", "http://api/health", "Service Unavailable", "503", `data-status="down"`, `data-event="open"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("detail body missing %q", want)
 		}

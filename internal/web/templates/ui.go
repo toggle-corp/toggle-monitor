@@ -110,6 +110,19 @@ func toneLabel(t Tone) string {
 	}
 }
 
+// badgeLabel is a Badge's wording when the caller supplies none. A
+// badge names a state, so a tone with no state of its own reads as
+// "unknown" rather than borrowing toneLabel's "total", which is a
+// MetricTile's word for a rollup count.
+func badgeLabel(t Tone) string {
+	switch t {
+	case ToneNeutral, ToneAccent, "":
+		return "unknown"
+	default:
+		return toneLabel(t)
+	}
+}
+
 // chipTone colors a chip. Unlike a badge, a neutral chip reads as muted
 // rather than primary text — a chip is a label on something else, not a
 // status in its own right.
@@ -276,6 +289,15 @@ func AMStatusTone(s string) Tone {
 	default:
 		return ToneNeutral
 	}
+}
+
+// scopePath is the dimmed leading segment of a MonitorID — "auth/" for
+// a scoped monitor, a bare "/" for one with no scope.
+func scopePath(scope string) string {
+	if scope == "" {
+		return "/"
+	}
+	return scope + "/"
 }
 
 // px renders an integer as a CSS pixel length, for the few components

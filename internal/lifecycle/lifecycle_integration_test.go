@@ -149,7 +149,12 @@ monitors:
 	for {
 		body := mustGet(t, base+"/monitor/api")
 		lastBody = body
-		if strings.Contains(body, `data-status="up"`) && strings.Contains(body, "open") && strings.Contains(body, "resolve") {
+		// data-status is the live status badge; data-event is the alert
+		// history. Asserting both means the loop waits for the monitor to
+		// have gone down and recovered, not just for the events to exist.
+		if strings.Contains(body, `data-status="up"`) &&
+			strings.Contains(body, `data-event="open"`) &&
+			strings.Contains(body, `data-event="resolve"`) {
 			break
 		}
 		if time.Now().After(deadline) {

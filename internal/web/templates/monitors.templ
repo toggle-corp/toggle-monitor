@@ -309,7 +309,7 @@ templ MonitorsPage(listing store.MonitorListing, filter MonitorsFilter, statusPa
 		@tagFilter()
 		if len(listing.Items) == 0 {
 			@EmptyState("No monitors match your filters") {
-				<a class="text-accent underline underline-offset-2 hover:text-accent-strong" href="/monitors">clear filters</a>
+				<a class="text-accent underline underline-offset-2 hover:text-accent-strong rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href="/monitors">clear filters</a>
 			}
 		} else {
 			<div class="overflow-x-auto">
@@ -348,7 +348,7 @@ templ MonitorRow(m store.MonitorRow) {
 	@TableRow(false, tone) {
 		@TableCell("") {
 			<span class="flex flex-wrap items-center gap-2">
-				<a class="hover:underline underline-offset-2 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.URL("/monitor/" + m.Slug) }>
+				<a class="text-[13px] hover:underline underline-offset-2 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.URL("/monitor/" + m.Slug) }>
 					@MonitorName(m.FriendlyName)
 				</a>
 				if m.Archived {
@@ -371,11 +371,7 @@ templ MonitorRow(m store.MonitorRow) {
 			}
 		}
 		@TableCell("") {
-			if m.Archived {
-				@ArchivedChip()
-			} else {
-				@StatusBadge(string(m.Status))
-			}
+			@StatusBadge(string(m.Status))
 		}
 		@TableCell("") {
 			<a class="text-faint hover:text-accent hover:underline underline-offset-2 break-all rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.URL(m.URL) } target="_blank" rel="noopener noreferrer">{ m.URL }</a>

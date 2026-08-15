@@ -100,7 +100,7 @@ templ statusPageTile(s StatusPageStats) {
 					<div class="font-mono text-2xs text-faint truncate">/status/{ s.Slug }</div>
 				</div>
 			</div>
-			<div class="text-xs text-muted leading-snug min-h-[34px]">
+			<div class="text-xs text-muted leading-snug min-h-[34px] line-clamp-2">
 				if s.Description != "" {
 					{ s.Description }
 				}
@@ -204,7 +204,8 @@ type MissingParent struct {
 
 templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page, perPage int, mapping MappingHealth) {
 	@Layout("Home") {
-		@Eyebrow(fmt.Sprintf("Overview · %d monitors", trackedMonitors(stats)))
+		{{ tracked := trackedMonitors(stats) }}
+		@Eyebrow(fmt.Sprintf("Overview · %d %s", tracked, plural(tracked, "monitor", "monitors")))
 		<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
 			@MetricTileLink(ToneUp, "up", stats.Up, "/monitors?status=up", true)
 			@MetricTileLink(ToneDown, "down", stats.Down, "/monitors?status=down", false)
@@ -216,7 +217,7 @@ templ Homepage(stats store.HomepageStats, alerts store.LatestAlertsListing, page
 		if len(mapping.Invalid) > 0 {
 			@Banner(ToneDown) {
 				{ fmt.Sprint(len(mapping.Invalid)) } userMapping entr{ plural(len(mapping.Invalid), "y", "ies") } failed validation ·
-				<a class="text-accent underline underline-offset-2 hover:text-accent-strong" href="/issues">review on /issues</a>
+				<a class="text-accent underline underline-offset-2 hover:text-accent-strong rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href="/issues">review on /issues</a>
 			}
 		}
 		<div class="flex flex-col gap-3">
@@ -250,7 +251,7 @@ templ alertFeedRow(ev store.AlertEventRow) {
 			@EventTypeBadge(string(ev.Type))
 		}
 		@TableCell("") {
-			<a class="hover:underline underline-offset-2 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.URL("/monitor/" + ev.MonitorSlug) }>
+			<a class="text-[13px] hover:underline underline-offset-2 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.URL("/monitor/" + ev.MonitorSlug) }>
 				@MonitorName(ev.FriendlyName)
 			</a>
 		}
@@ -354,7 +355,7 @@ templ IssuesPage(view IssuesView) {
 							@Chip(ToneNeutral) {
 								{ ai.Namespace }
 							}
-							<a class="text-accent hover:text-accent-strong hover:underline underline-offset-2" href={ templ.SafeURL("/discovery/" + ai.Namespace + "/" + ai.IngressName + "/" + ai.Host) }>{ ai.IngressName }</a>
+							<a class="text-accent hover:text-accent-strong hover:underline underline-offset-2 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.SafeURL("/discovery/" + ai.Namespace + "/" + ai.IngressName + "/" + ai.Host) }>{ ai.IngressName }</a>
 							<span class="text-muted">{ ai.Host }</span>
 							<span class="text-muted">{ ai.Scope }</span>
 							<span class="text-ink">{ ai.Key }</span>
@@ -401,7 +402,7 @@ templ IssuesPage(view IssuesView) {
 							@Chip(ToneNeutral) {
 								{ row.Namespace }
 							}
-							<a class="text-accent hover:text-accent-strong hover:underline underline-offset-2" href={ templ.SafeURL("/discovery/" + row.Namespace + "/" + row.IngressName + "/" + row.Host) }>{ row.IngressName }</a>
+							<a class="text-accent hover:text-accent-strong hover:underline underline-offset-2 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href={ templ.SafeURL("/discovery/" + row.Namespace + "/" + row.IngressName + "/" + row.Host) }>{ row.IngressName }</a>
 							<span class="text-muted">{ row.Host }</span>
 							if row.Reason != nil {
 								<span class="text-muted">{ *row.Reason }</span>
@@ -412,7 +413,7 @@ templ IssuesPage(view IssuesView) {
 				if rest := view.IgnoredTotal - len(ignoredDiscovery); rest > 0 {
 					<p class="font-mono text-2xs text-dim">
 						… and { fmt.Sprint(rest) } more —
-						<a class="text-accent hover:text-accent-strong underline underline-offset-2" href="/discovery?status=kube-ignored">see the full listing</a>
+						<a class="text-accent hover:text-accent-strong underline underline-offset-2 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" href="/discovery?status=kube-ignored">see the full listing</a>
 					</p>
 				}
 			}
