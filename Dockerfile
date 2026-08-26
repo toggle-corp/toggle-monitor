@@ -1,7 +1,7 @@
 # Multi-stage build: a Go build stage, then a distroless final image.
 # Output is a static linux/amd64 binary at /app/toggle-monitor.
 
-FROM golang:1.26-alpine AS build
+FROM golang:1.27-alpine AS build
 WORKDIR /src
 # Cache deps separately from source for warmer rebuilds.
 COPY go.mod go.sum ./
