@@ -238,8 +238,10 @@ func (m *Manager) Pause(ctx context.Context, channel, slug string, at time.Time)
 	defer m.mu.Unlock()
 	cs := m.channelStateFor(channel)
 	// A paused child's failure belongs to its parent's incident, so it
-	// must not count toward this channel's burst.
-	cs.clearDown(slug)
+	// must not count toward this channel's burst. Its notifier claim
+	// survives: a child already paged individually still has a message
+	// its eventual recovery has to edit.
+	cs.forgetDown(slug)
 	switch cs.mode {
 	case modeGroup:
 		if lg := m.groups[channel]; lg != nil {

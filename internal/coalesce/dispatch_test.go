@@ -50,7 +50,8 @@ func (f *fakeSink) countByType(et alert.EventType) int {
 // newDispatchManager wires a Manager with the burst-dispatcher options
 // the new tests exercise. burstThreshold=2 keeps timeline arithmetic
 // tight while still distinguishing sub-threshold from at-threshold.
-func newDispatchManager(t *testing.T, clock *time.Time, burstThreshold int) (*Manager, *fakeStore, *fakePoster, *fakeSink) {
+// A zero burstWindow takes the Manager's own default.
+func newDispatchManager(t *testing.T, clock *time.Time, burstThreshold int, burstWindow time.Duration) (*Manager, *fakeStore, *fakePoster, *fakeSink) {
 	t.Helper()
 	fs := newFakeStore()
 	fp := &fakePoster{}
@@ -62,6 +63,7 @@ func newDispatchManager(t *testing.T, clock *time.Time, burstThreshold int) (*Ma
 		Config:         group.Config{GroupWait: 0, GroupInterval: 5 * time.Minute, RepeatInterval: 30 * time.Minute},
 		PendingWait:    30 * time.Second,
 		BurstThreshold: burstThreshold,
+		BurstWindow:    burstWindow,
 		Now:            func() time.Time { return *clock },
 	})
 	return m, fs, fp, sink
@@ -81,7 +83,7 @@ func downEntry(slug string, at time.Time) Entry {
 // emits ONE per-monitor message via the sink. No group is created.
 func TestDispatch_individualMode_singleFailure_flushesAtExpiry(t *testing.T) {
 	clock := base
-	m, fs, fp, sink := newDispatchManager(t, &clock, 5)
+	m, fs, fp, sink := newDispatchManager(t, &clock, 5, 0)
 	ctx := context.Background()
 
 	m.Route(ctx, "ops", downEntry("a", clock))
@@ -115,7 +117,7 @@ func TestDispatch_individualMode_singleFailure_flushesAtExpiry(t *testing.T) {
 // 25s, threshold=5 → all 3 flush as separate per-monitor messages.
 func TestDispatch_subThresholdBurst_flushesAllAsIndividuals(t *testing.T) {
 	clock := base
-	m, _, fp, sink := newDispatchManager(t, &clock, 5)
+	m, _, fp, sink := newDispatchManager(t, &clock, 5, 0)
 	ctx := context.Background()
 
 	m.Route(ctx, "ops", downEntry("a", clock))
@@ -137,7 +139,7 @@ func TestDispatch_subThresholdBurst_flushesAllAsIndividuals(t *testing.T) {
 // 5 failures in 25s, threshold=5 → ONE digest, ZERO individuals.
 func TestDispatch_aboveThreshold_promotesToGroup(t *testing.T) {
 	clock := base
-	m, fs, fp, sink := newDispatchManager(t, &clock, 5)
+	m, fs, fp, sink := newDispatchManager(t, &clock, 5, 0)
 	ctx := context.Background()
 
 	for _, slug := range []string{"a", "b", "c", "d", "e"} {
@@ -165,7 +167,7 @@ func TestDispatch_aboveThreshold_promotesToGroup(t *testing.T) {
 // NOT generate an individual flush — it was never notified.
 func TestDispatch_pendingRecoveryRemovesFromPool(t *testing.T) {
 	clock := base
-	m, _, fp, sink := newDispatchManager(t, &clock, 5)
+	m, _, fp, sink := newDispatchManager(t, &clock, 5, 0)
 	ctx := context.Background()
 
 	for _, slug := range []string{"a", "b", "c", "d", "e"} {
@@ -194,7 +196,7 @@ func TestDispatch_pendingRecoveryRemovesFromPool(t *testing.T) {
 // don't count and don't notify.
 func TestDispatch_pendingPauseRemovesFromPool(t *testing.T) {
 	clock := base
-	m, _, fp, sink := newDispatchManager(t, &clock, 5)
+	m, _, fp, sink := newDispatchManager(t, &clock, 5, 0)
 	ctx := context.Background()
 
 	for _, slug := range []string{"a", "b", "c", "d", "e"} {
@@ -218,7 +220,7 @@ func TestDispatch_pendingPauseRemovesFromPool(t *testing.T) {
 // group (no second pendingWait). Mirrors Scenario 4's late-joiner.
 func TestDispatch_groupMode_newFailureJoinsGroup(t *testing.T) {
 	clock := base
-	m, _, fp, sink := newDispatchManager(t, &clock, 2)
+	m, _, fp, sink := newDispatchManager(t, &clock, 2, 0)
 	ctx := context.Background()
 
 	m.Route(ctx, "ops", downEntry("a", clock))
@@ -257,7 +259,7 @@ func TestDispatch_groupMode_newFailureJoinsGroup(t *testing.T) {
 // mode — the next failure starts a fresh pending window.
 func TestDispatch_groupClose_revertsToIndividualMode(t *testing.T) {
 	clock := base
-	m, fs, fp, sink := newDispatchManager(t, &clock, 2)
+	m, fs, fp, sink := newDispatchManager(t, &clock, 2, 0)
 	ctx := context.Background()
 
 	// Promote to group.
@@ -301,7 +303,7 @@ func TestDispatch_groupClose_revertsToIndividualMode(t *testing.T) {
 // digest). The pool just discards.
 func TestDispatch_allRecoverBeforePendingExpiry_silent(t *testing.T) {
 	clock := base
-	m, _, fp, sink := newDispatchManager(t, &clock, 5)
+	m, _, fp, sink := newDispatchManager(t, &clock, 5, 0)
 	ctx := context.Background()
 
 	for _, slug := range []string{"a", "b", "c"} {
@@ -581,7 +583,7 @@ func TestDispatch_groupMention_noneSkipsBroadcast(t *testing.T) {
 // individual EventResolve through the same sink.
 func TestDispatch_individualMode_resolveAfterFlush(t *testing.T) {
 	clock := base
-	m, _, _, sink := newDispatchManager(t, &clock, 5)
+	m, _, _, sink := newDispatchManager(t, &clock, 5, 0)
 	ctx := context.Background()
 
 	m.Route(ctx, "ops", downEntry("a", clock))
@@ -612,25 +614,6 @@ func resolveEntry(slug string, at time.Time) Entry {
 	}
 }
 
-// newTrickleManager wires a Manager with an explicit burst window so
-// the cumulative-count tests can age entries in and out deliberately.
-func newTrickleManager(t *testing.T, clock *time.Time, burstThreshold int, burstWindow time.Duration) (*Manager, *fakePoster, *fakeSink) {
-	t.Helper()
-	fp := &fakePoster{}
-	sink := &fakeSink{}
-	m := New(Options{
-		Store:          newFakeStore(),
-		Poster:         fp,
-		Sink:           sink.Notify,
-		Config:         group.Config{GroupWait: 0, GroupInterval: 5 * time.Minute, RepeatInterval: 30 * time.Minute},
-		PendingWait:    30 * time.Second,
-		BurstThreshold: burstThreshold,
-		BurstWindow:    burstWindow,
-		Now:            func() time.Time { return *clock },
-	})
-	return m, fp, sink
-}
-
 // TestDispatch_trickleAcrossWindows_promotesOnCumulativeCount is the
 // regression guard for the storm: a cluster-wide outage reaches the
 // dispatcher one monitor at a time, because the scheduler jitters each
@@ -641,7 +624,7 @@ func newTrickleManager(t *testing.T, clock *time.Time, burstThreshold int, burst
 // after which the channel promotes and the rest lands in one digest.
 func TestDispatch_trickleAcrossWindows_promotesOnCumulativeCount(t *testing.T) {
 	clock := base
-	m, fp, sink := newTrickleManager(t, &clock, 3, 5*time.Minute)
+	m, _, fp, sink := newDispatchManager(t, &clock, 3, 5*time.Minute)
 	ctx := context.Background()
 
 	// Five monitors fail one per pendingWait window — never two at once.
@@ -670,7 +653,7 @@ func TestDispatch_trickleAcrossWindows_promotesOnCumulativeCount(t *testing.T) {
 // the channel after the incident closed.
 func TestDispatch_individuallyPagedMonitor_resolvesThroughItsOwnMessage(t *testing.T) {
 	clock := base
-	m, fp, sink := newTrickleManager(t, &clock, 3, 5*time.Minute)
+	m, _, fp, sink := newDispatchManager(t, &clock, 3, 5*time.Minute)
 	ctx := context.Background()
 
 	for i, slug := range []string{"a", "b", "c"} {
@@ -696,7 +679,7 @@ func TestDispatch_individuallyPagedMonitor_resolvesThroughItsOwnMessage(t *testi
 // separate incidents, not one burst, and must keep paging individually.
 func TestDispatch_burstWindowAgesOut_keepsUnrelatedFailuresIndividual(t *testing.T) {
 	clock := base
-	m, fp, sink := newTrickleManager(t, &clock, 3, 2*time.Minute)
+	m, _, fp, sink := newDispatchManager(t, &clock, 3, 2*time.Minute)
 	ctx := context.Background()
 
 	for i, slug := range []string{"a", "b", "c", "d"} {
@@ -711,5 +694,99 @@ func TestDispatch_burstWindowAgesOut_keepsUnrelatedFailuresIndividual(t *testing
 	}
 	if fp.posts != 0 {
 		t.Errorf("failures spread beyond burstWindow must not group: %d digests", fp.posts)
+	}
+}
+
+// TestDispatch_burstWindowEqualToPendingWait_stillPromotes guards the
+// boundary the config validator allows: burstWindow may equal
+// pendingWait, and at expiry the pool's own entries are exactly
+// pendingWait old — right on the ageing edge. The burst count is the
+// union of the aged window and the pool, so a simultaneous
+// at-threshold burst still promotes instead of paging every monitor.
+func TestDispatch_burstWindowEqualToPendingWait_stillPromotes(t *testing.T) {
+	clock := base
+	m, _, fp, sink := newDispatchManager(t, &clock, 3, 30*time.Second)
+	ctx := context.Background()
+
+	for _, slug := range []string{"a", "b", "c"} {
+		m.Route(ctx, "ops", downEntry(slug, clock))
+	}
+	clock = base.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+
+	if got := len(sink.calls); got != 0 {
+		t.Errorf("at-threshold burst paged individually: %d sink calls", got)
+	}
+	if fp.posts != 1 {
+		t.Errorf("want exactly 1 digest, got %d", fp.posts)
+	}
+}
+
+// TestDispatch_pausedIndividualMonitor_keepsItsOwnMessage: a monitor
+// already paged individually, then paused by push-propagation, still
+// owns its Slack parent. The pause drops it from the burst count only —
+// its recovery has to edit that message even once the channel promotes.
+func TestDispatch_pausedIndividualMonitor_keepsItsOwnMessage(t *testing.T) {
+	clock := base
+	m, _, fp, sink := newDispatchManager(t, &clock, 3, 5*time.Minute)
+	ctx := context.Background()
+
+	// "a" pages individually, then its parent goes down and pauses it.
+	m.Route(ctx, "ops", downEntry("a", clock))
+	clock = base.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+	m.Pause(ctx, "ops", "a", clock)
+
+	// A later trickle promotes the channel to group-mode without "a".
+	for i, slug := range []string{"b", "c", "d"} {
+		clock = base.Add(time.Duration(i+2) * 40 * time.Second)
+		m.Route(ctx, "ops", downEntry(slug, clock))
+		clock = clock.Add(31 * time.Second)
+		m.evaluateAll(ctx)
+	}
+	if fp.posts != 1 {
+		t.Fatalf("setup: want the channel promoted to group-mode, got %d digests", fp.posts)
+	}
+
+	clock = clock.Add(time.Minute)
+	m.Route(ctx, "ops", resolveEntry("a", clock))
+
+	if got := sink.countByType(alert.EventResolve); got != 1 {
+		t.Errorf("paused-then-recovered individual page lost its resolve: %d sink resolves", got)
+	}
+}
+
+// TestDispatch_reattachedGroup_recoversUnknownMonitorIndividually:
+// after a restart the in-memory ownership set is empty while an open
+// group reattaches from the store. A monitor the digest has no record
+// of must still recover through the per-monitor notifier — MarkUp would
+// drop it and leave its DOWN message red forever.
+func TestDispatch_reattachedGroup_recoversUnknownMonitorIndividually(t *testing.T) {
+	clock := base
+	m, fs, _, sink := newDispatchManager(t, &clock, 3, 5*time.Minute)
+	ctx := context.Background()
+
+	// A group exists on the channel, covering "b" only.
+	id, err := fs.CreateIncidentGroup(ctx, "ops", base)
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := fs.SaveIncidentGroup(ctx, store.IncidentGroupRow{
+		ID: id, ChannelSlug: "ops", OpenedAt: base, Posted: true,
+		Members: []store.IncidentGroupMemberRow{{
+			MonitorSlug: "b", State: "down", JoinedAt: base, ChangedAt: base,
+		}},
+	}); err != nil {
+		t.Fatalf("save group: %v", err)
+	}
+	if err := m.Reattach(ctx); err != nil {
+		t.Fatalf("reattach: %v", err)
+	}
+
+	clock = base.Add(time.Minute)
+	m.Route(ctx, "ops", resolveEntry("a", clock))
+
+	if got := sink.countByType(alert.EventResolve); got != 1 {
+		t.Errorf("recovery of a non-member was swallowed by the digest: %d sink resolves", got)
 	}
 }
