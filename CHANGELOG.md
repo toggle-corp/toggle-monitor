@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.6.0](https://github.com/toggle-corp/toggle-monitor/compare/0.5.0..0.6.0) - 2026-08-31
+### Changes:
+
+#### 🐛 Bug Fixes
+
+- *(coalesce)* [**breaking**] Count a burst across burstWindow, not one pending pool - ([159fd53](https://github.com/toggle-corp/toggle-monitor/commit/159fd53b948d68cbf131a1f67706f935bed8b246))
+- Fixup! docs: add ADR-0015 and document burstWindow sizing - ([95e176a](https://github.com/toggle-corp/toggle-monitor/commit/95e176a60ab8258f61ee2ae031794bb2f2368062))
+- Fixup! test(lifecycle): simulate an internet outage end to end - ([6c4c4ba](https://github.com/toggle-corp/toggle-monitor/commit/6c4c4ba5d7ee49affca185f6f7d00e7b79acd712))
+- Fixup! fix(coalesce)!: count a burst across burstWindow, not one pending pool - ([8859774](https://github.com/toggle-corp/toggle-monitor/commit/885977441cdc5cde9a3a172708ce68d08df4c176))
+
+#### 📚 Documentation
+
+- Add ADR-0015 and document burstWindow sizing - ([75ca76e](https://github.com/toggle-corp/toggle-monitor/commit/75ca76ed5af872a30dbfcda1c4648ca183c9c3d6))
+
+#### 🧪 Testing
+
+- *(lifecycle)* Simulate an internet outage end to end - ([f4efa59](https://github.com/toggle-corp/toggle-monitor/commit/f4efa596650289fe58835fa51ba1e21da2f1b7d4))
+
+
 ## [0.5.0](https://github.com/toggle-corp/toggle-monitor/compare/0.4.0..0.5.0) - 2026-08-15
 ### Changes:
 
