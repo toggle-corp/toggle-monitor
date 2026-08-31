@@ -228,12 +228,18 @@ slack:
     ops-team: S02ABCDEF34                           # @ops-team (subteam)
   # Burst dispatcher (ADR-0004): every channel walks individual →
   # pending → group. Routine failures post immediately as per-monitor
-  # messages; only a real burst (≥ burstThreshold failures inside
-  # pendingWait) collapses into one digest with @channel. Omit any
+  # messages; only a real burst (>= burstThreshold monitors down inside
+  # burstWindow) collapses into one digest with @channel. Omit any
   # field to take its default.
+  #
+  # burstWindow must be wider than your widest monitors[].interval: the
+  # scheduler jitters first ticks across a full interval, so an outage
+  # trickles in over roughly one interval rather than arriving inside a
+  # single pendingWait (ADR-0015).
   coalesce:
     pendingWait: 30s                                # pool wait before deciding individual vs group
-    burstThreshold: 5                               # pool size that promotes to a digest; 0 disables groups
+    burstThreshold: 5                               # monitors down in burstWindow that promote to a digest; 0 disables
+    burstWindow: 5m                                 # rolling window the burst count spans
     groupInterval: 5m                               # digest heartbeat (also resolve-debounce window)
     repeatInterval: 10m                             # group-mode still-down reminder cadence
     groupMention: channel                           # @channel on group open + reminder (channel | here | none)

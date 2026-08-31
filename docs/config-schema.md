@@ -137,7 +137,8 @@ slack:
     ops-team: S0456DEF                           # S-prefix = subteam (emits `<!subteam^...>` markup)
   coalesce:                                      # optional; burst-dispatcher tunables (ADR-0004)
     pendingWait: 30s                              # dispatcher wait window before deciding individual vs group
-    burstThreshold: 5                             # pool size that promotes a burst to a digest; 0 disables groups
+    burstThreshold: 5                             # monitors down in burstWindow that promote to a digest; 0 disables groups
+    burstWindow: 5m                               # rolling window the burst count spans; set above your widest interval
     groupInterval: 5m                             # digest heartbeat
     repeatInterval: 10m                           # still-down reminder cadence (group-mode only)
     groupMention: channel                         # broadcast on group open/reminder: channel | here | none
@@ -154,9 +155,10 @@ slack:
 | `slack.channels[].tokenEnv` | string | ✓ | env var name regex; env var set and non-empty at startup | |
 | `slack.userMapping` | map | — | optional | Without it, only raw `<!here>`/`<!channel>`/`<@U…>` markup is accepted in `notify:` |
 | `slack.userMapping[<slug>]` | string | ✓ when present | key: slug regex; value: `^[US][A-Z0-9]{8,}$` | |
-| `slack.coalesce.pendingWait` | duration | — | default `30s` | Burst dispatcher's pool wait window. At expiry, pool size vs `burstThreshold` decides individual flush vs group promotion. See [ADR-0004](adr/0004-burst-dispatch-supersedes-always-coalesce.md) |
+| `slack.coalesce.pendingWait` | duration | — | default `30s` | Burst dispatcher's pool wait window. At expiry, the channel's burst count vs `burstThreshold` decides individual flush vs group promotion. See [ADR-0004](adr/0004-burst-dispatch-supersedes-always-coalesce.md) |
 | `slack.coalesce.groupWait` | duration | — | deprecated alias for `pendingWait` | Accepted for one release; setting both is a validation error |
-| `slack.coalesce.burstThreshold` | int | — | default `5`; `0` disables group-mode; `1` is rejected (pathological); `>= 2` otherwise | Pool size at expiry that promotes the pool to a digest |
+| `slack.coalesce.burstThreshold` | int | — | default `5`; `0` disables group-mode; `1` is rejected (pathological); `>= 2` otherwise | Monitors the channel has down inside `burstWindow` that promote it to a digest |
+| `slack.coalesce.burstWindow` | duration | — | default `5m`; must be `>= pendingWait` | Rolling window the burst count spans. Set it above your widest `monitors[].interval` — see [ADR-0015](adr/0015-cumulative-burst-window.md) |
 | `slack.coalesce.groupInterval` | duration | — | default `5m` | Digest heartbeat: batch joins/recoveries/flaps into one edit + threaded reply per interval. Also the resolve-debounce/flap-dampening window |
 | `slack.coalesce.repeatInterval` | duration | — | default `10m` | Cadence of the per-group "still down" reminder (group-mode only; individual-mode uses each monitor's `reminderInterval`) |
 | `slack.coalesce.groupMention` | string | — | one of `channel`, `here`, `none`; default `channel` | Broadcast marker injected at group open + each reminder. Edits never re-mention regardless |
@@ -165,8 +167,10 @@ slack:
 **Burst dispatcher (ADR-0004).** Per channel, the dispatcher walks three modes:
 
 1. **individual** — every failure posts immediately as a per-monitor message; recoveries fire individual resolves. The 90% case.
-2. **pending** — first failure starts a `pendingWait` timer; further failures join the pool. At expiry, if the pool is `< burstThreshold` it flushes as N individual messages; if `>= burstThreshold` it promotes to **group**.
+2. **pending** — first failure starts a `pendingWait` timer; further failures join the pool. At expiry the dispatcher counts every monitor this channel currently has down inside `burstWindow` (not just this pool): `< burstThreshold` flushes the pool as N individual messages; `>= burstThreshold` promotes to **group**.
 3. **group** — a single living digest with `@channel` (or configured marker) on open and on each `repeatInterval` reminder. Subsequent failures on the same channel join the digest directly. Heartbeat (`groupInterval`) edits batch joins/recoveries. When the last member recovers, the channel returns to individual.
+
+**Why the count spans `burstWindow`, not one pool.** The scheduler jitters each monitor's first tick across its whole `interval`, so a cluster-wide outage does not arrive as a burst — it arrives as a trickle of roughly `N x pendingWait / interval` monitors per window. Sizing the burst off a single pool under-counts every real outage: each window flushes sub-threshold and the operator gets one message per monitor. Counting cumulatively bounds that at `burstThreshold - 1` individual messages, after which the channel promotes and the rest of the outage lands in one digest. Set `burstWindow` above your widest `monitors[].interval`; lower `burstThreshold` to shorten the individual prefix.
 
 At pendingWait expiry the dispatcher also fires one bounded probe (within `onDemandProbeTimeout`) of any dependsOn parent referenced by ≥2 pool entries that isn't already in the pool. If the parent probes down, push-propagation drains its children from the pool — leaving the parent as the named root cause instead of a digest of symptoms.
 

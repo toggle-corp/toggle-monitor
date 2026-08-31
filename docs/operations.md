@@ -158,6 +158,30 @@ late fresh-parent messages *per channel* on recovery — bounded below
 your own burst line, and cross-channel coalescing was deferred in
 ADR-0004.
 
+**Sizing `burstWindow`.** The `burstThreshold − 1` bound above only
+holds if the dispatcher counts a whole outage. It counts monitors down
+inside `slack.coalesce.burstWindow` (default `5m`), so that window must
+be wider than your widest `monitors[].interval` — the scheduler jitters
+each monitor's first tick across a full interval, so an outage reaches
+the dispatcher as a trickle spread over roughly one interval, not as a
+burst inside one `pendingWait`. With `burstWindow` set too narrow the
+count never reaches `burstThreshold` and every monitor pages
+separately. See [ADR-0015](adr/0015-cumulative-burst-window.md).
+
+**If an outage still produced one message per monitor,** check in this
+order:
+
+1. `slack.coalesce.burstWindow` vs the widest `monitors[].interval`.
+2. `slack.coalesce.burstThreshold` — lower it (minimum `2`) to shorten
+   the individual prefix.
+3. Whether the `selfHealth:` block is present at all. It is opt-in;
+   omitting it disables ADR-0008 degraded mode entirely, so a
+   monitor-blind outage manufactures one incident per monitor instead
+   of one self-health notice. `toggle_monitor_self_degraded` never
+   leaving `0` during a known blind outage is the tell.
+4. `monitors[].critical: true` — critical monitors bypass the
+   dispatcher by design and always page individually.
+
 ## Logs
 
 Structured JSON via stdlib `slog`. One line per log entry.
