@@ -71,13 +71,16 @@ incident closes.
 channel currently has an open incident for, stamped with when it
 opened. Entries are added on `EventOpen` and dropped on recovery, on a
 dependsOn pause, and when the group covering them retires. A reminder
-deliberately does *not* re-stamp an entry: the window measures failures
-that arrived together, so a chronically-down monitor must age out of it
-rather than keep counting toward every later burst on the channel.
+does *not* re-stamp an entry: the window measures failures that arrived
+together, so a chronically-down monitor ages out of it rather than
+counting toward every later burst on the channel.
 
-At `pendingWait` expiry the promote decision reads `len(cs.down)`
-instead of `len(pool)`, after pruning entries older than a new
-`burstWindow`.
+At `pendingWait` expiry the promote decision reads the size of `cs.down`
+unioned with the pool, after pruning entries older than a new
+`burstWindow`. The union is what keeps the count at or above the pool
+size: `burstWindow` may be as narrow as `pendingWait`, in which case the
+pool's own entries sit exactly on the ageing boundary at expiry and
+pruning alone would drop them.
 
 The consequence is a two-tier outcome with a hard bound: the first
 `burstThreshold − 1` monitors of an outage page individually — the
@@ -117,7 +120,17 @@ incident the per-monitor notifier announced. `routeResolve` and
 `routeReminder` consult it *before* the channel mode, so a monitor
 paged individually keeps addressing its own Slack message for the rest
 of its incident even after the channel promotes to group-mode. Its
-parent gets its resolve edit; its reminders keep threading.
+parent gets its resolve edit; its reminders keep threading. A dependsOn
+pause drops the monitor from the burst count but leaves the claim
+standing — the child's message is still the one its recovery has to
+edit.
+
+The set is in-memory, so a restart loses it while the group reattaches
+from `incident_groups`. Both routes therefore fall back on the digest's
+own membership: a monitor `Group.Members` has no record of cannot be
+served by the group evaluator (`MarkUp` is a documented no-op for an
+unknown member), so its recovery and its reminders go to the
+per-monitor notifier instead of being dropped.
 
 The digest correspondingly reports only what it owns. A 12-monitor
 outage renders as 3 individual incidents plus a digest of 9 — honest,
@@ -129,7 +142,7 @@ and not double-counted.
 |---|---|---|
 | 12 monitors, 24s interval, one outage, `burstThreshold: 5` | 12 DOWN parents, 0 digests | 3 DOWN parents + 1 digest of 9 |
 | N monitors, interval ≫ `pendingWait`, one outage | 1 message per monitor, unbounded | ≤ `burstThreshold − 1` individual + 1 digest |
-| Simultaneous burst inside one `pendingWait` | 1 digest | unchanged — `len(down) ≥ len(pool)` |
+| Simultaneous burst inside one `pendingWait` | 1 digest | unchanged — the count unions `down` with the pool |
 | Lone monitor fails | 1 individual message | unchanged |
 | 4 failures spread over 40m, `burstWindow: 5m` | 4 individual messages | unchanged — they age out, correctly |
 | Individually-paged monitor recovers after the channel promoted | recovery swallowed; parent stays red | resolve edit + reply on its own message |
