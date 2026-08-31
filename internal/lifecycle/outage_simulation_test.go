@@ -77,8 +77,8 @@ func newOutageSim(t *testing.T) *outageSim {
 	)))
 	t.Cleanup(upstream.Close)
 
-	// The in-cluster upstream is deliberately NOT gated: an egress
-	// outage leaves cluster-local services answering normally.
+	// The in-cluster upstream is not gated: an egress outage leaves
+	// cluster-local services answering normally.
 	internalSrv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) },
 	))
@@ -96,6 +96,11 @@ func newOutageSim(t *testing.T) *outageSim {
 	if err != nil {
 		t.Fatalf("parse dsn: %v", err)
 	}
+	// Pin the container's host to an address literal while the real
+	// resolver is still installed. The outage models losing the
+	// internet, not losing the in-cluster database, so the pool must
+	// never route a reconnect through the dead zone.
+	dbCfg.Host = resolveToIPv4(t, dbCfg.Host)
 
 	// The resolver override goes in last so the Postgres container and
 	// the two httptest servers are already bound via the real one.
@@ -128,6 +133,26 @@ func (s *outageSim) setOutage(down bool) {
 func (s *outageSim) setTargetsDown(down bool) {
 	s.targetDown.Store(down)
 	s.upstream.CloseClientConnections()
+}
+
+// resolveToIPv4 turns a host name into an IPv4 literal, passing address
+// literals through untouched.
+func resolveToIPv4(t *testing.T, host string) string {
+	t.Helper()
+	if ip := net.ParseIP(host); ip != nil {
+		return host
+	}
+	addrs, err := net.DefaultResolver.LookupHost(context.Background(), host)
+	if err != nil {
+		t.Fatalf("resolve %q: %v", host, err)
+	}
+	for _, a := range addrs {
+		if ip := net.ParseIP(a); ip != nil && ip.To4() != nil {
+			return a
+		}
+	}
+	t.Fatalf("resolve %q: no IPv4 address in %v", host, addrs)
+	return ""
 }
 
 func portOf(t *testing.T, rawURL string) string {
@@ -223,10 +248,7 @@ func (s *outageSim) dump(t *testing.T, label string) {
 	for i, p := range posts {
 		t.Logf("  [%02d] %s", i, p)
 	}
-	s.slack.mu.Lock()
-	updates := len(s.slack.updateMessages)
-	s.slack.mu.Unlock()
-	t.Logf("  (%d chat.update call(s))", updates)
+	t.Logf("  (%d chat.update call(s) across %d message(s))", s.updates(), s.editedParents())
 }
 
 // parentPosts counts top-level (non-threaded) messages — the "how many
@@ -258,6 +280,22 @@ func (s *outageSim) updates() int {
 	s.slack.mu.Lock()
 	defer s.slack.mu.Unlock()
 	return len(s.slack.updateMessages)
+}
+
+// editedParents counts the distinct message timestamps that received a
+// chat.update — one per parent the daemon edited to its resolved form.
+// Counting raw chat.update calls instead would let a single digest's
+// heartbeat edits stand in for every orphaned individual parent.
+func (s *outageSim) editedParents() int {
+	s.slack.mu.Lock()
+	defer s.slack.mu.Unlock()
+	seen := map[string]struct{}{}
+	for _, u := range s.slack.updateMessages {
+		if ts, ok := u["ts"].(string); ok {
+			seen[ts] = struct{}{}
+		}
+	}
+	return len(seen)
 }
 
 // simConfig renders the YAML for a simulation. external monitors are
@@ -484,9 +522,9 @@ func TestOutageSimulation_trickleDefeatsTheBurstThreshold(t *testing.T) {
 	// Every DOWN parent the channel received must end up edited to its
 	// resolved form. A parent that is never edited is a red circle left
 	// standing in Slack after the incident closed.
-	downParents, updates := sim.downParents(), sim.updates()
-	if updates < downParents {
-		t.Errorf("ORPHANED: %d DOWN parent(s) posted but only %d edited to resolved", downParents, updates)
+	downParents, edited := sim.downParents(), sim.editedParents()
+	if edited < downParents {
+		t.Errorf("ORPHANED: %d DOWN parent(s) posted but only %d edited to resolved", downParents, edited)
 	}
 	// The contract: the channel pages individually until the cumulative
 	// burst count crosses burstThreshold, then everything else lands in

@@ -23,8 +23,7 @@ import (
 type fakeDNS struct {
 	conn *net.UDPConn
 	// up gates the zone: true answers, false SERVFAILs.
-	up      atomic.Bool
-	queries atomic.Int64
+	up atomic.Bool
 }
 
 // startFakeDNS binds a UDP listener on loopback, starts serving, and
@@ -103,7 +102,6 @@ func (f *fakeDNS) respond(q []byte) ([]byte, bool) {
 	qtype := binary.BigEndian.Uint16(q[off : off+2])
 	off += 4 // qtype + qclass
 	question := q[12:off]
-	f.queries.Add(1)
 
 	// Only A is answered. An AAAA query gets NOERROR with no answers,
 	// which is what makes Go's resolver settle on the IPv4 address.
