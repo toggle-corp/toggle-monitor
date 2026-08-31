@@ -360,6 +360,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		},
 		PendingWait:    opts.Config.Slack.Coalesce.EffectivePendingWait(),
 		BurstThreshold: opts.Config.Slack.Coalesce.EffectiveBurstThreshold(),
+		BurstWindow:    opts.Config.Slack.Coalesce.EffectiveBurstWindow(),
 		GroupMention:   opts.Config.Slack.Coalesce.EffectiveGroupMention(),
 		Logger:         log,
 	})

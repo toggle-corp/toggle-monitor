@@ -5,12 +5,24 @@
 //	group      → individual (when the open group closes)
 //
 // A failure in individual-mode arms a pendingWait timer; further
-// failures join the pool. At expiry, the pool size decides: <
-// burstThreshold becomes N per-monitor messages (the legacy notifier
+// failures join the pool. At expiry, the channel's burst count decides:
+// < burstThreshold becomes N per-monitor messages (the legacy notifier
 // path via Sink), ≥ burstThreshold becomes a single digest (the
 // internal/group state machine). A failure that arrives while a group
 // is already open joins the group directly, with no second pending
 // window.
+//
+// The burst count is cumulative over burstWindow, not the size of the
+// one pending pool. The scheduler jitters each monitor's first tick
+// across its whole interval, so a cluster-wide outage reaches the
+// dispatcher as a trickle spread over roughly one probe interval —
+// commonly a monitor or two per pendingWait. Sizing the burst off a
+// single pool therefore under-counts every real outage: each window
+// flushes sub-threshold, the channel drops back to individual-mode, and
+// the operator gets one message per monitor. Counting every monitor the
+// channel currently has down inside burstWindow caps that at
+// burstThreshold-1 individual messages, after which the channel
+// promotes and the rest of the outage lands in one digest.
 //
 // The dispatch state is in-memory only. A restart loses any pending
 // pools (they re-fill from the next probe) and reattaches open groups
@@ -85,6 +97,62 @@ type channelState struct {
 	mode       channelMode
 	pending    map[string]*pendingEntry // slug → entry
 	pendingDue time.Time                // pendingWait expiry; zero outside modePending
+
+	// down records, per slug, when this channel last saw the monitor open
+	// an incident. An entry lives until the monitor recovers or is paused,
+	// or until it ages past burstWindow. Its size is the burst count the
+	// promote decision reads — see the package comment on why the pending
+	// pool alone is the wrong measure.
+	down map[string]time.Time
+	// individual holds the slugs whose incident was announced through the
+	// per-monitor notifier. Their reminders and recovery keep flowing
+	// through that same message even after the channel promotes to
+	// group-mode, so a parent posted individually always gets its resolve
+	// edit instead of being swallowed by a group it was never a member of.
+	individual map[string]struct{}
+}
+
+// markDown records a monitor as currently down in this channel and
+// prunes entries that have aged out of burstWindow.
+func (cs *channelState) markDown(slug string, at time.Time, window time.Duration) {
+	if cs.down == nil {
+		cs.down = map[string]time.Time{}
+	}
+	cs.down[slug] = at
+	cs.pruneDown(at, window)
+}
+
+// pruneDown drops down-entries older than window. Ageing is what makes
+// the count a burst rather than a census: a monitor that has been down
+// for hours is not part of the outage that starts now.
+func (cs *channelState) pruneDown(now time.Time, window time.Duration) {
+	for slug, at := range cs.down {
+		if now.Sub(at) >= window {
+			delete(cs.down, slug)
+		}
+	}
+}
+
+// clearDown forgets a monitor that recovered or was paused out.
+func (cs *channelState) clearDown(slug string) {
+	delete(cs.down, slug)
+	delete(cs.individual, slug)
+}
+
+// ownedByIndividual reports whether the per-monitor notifier owns this
+// monitor's current incident.
+func (cs *channelState) ownedByIndividual(slug string) bool {
+	_, ok := cs.individual[slug]
+	return ok
+}
+
+// takeIndividual records that the per-monitor notifier now owns this
+// monitor's incident.
+func (cs *channelState) takeIndividual(slug string) {
+	if cs.individual == nil {
+		cs.individual = map[string]struct{}{}
+	}
+	cs.individual[slug] = struct{}{}
 }
 
 // channelStateFor returns the dispatcher state for a channel, creating
@@ -126,6 +194,7 @@ func (m *Manager) Route(ctx context.Context, channel string, e Entry) {
 func (m *Manager) routeOpen(ctx context.Context, channel string, e Entry) {
 	m.mu.Lock()
 	cs := m.channelStateFor(channel)
+	cs.markDown(e.Member.Slug, e.Event.At, m.burstWindow)
 	switch cs.mode {
 	case modeGroup:
 		// Open group absorbs the failure directly.
@@ -150,13 +219,22 @@ func (m *Manager) routeOpen(ctx context.Context, channel string, e Entry) {
 	}
 }
 
-// routeResolve dispatches a recovery. In group-mode, MarkUp on the
-// live group. In pending-mode, the slug is dropped from the pool
-// silently (no individual was ever notified). In individual-mode, the
-// recovery flushes through the per-monitor sink.
+// routeResolve dispatches a recovery. A monitor the per-monitor
+// notifier owns recovers through that same message whatever the
+// channel's mode, so its parent gets its resolve edit. Otherwise: in
+// group-mode, MarkUp on the live group; in pending-mode, the slug is
+// dropped from the pool silently (no individual was ever notified); in
+// individual-mode, the recovery flushes through the per-monitor sink.
 func (m *Manager) routeResolve(ctx context.Context, channel string, e Entry) {
 	m.mu.Lock()
 	cs := m.channelStateFor(channel)
+	owned := cs.ownedByIndividual(e.Member.Slug)
+	cs.clearDown(e.Member.Slug)
+	if owned {
+		m.mu.Unlock()
+		m.flushSink(ctx, channel, e)
+		return
+	}
 	switch cs.mode {
 	case modeGroup:
 		if lg := m.groups[channel]; lg != nil {
@@ -185,17 +263,25 @@ func (m *Manager) routeResolve(ctx context.Context, channel string, e Entry) {
 }
 
 // routeReminder forwards a per-monitor reminder. Reminders are only
-// meaningful in individual-mode — group-mode reminders are owned by
-// the group evaluator; pending-mode entries haven't been notified yet
-// so a reminder is nonsensical (and the scheduler shouldn't emit one
-// for a monitor whose Open wasn't yet flushed). Defensive: in those
-// modes the reminder is silently dropped.
+// meaningful for a monitor the per-monitor notifier owns — group-mode
+// reminders are owned by the group evaluator; pending-mode entries
+// haven't been notified yet so a reminder is nonsensical (and the
+// scheduler shouldn't emit one for a monitor whose Open wasn't yet
+// flushed). Defensive: otherwise the reminder is silently dropped.
+//
+// A reminder deliberately does NOT re-stamp the monitor's burst-window
+// entry. The window measures failures that arrived together, so a
+// chronically-down monitor must age out of it rather than keep counting
+// toward every later burst on the channel.
 func (m *Manager) routeReminder(ctx context.Context, channel string, e Entry) {
 	m.mu.Lock()
 	cs := m.channelStateFor(channel)
-	mode := cs.mode
+	// The mode arm also covers a monitor the dispatcher has no record of
+	// — after a restart the in-memory state is empty while the incident
+	// is still open in the DB, and its reminders must keep flowing.
+	forward := cs.ownedByIndividual(e.Member.Slug) || cs.mode == modeIndividual
 	m.mu.Unlock()
-	if mode == modeIndividual {
+	if forward {
 		m.flushSink(ctx, channel, e)
 	}
 }
@@ -262,7 +348,12 @@ func (m *Manager) expirePending(ctx context.Context, channel string, cs *channel
 		return
 	}
 
-	if m.burstThreshold > 0 && len(pool) >= m.burstThreshold {
+	// Burst size is every monitor this channel currently has down inside
+	// burstWindow, not just this pool: a jittered estate delivers one
+	// outage as a trickle of small pools, and sizing off a single pool
+	// would flush every one of them individually.
+	cs.pruneDown(now, m.burstWindow)
+	if m.burstThreshold > 0 && len(cs.down) >= m.burstThreshold {
 		// Promote to group: pre-warm the group state machine with every
 		// pool member, then call Open to bypass the legacy groupWait
 		// (the dispatcher already did the waiting in pending). Dispatch
@@ -298,6 +389,11 @@ func (m *Manager) expirePending(ctx context.Context, channel string, cs *channel
 	entries := make([]Entry, 0, len(pool))
 	for _, pe := range pool {
 		entries = append(entries, pe.entry)
+		// The per-monitor notifier now owns this incident: its reminders
+		// and its recovery must keep addressing the message about to be
+		// posted, even once a later trickle promotes the channel to
+		// group-mode.
+		cs.takeIndividual(pe.entry.Member.Slug)
 	}
 	cs.mode = modeIndividual
 	cs.pending = nil
@@ -353,4 +449,12 @@ func (m *Manager) retireGroupChannel(channel string) {
 	cs.mode = modeIndividual
 	cs.pending = nil
 	cs.pendingDue = time.Time{}
+	// The digest closed, so every monitor it covered is accounted for.
+	// Anything still down that the per-monitor notifier owns keeps its
+	// entry — its own resolve will clear it.
+	for slug := range cs.down {
+		if !cs.ownedByIndividual(slug) {
+			delete(cs.down, slug)
+		}
+	}
 }

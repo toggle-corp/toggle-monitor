@@ -1999,3 +1999,35 @@ func TestLoad_kube_acceptsArbitraryAnnotationValue(t *testing.T) {
 		t.Fatalf("annotation values are unconstrained, got: %v", err)
 	}
 }
+
+func TestLoad_coalesce_burstWindowParses(t *testing.T) {
+	cfg, err := config.Load(withCoalesce("burstWindow: 12m"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Slack.Coalesce.EffectiveBurstWindow(); got != 12*time.Minute {
+		t.Errorf("EffectiveBurstWindow: got %s, want 12m", got)
+	}
+}
+
+func TestLoad_coalesce_burstWindowDefaults(t *testing.T) {
+	cfg, err := config.Load(withCoalesce("burstThreshold: 5"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Slack.Coalesce.EffectiveBurstWindow(); got != config.DefaultBurstWindow {
+		t.Errorf("EffectiveBurstWindow unset: got %s, want %s", got, config.DefaultBurstWindow)
+	}
+}
+
+// A burst window narrower than the pending pool it counts cannot see a
+// whole pool, let alone a whole outage.
+func TestLoad_coalesce_rejectsBurstWindowBelowPendingWait(t *testing.T) {
+	_, err := config.Load(withCoalesce("pendingWait: 60s\n    burstWindow: 30s"))
+	if err == nil {
+		t.Fatal("expected error when burstWindow < pendingWait")
+	}
+	if !strings.Contains(err.Error(), "burstWindow") {
+		t.Errorf("error should name burstWindow, got: %v", err)
+	}
+}

@@ -602,3 +602,114 @@ func TestDispatch_individualMode_resolveAfterFlush(t *testing.T) {
 		t.Fatalf("want 1 EventResolve fired, got %d", got)
 	}
 }
+
+// resolveEntry builds the dispatcher Entry for a monitor recovering now.
+func resolveEntry(slug string, at time.Time) Entry {
+	return Entry{
+		Member: MemberInfo{Slug: slug, FriendlyName: slug},
+		Row:    store.MonitorRow{MonitorSpec: store.MonitorSpec{Slug: slug}},
+		Event:  &alert.Event{Type: alert.EventResolve, At: at},
+	}
+}
+
+// newTrickleManager wires a Manager with an explicit burst window so
+// the cumulative-count tests can age entries in and out deliberately.
+func newTrickleManager(t *testing.T, clock *time.Time, burstThreshold int, burstWindow time.Duration) (*Manager, *fakePoster, *fakeSink) {
+	t.Helper()
+	fp := &fakePoster{}
+	sink := &fakeSink{}
+	m := New(Options{
+		Store:          newFakeStore(),
+		Poster:         fp,
+		Sink:           sink.Notify,
+		Config:         group.Config{GroupWait: 0, GroupInterval: 5 * time.Minute, RepeatInterval: 30 * time.Minute},
+		PendingWait:    30 * time.Second,
+		BurstThreshold: burstThreshold,
+		BurstWindow:    burstWindow,
+		Now:            func() time.Time { return *clock },
+	})
+	return m, fp, sink
+}
+
+// TestDispatch_trickleAcrossWindows_promotesOnCumulativeCount is the
+// regression guard for the storm: a cluster-wide outage reaches the
+// dispatcher one monitor at a time, because the scheduler jitters each
+// monitor's first tick across its whole interval. Every pending pool is
+// therefore size 1 — far under burstThreshold — and sizing the burst off
+// one pool would page all five separately. Counting what the channel has
+// down across burstWindow caps it at burstThreshold-1 individual pages,
+// after which the channel promotes and the rest lands in one digest.
+func TestDispatch_trickleAcrossWindows_promotesOnCumulativeCount(t *testing.T) {
+	clock := base
+	m, fp, sink := newTrickleManager(t, &clock, 3, 5*time.Minute)
+	ctx := context.Background()
+
+	// Five monitors fail one per pendingWait window — never two at once.
+	for i, slug := range []string{"a", "b", "c", "d", "e"} {
+		clock = base.Add(time.Duration(i) * 40 * time.Second)
+		m.Route(ctx, "ops", downEntry(slug, clock))
+		clock = clock.Add(31 * time.Second)
+		m.evaluateAll(ctx)
+	}
+
+	// a and b page individually (cumulative count 1, then 2). c crosses
+	// the threshold, so it and everything after it land in the digest.
+	if got := sink.countByType(alert.EventOpen); got != 2 {
+		t.Errorf("want 2 individual pages (burstThreshold-1), got %d", got)
+	}
+	if fp.posts != 1 {
+		t.Errorf("want exactly 1 digest for the outage, got %d", fp.posts)
+	}
+}
+
+// TestDispatch_individuallyPagedMonitor_resolvesThroughItsOwnMessage
+// covers the other half of the trickle: a monitor paged individually
+// before the channel promoted still owns a Slack parent message. Its
+// recovery must edit that message rather than be swallowed by a group
+// it was never a member of, which would leave a red circle standing in
+// the channel after the incident closed.
+func TestDispatch_individuallyPagedMonitor_resolvesThroughItsOwnMessage(t *testing.T) {
+	clock := base
+	m, fp, sink := newTrickleManager(t, &clock, 3, 5*time.Minute)
+	ctx := context.Background()
+
+	for i, slug := range []string{"a", "b", "c"} {
+		clock = base.Add(time.Duration(i) * 40 * time.Second)
+		m.Route(ctx, "ops", downEntry(slug, clock))
+		clock = clock.Add(31 * time.Second)
+		m.evaluateAll(ctx)
+	}
+	if fp.posts != 1 {
+		t.Fatalf("setup: want the channel promoted to group-mode, got %d digests", fp.posts)
+	}
+
+	clock = clock.Add(time.Minute)
+	m.Route(ctx, "ops", resolveEntry("a", clock))
+
+	if got := sink.countByType(alert.EventResolve); got != 1 {
+		t.Errorf("individually-paged monitor's recovery was swallowed by the group: %d sink resolves", got)
+	}
+}
+
+// TestDispatch_burstWindowAgesOut_keepsUnrelatedFailuresIndividual
+// guards the other direction: failures spread wider than burstWindow are
+// separate incidents, not one burst, and must keep paging individually.
+func TestDispatch_burstWindowAgesOut_keepsUnrelatedFailuresIndividual(t *testing.T) {
+	clock := base
+	m, fp, sink := newTrickleManager(t, &clock, 3, 2*time.Minute)
+	ctx := context.Background()
+
+	for i, slug := range []string{"a", "b", "c", "d"} {
+		clock = base.Add(time.Duration(i) * 10 * time.Minute)
+		m.Route(ctx, "ops", downEntry(slug, clock))
+		clock = clock.Add(31 * time.Second)
+		m.evaluateAll(ctx)
+	}
+
+	if got := sink.countByType(alert.EventOpen); got != 4 {
+		t.Errorf("want 4 individual pages for 4 unrelated failures, got %d", got)
+	}
+	if fp.posts != 0 {
+		t.Errorf("failures spread beyond burstWindow must not group: %d digests", fp.posts)
+	}
+}

@@ -674,13 +674,21 @@ type Coalesce struct {
 	// cadence is desired). Individual-mode reminders use the per-monitor
 	// reminderInterval instead; this knob does not affect them.
 	RepeatInterval Duration `yaml:"repeatInterval,omitempty"`
-	// BurstThreshold is the pool size at PendingWait expiry that
-	// promotes the pool to a group instead of flushing it as N
-	// individual messages. Must be 0 (disables group-mode entirely) or
-	// ≥ 2 (1 is pathological — would trip on any single failure).
-	// Pointer so "explicitly 0" (disable) is distinguishable from
-	// "unset" (default 5).
+	// BurstThreshold is the number of monitors a channel must have
+	// concurrently down inside BurstWindow for the dispatcher to promote
+	// to a group digest instead of paging each one individually. Must be
+	// 0 (disables group-mode entirely) or ≥ 2 (1 is pathological — would
+	// trip on any single failure). Pointer so "explicitly 0" (disable) is
+	// distinguishable from "unset" (default 5).
 	BurstThreshold *int `yaml:"burstThreshold,omitempty"`
+	// BurstWindow is the rolling window the burst count is measured over.
+	// It must be wide enough to span a whole outage's worth of probe
+	// ticks: the scheduler jitters each monitor's first tick across its
+	// full interval, so a cluster-wide outage reaches the dispatcher as a
+	// trickle spread over roughly one probe interval, not as a burst
+	// inside one PendingWait. Set it comfortably above the widest
+	// monitors[].interval in play. Default 5m; must be ≥ PendingWait.
+	BurstWindow Duration `yaml:"burstWindow,omitempty"`
 	// GroupMention controls the broadcast mention on group open and on
 	// each still-down reminder. One of "channel" (default), "here", or
 	// "none". Edits (heartbeat deltas) never re-mention regardless.
@@ -700,6 +708,7 @@ const (
 	DefaultGroupInterval        = 5 * time.Minute
 	DefaultRepeatInterval       = 10 * time.Minute
 	DefaultBurstThreshold       = 5
+	DefaultBurstWindow          = 5 * time.Minute
 	DefaultGroupMention         = "channel"
 	DefaultOnDemandProbeTimeout = 5 * time.Second
 )
@@ -741,6 +750,20 @@ func (c Coalesce) EffectiveBurstThreshold() int {
 		return DefaultBurstThreshold
 	}
 	return *c.BurstThreshold
+}
+
+// EffectiveBurstWindow returns the configured BurstWindow, or the
+// default if unset. The floor at PendingWait keeps the window from
+// being narrower than the pool it counts.
+func (c Coalesce) EffectiveBurstWindow() time.Duration {
+	w := c.BurstWindow.AsDuration()
+	if w <= 0 {
+		w = DefaultBurstWindow
+	}
+	if pw := c.EffectivePendingWait(); w < pw {
+		return pw
+	}
+	return w
 }
 
 // EffectiveGroupMention returns the configured mention policy, or the
@@ -2281,6 +2304,11 @@ func (c *checker) validateCoalesce(co Coalesce) {
 			c.errf(append(base, "burstThreshold"),
 				"1 is pathological — trips on any single failure. Use 0 to disable group-mode or >= 2")
 		}
+	}
+	if w := co.BurstWindow.AsDuration(); w > 0 && w < co.EffectivePendingWait() {
+		c.errf(append(base, "burstWindow"),
+			"%s must be >= pendingWait (%s) — a window narrower than the pending pool cannot count it",
+			w, co.EffectivePendingWait())
 	}
 	if co.GroupMention != "" {
 		switch co.GroupMention {

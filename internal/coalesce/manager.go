@@ -82,6 +82,7 @@ type Manager struct {
 	cfg            group.Config
 	pendingWait    time.Duration
 	burstThreshold int
+	burstWindow    time.Duration
 	groupMention   string // "" | "channel" | "here" | "none"
 	log            *slog.Logger
 	now            func() time.Time
@@ -99,7 +100,8 @@ type Options struct {
 	OnDemandParentProbe OnDemandParentProbe // hot-parent probe at pendingWait expiry
 	Config              group.Config        // group state-machine intervals
 	PendingWait         time.Duration       // dispatcher pending window; <=0 → 30s
-	BurstThreshold      int                 // promote at-or-above this pool size; 0 disables group-mode
+	BurstThreshold      int                 // promote at-or-above this many monitors down in BurstWindow; 0 disables group-mode
+	BurstWindow         time.Duration       // rolling window the burst count spans; <=0 → 5m, floored at PendingWait
 	GroupMention        string              // "channel"|"here"|"none"; "" → no broadcast marker injected
 	Logger              *slog.Logger
 	Now                 func() time.Time
@@ -109,6 +111,10 @@ type Options struct {
 // the constant keeps internal/coalesce from importing internal/config
 // just for a default.
 const defaultPendingWait = 30 * time.Second
+
+// defaultBurstWindow mirrors config.DefaultBurstWindow, for the same
+// reason as defaultPendingWait.
+const defaultBurstWindow = 5 * time.Minute
 
 // New builds a Manager.
 func New(opts Options) *Manager {
@@ -124,6 +130,13 @@ func New(opts Options) *Manager {
 	if pw <= 0 {
 		pw = defaultPendingWait
 	}
+	bw := opts.BurstWindow
+	if bw <= 0 {
+		bw = defaultBurstWindow
+	}
+	if bw < pw {
+		bw = pw
+	}
 	return &Manager{
 		store:          opts.Store,
 		poster:         opts.Poster,
@@ -132,6 +145,7 @@ func New(opts Options) *Manager {
 		cfg:            opts.Config,
 		pendingWait:    pw,
 		burstThreshold: opts.BurstThreshold,
+		burstWindow:    bw,
 		groupMention:   opts.GroupMention,
 		log:            log,
 		now:            now,
@@ -196,6 +210,7 @@ func (m *Manager) Up(ctx context.Context, channel, slug string, at time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cs := m.channelStateFor(channel)
+	cs.clearDown(slug)
 	switch cs.mode {
 	case modeGroup:
 		if lg := m.groups[channel]; lg != nil {
@@ -222,6 +237,9 @@ func (m *Manager) Pause(ctx context.Context, channel, slug string, at time.Time)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cs := m.channelStateFor(channel)
+	// A paused child's failure belongs to its parent's incident, so it
+	// must not count toward this channel's burst.
+	cs.clearDown(slug)
 	switch cs.mode {
 	case modeGroup:
 		if lg := m.groups[channel]; lg != nil {
