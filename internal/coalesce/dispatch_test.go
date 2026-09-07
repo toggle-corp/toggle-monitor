@@ -918,3 +918,120 @@ func TestDispatch_removalDropsBurstCount(t *testing.T) {
 		t.Fatalf("removed monitor still counted toward the burst: %d digest posts", fp.posts)
 	}
 }
+
+// TestSweep_reattachedDigestDropsArchivedMember reproduces the state
+// found in production: a monitor was torn down while the daemon was
+// stopped (or before the removal hook existed), so the digest reattaches
+// still counting it down and no removal event will ever revisit it —
+// kubeRemovalSink early-returns on an already-archived row and the kube
+// prune routes each vacated slug exactly once. The sweep is what clears
+// it.
+func TestSweep_reattachedDigestDropsArchivedMember(t *testing.T) {
+	clock := base
+	m, fs, fp, _ := newDispatchManager(t, &clock, 2, 5*time.Minute)
+	ctx := context.Background()
+
+	id, err := fs.CreateIncidentGroup(ctx, "ops", base)
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := fs.SaveIncidentGroup(ctx, store.IncidentGroupRow{
+		ID: id, ChannelSlug: "ops", OpenedAt: base, Posted: true,
+		DigestChannel: "C1", DigestTS: "ts1",
+		Members: []store.IncidentGroupMemberRow{
+			{MonitorSlug: "gone", State: "down", JoinedAt: base, ChangedAt: base, Rendered: "active"},
+			{MonitorSlug: "alive", State: "down", JoinedAt: base, ChangedAt: base, Rendered: "active"},
+		},
+	}); err != nil {
+		t.Fatalf("save group: %v", err)
+	}
+	// "gone" was soft-deleted while this process was not running.
+	fs.markGone("gone")
+
+	if err := m.Reattach(ctx); err != nil {
+		t.Fatalf("reattach: %v", err)
+	}
+
+	m.mu.Lock()
+	sb := m.groups["ops"].g.Scoreboard()
+	m.mu.Unlock()
+	if sb.Down != 1 || sb.Removed != 1 {
+		t.Fatalf("reattach should drop the archived member from the down count: %+v", sb)
+	}
+
+	// The surviving monitor recovers → the incident closes instead of
+	// standing red on a monitor nobody probes.
+	m.Up(ctx, "ops", "alive", base.Add(1*time.Minute))
+	clock = base.Add(10 * time.Minute)
+	m.evaluateAll(ctx)
+	if open, _ := fs.ListOpenIncidentGroups(ctx); len(open) != 0 {
+		t.Fatalf("digest never closed: %d open", len(open))
+	}
+	if fp.updates == 0 {
+		t.Fatalf("close should edit the digest")
+	}
+}
+
+// TestSweep_evaluatorClearsMemberArchivedWhileRunning: the removal event
+// is the fast path, but a missed one must not be permanent. The sweep
+// runs on the evaluator, so the digest self-heals within sweepInterval.
+func TestSweep_evaluatorClearsMemberArchivedWhileRunning(t *testing.T) {
+	clock := base
+	m, fs, _, _ := newDispatchManager(t, &clock, 2, 5*time.Minute)
+	ctx := context.Background()
+
+	m.Route(ctx, "ops", downEntry("gone", clock))
+	m.Route(ctx, "ops", downEntry("stays", clock))
+	clock = base.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+
+	// Archived without the removal hook firing (Remove is never called).
+	fs.markGone("gone")
+
+	// Inside sweepInterval: nothing yet.
+	clock = base.Add(50 * time.Second)
+	m.evaluateAll(ctx)
+	m.mu.Lock()
+	sb := m.groups["ops"].g.Scoreboard()
+	m.mu.Unlock()
+	if sb.Down != 2 {
+		t.Fatalf("swept before the interval elapsed: %+v", sb)
+	}
+
+	// Past sweepInterval: the archived member is marked removed.
+	clock = base.Add(2 * time.Minute)
+	m.evaluateAll(ctx)
+	m.mu.Lock()
+	sb = m.groups["ops"].g.Scoreboard()
+	m.mu.Unlock()
+	if sb.Down != 1 || sb.Removed != 1 {
+		t.Fatalf("sweep did not clear the archived member: %+v", sb)
+	}
+}
+
+// TestSweep_leavesLiveMembersAlone guards the obvious way to break this:
+// a sweep that marks anything it cannot confirm would silence real
+// outages.
+func TestSweep_leavesLiveMembersAlone(t *testing.T) {
+	clock := base
+	m, fs, _, _ := newDispatchManager(t, &clock, 2, 5*time.Minute)
+	ctx := context.Background()
+
+	m.Route(ctx, "ops", downEntry("a", clock))
+	m.Route(ctx, "ops", downEntry("b", clock))
+	clock = base.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+
+	clock = base.Add(10 * time.Minute)
+	m.evaluateAll(ctx)
+
+	m.mu.Lock()
+	sb := m.groups["ops"].g.Scoreboard()
+	m.mu.Unlock()
+	if sb.Down != 2 || sb.Removed != 0 {
+		t.Fatalf("sweep touched live members: %+v", sb)
+	}
+	if open, _ := fs.ListOpenIncidentGroups(ctx); len(open) != 1 {
+		t.Fatalf("live incident should stay open: %d", len(open))
+	}
+}

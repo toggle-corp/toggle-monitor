@@ -274,6 +274,15 @@ Static and kube monitors share a soft-delete shape:
   monitors that remain instead of standing red on one that is no
   longer probed. A monitor still waiting in a pending pool is dropped
   from it, so an intentional deletion pages nobody.
+- That event only fires on the removal itself:
+  `OnKubeMonitorRemoved` early-returns on an already-archived row, and
+  the kube prune routes each vacated slug exactly once. So the
+  evaluator also runs a **removed-member sweep**
+  (`coalesce.Manager.SweepRemoved`, on reattach and once a minute),
+  which re-checks every open digest's members against the `monitors`
+  table and marks the archived-or-absent ones removed. Without it a
+  monitor torn down while the daemon was stopped stays down in the
+  reattached digest forever, because nothing revisits it.
 
 Slack delivery failures during removal log and continue; the
 DB-side soft-delete is the source of truth.

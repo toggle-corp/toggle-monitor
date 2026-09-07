@@ -28,6 +28,9 @@ type GroupStore interface {
 	FindOpenIncidentGroup(ctx context.Context, channelSlug string) (store.IncidentGroupRow, bool, error)
 	ListOpenIncidentGroups(ctx context.Context) ([]store.IncidentGroupRow, error)
 	SaveIncidentGroup(ctx context.Context, g store.IncidentGroupRow) error
+	// ListGoneMonitorSlugs returns the subset of slugs whose monitor is
+	// archived or absent. Drives the removed-member sweep.
+	ListGoneMonitorSlugs(ctx context.Context, slugs []string) ([]string, error)
 }
 
 // Poster is the Slack seam. Every call addresses Slack by channel *slug*
@@ -87,9 +90,10 @@ type Manager struct {
 	log            *slog.Logger
 	now            func() time.Time
 
-	mu       sync.Mutex
-	groups   map[string]*liveGroup    // open per-channel digests
-	channels map[string]*channelState // dispatcher state per channel
+	mu          sync.Mutex
+	groups      map[string]*liveGroup    // open per-channel digests
+	channels    map[string]*channelState // dispatcher state per channel
+	lastSweptAt time.Time                // last removed-member sweep
 }
 
 // Options configures a Manager.
@@ -115,6 +119,11 @@ const defaultPendingWait = 30 * time.Second
 // defaultBurstWindow mirrors config.DefaultBurstWindow, for the same
 // reason as defaultPendingWait.
 const defaultBurstWindow = 5 * time.Minute
+
+// sweepInterval is how often the evaluator re-checks open digest
+// members against the monitors table. One indexed query over the
+// members of the open digests, so the cadence can be tight.
+const sweepInterval = time.Minute
 
 // New builds a Manager.
 func New(opts Options) *Manager {
@@ -332,14 +341,81 @@ func (m *Manager) Reattach(ctx context.Context) error {
 		return err
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	for _, row := range rows {
 		m.groups[row.ChannelSlug] = m.fromRow(row)
 	}
+	m.mu.Unlock()
 	if len(rows) > 0 {
 		m.log.Info("reattached open incident groups", "count", len(rows))
 	}
+	// A digest that reattaches may carry monitors torn down while this
+	// process was stopped, which no removal event will ever revisit.
+	m.SweepRemoved(ctx, m.now())
 	return nil
+}
+
+// SweepRemoved reconciles every open digest's membership against the
+// estate: a member whose monitor is archived (or gone from the table)
+// is marked removed, so the digest stops counting it down and the
+// incident can close on the monitors that remain.
+//
+// The Remove event path handles a removal as it happens, but only that:
+// kubeRemovalSink early-returns on an already-archived row, and the kube
+// prune routes each vacated slug exactly once. So a monitor removed
+// while the daemon was down — or during any window where the event was
+// missed — would otherwise sit in the digest as down forever. This
+// sweep is what makes that state self-healing rather than permanent.
+func (m *Manager) SweepRemoved(ctx context.Context, now time.Time) {
+	m.mu.Lock()
+	seen := map[string]struct{}{}
+	for _, lg := range m.groups {
+		for slug, mem := range lg.g.Members {
+			if mem.State == group.MemberRemoved {
+				continue
+			}
+			seen[slug] = struct{}{}
+		}
+	}
+	m.mu.Unlock()
+	if len(seen) == 0 {
+		return
+	}
+	slugs := make([]string, 0, len(seen))
+	for slug := range seen {
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+
+	gone, err := m.store.ListGoneMonitorSlugs(ctx, slugs)
+	if err != nil {
+		m.log.Warn("sweep removed digest members", "error", err)
+		return
+	}
+	if len(gone) == 0 {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for channel, lg := range m.groups {
+		var marked []string
+		for _, slug := range gone {
+			mem := lg.g.Members[slug]
+			if mem == nil || mem.State == group.MemberRemoved {
+				continue
+			}
+			lg.g.MarkRemoved(slug, now)
+			marked = append(marked, slug)
+		}
+		if len(marked) == 0 {
+			continue
+		}
+		m.log.Info("digest members no longer in the estate",
+			"channel", channel, "count", len(marked), "slugs", marked)
+		if err := m.store.SaveIncidentGroup(ctx, m.toRow(lg)); err != nil {
+			m.log.Warn("save incident group", "channel", channel, "error", err)
+		}
+	}
 }
 
 // RunEvaluator is the central evaluator goroutine: every `interval` it
@@ -383,7 +459,20 @@ func (m *Manager) evaluateAll(ctx context.Context) {
 	}
 	m.mu.Unlock()
 
-	// 2. Group evaluator pass.
+	// 2. Removed-member sweep, throttled. Runs before the evaluator pass
+	//    so a member that left the estate is rendered — and can close the
+	//    incident — on this same tick.
+	m.mu.Lock()
+	due := now.Sub(m.lastSweptAt) >= sweepInterval
+	if due {
+		m.lastSweptAt = now
+	}
+	m.mu.Unlock()
+	if due {
+		m.SweepRemoved(ctx, now)
+	}
+
+	// 3. Group evaluator pass.
 	m.mu.Lock()
 	channels := make([]string, 0, len(m.groups))
 	for ch := range m.groups {

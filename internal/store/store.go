@@ -775,6 +775,42 @@ func (r *Repo) ListActiveBySource(ctx context.Context, src MonitorSource) ([]Mon
 	return out, rows.Err()
 }
 
+// ListGoneMonitorSlugs returns the subset of slugs that no longer
+// name a monitor this process probes: the row is archived, or it is
+// absent altogether. Used to reconcile a reattached incident group's
+// members against the estate — a member torn down while the process
+// was stopped never sees the removal event.
+func (r *Repo) ListGoneMonitorSlugs(ctx context.Context, slugs []string) ([]string, error) {
+	if len(slugs) == 0 {
+		return nil, nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT slug FROM monitors WHERE slug = ANY($1) AND archived = FALSE
+	`, slugs)
+	if err != nil {
+		return nil, fmt.Errorf("list gone monitor slugs: %w", err)
+	}
+	defer rows.Close()
+	live := make(map[string]struct{}, len(slugs))
+	for rows.Next() {
+		var slug string
+		if err := rows.Scan(&slug); err != nil {
+			return nil, fmt.Errorf("list gone monitor slugs: %w", err)
+		}
+		live[slug] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list gone monitor slugs: %w", err)
+	}
+	var gone []string
+	for _, slug := range slugs {
+		if _, ok := live[slug]; !ok {
+			gone = append(gone, slug)
+		}
+	}
+	return gone, nil
+}
+
 // SoftDeleteMonitor flips a monitor to archived with the given reason
 // timestamped now(). History is preserved; slug reuse on a future
 // reconcile resurrects the row (ReconcileMonitor clears archived).

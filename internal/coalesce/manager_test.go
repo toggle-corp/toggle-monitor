@@ -17,9 +17,34 @@ type fakeStore struct {
 	mu     sync.Mutex
 	nextID int64
 	rows   map[int64]*store.IncidentGroupRow // by id
+	gone   map[string]struct{}               // monitors archived or absent
 }
 
-func newFakeStore() *fakeStore { return &fakeStore{rows: map[int64]*store.IncidentGroupRow{}} }
+func newFakeStore() *fakeStore {
+	return &fakeStore{rows: map[int64]*store.IncidentGroupRow{}, gone: map[string]struct{}{}}
+}
+
+// markGone stands in for a soft-deleted (or outright missing) monitor
+// row, which is what the removed-member sweep keys on.
+func (f *fakeStore) markGone(slugs ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, s := range slugs {
+		f.gone[s] = struct{}{}
+	}
+}
+
+func (f *fakeStore) ListGoneMonitorSlugs(_ context.Context, slugs []string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, s := range slugs {
+		if _, ok := f.gone[s]; ok {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
 
 func (f *fakeStore) CreateIncidentGroup(_ context.Context, channel string, at time.Time) (int64, error) {
 	f.mu.Lock()

@@ -334,6 +334,35 @@ func TestListActiveBySource_filtersAndExcludesArchived(t *testing.T) {
 	}
 }
 
+func TestListGoneMonitorSlugs_archivedAndAbsent(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+	for _, s := range []store.MonitorSpec{
+		{Slug: "live", FriendlyName: "Live", URL: "http://x", Source: store.SourceKube},
+		{Slug: "archived", FriendlyName: "Archived", URL: "http://x", Source: store.SourceKube},
+	} {
+		if err := repo.ReconcileMonitor(ctx, s); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+	}
+	if err := repo.SoftDeleteMonitor(ctx, "archived", "kube ingress removed"); err != nil {
+		t.Fatalf("soft-delete: %v", err)
+	}
+
+	// "never-existed" has no row at all — as gone as a soft-deleted one.
+	gone, err := repo.ListGoneMonitorSlugs(ctx, []string{"live", "archived", "never-existed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gone) != 2 || gone[0] != "archived" || gone[1] != "never-existed" {
+		t.Fatalf("gone = %v, want [archived never-existed]", gone)
+	}
+
+	if gone, err := repo.ListGoneMonitorSlugs(ctx, nil); err != nil || gone != nil {
+		t.Fatalf("empty input should be a no-op: %v %v", gone, err)
+	}
+}
+
 func TestHomepageStats_countsByStatus(t *testing.T) {
 	repo := newRepo(t)
 	ctx := context.Background()
