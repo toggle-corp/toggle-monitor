@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.0](https://github.com/toggle-corp/toggle-monitor/compare/0.7.0..0.8.0) - 2026-09-07
+### Changes:
+
+#### 🐛 Bug Fixes
+
+- *(coalesce)* Sweep digest members whose monitor is archived - ([4c76263](https://github.com/toggle-corp/toggle-monitor/commit/4c76263caaccd26248d35a1ed2a71e50bf5e3b21))
+
+
 ## [0.7.0](https://github.com/toggle-corp/toggle-monitor/compare/0.6.0..0.7.0) - 2026-09-07
 ### Changes:
 
