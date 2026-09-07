@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/toggle-corp/toggle-monitor/compare/0.6.0..0.7.0) - 2026-09-07
+### Changes:
+
+#### 🐛 Bug Fixes
+
+- *(coalesce)* Drop removed monitors from open digests - ([c211b62](https://github.com/toggle-corp/toggle-monitor/commit/c211b62c8963ca21693ff22a22a3c690a9a43f25))
+
+
 ## [0.6.0](https://github.com/toggle-corp/toggle-monitor/compare/0.5.0..0.6.0) - 2026-08-31
 ### Changes:
 
