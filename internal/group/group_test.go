@@ -210,6 +210,84 @@ func TestPausedPulledFromDigest(t *testing.T) {
 	}
 }
 
+func TestRemovedLeavesDownCount(t *testing.T) {
+	g := New("ops", t0, testCfg())
+	g.MarkDown("gone", t0)
+	g.MarkDown("stays", t0)
+	only(t, g.Evaluate(t0.Add(30*time.Second)), ActionPostDigest)
+
+	// The Ingress behind "gone" is deleted mid-incident.
+	g.MarkRemoved("gone", t0.Add(1*time.Minute))
+
+	a := only(t, g.Evaluate(t0.Add(5*time.Minute+30*time.Second)), ActionUpdate)
+	if got := a.Delta.Removed; len(got) != 1 || got[0] != "gone" {
+		t.Fatalf("want removed [gone], got %v (delta %+v)", got, a.Delta)
+	}
+	if sb := g.Scoreboard(); sb.Down != 1 || sb.Removed != 1 || sb.Total != 1 {
+		t.Fatalf("removed member must leave the active scoreboard: %+v", sb)
+	}
+}
+
+// TestRemovedLastDownMemberCloses is the reported bug: during a large
+// outage the digest kept a removed monitor down forever, so the incident
+// never closed and every reminder re-pinged its owners.
+func TestRemovedLastDownMemberCloses(t *testing.T) {
+	g := New("ops", t0, testCfg())
+	g.MarkDown("gone", t0)
+	g.MarkDown("recovers", t0)
+	only(t, g.Evaluate(t0.Add(30*time.Second)), ActionPostDigest)
+
+	g.MarkUp("recovers", t0.Add(1*time.Minute))
+	g.MarkRemoved("gone", t0.Add(1*time.Minute))
+
+	// Debounce on "recovers" ends t0+6m; nothing is down after that.
+	only(t, g.Evaluate(t0.Add(7*time.Minute)), ActionClose)
+	if !g.Closed {
+		t.Fatal("group should close once its only remaining down member was removed")
+	}
+	if sb := g.Scoreboard(); sb.Down != 0 || sb.Recovered != 1 {
+		t.Fatalf("scoreboard = %+v", sb)
+	}
+}
+
+// TestRemovedThenRecreatedReadsAsNewlyDown covers delete→recreate: the
+// monitor comes back, fails again, and the digest reports it as a fresh
+// join rather than staying silently removed.
+func TestRemovedThenRecreatedReadsAsNewlyDown(t *testing.T) {
+	g := New("ops", t0, testCfg())
+	g.MarkDown("flipflop", t0)
+	g.MarkDown("keeper", t0)
+	only(t, g.Evaluate(t0.Add(30*time.Second)), ActionPostDigest)
+
+	g.MarkRemoved("flipflop", t0.Add(1*time.Minute))
+	a := only(t, g.Evaluate(t0.Add(5*time.Minute+30*time.Second)), ActionUpdate)
+	if len(a.Delta.Removed) != 1 {
+		t.Fatalf("expected the removal to render first, got %+v", a.Delta)
+	}
+
+	g.MarkDown("flipflop", t0.Add(6*time.Minute))
+	b := only(t, g.Evaluate(t0.Add(10*time.Minute+30*time.Second)), ActionUpdate)
+	if got := b.Delta.NewlyDown; len(got) != 1 || got[0] != "flipflop" {
+		t.Fatalf("want newly-down [flipflop], got %v (delta %+v)", got, b.Delta)
+	}
+	if sb := g.Scoreboard(); sb.Down != 2 || sb.Removed != 0 {
+		t.Fatalf("scoreboard = %+v", sb)
+	}
+}
+
+// TestRemovedDuringGroupWaitDiscards: the whole burst was removed before
+// the digest was ever posted — nothing to say.
+func TestRemovedDuringGroupWaitDiscards(t *testing.T) {
+	g := New("ops", t0, testCfg())
+	g.MarkDown("gone", t0)
+	g.MarkRemoved("gone", t0.Add(10*time.Second))
+
+	only(t, g.Evaluate(t0.Add(30*time.Second)), ActionDiscard)
+	if !g.Closed || g.Posted {
+		t.Fatalf("removed pre-post burst should discard: closed=%v posted=%v", g.Closed, g.Posted)
+	}
+}
+
 func TestConfigDefaultsApplied(t *testing.T) {
 	g := New("ops", t0, Config{}) // all zero
 	if g.cfg.GroupWait != defaultGroupWait ||

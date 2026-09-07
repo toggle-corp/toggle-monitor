@@ -22,6 +22,9 @@ const (
 	RowRecovered DigestRowClass = "recovered"
 	// RowPaused — pulled out by dependsOn push-propagation.
 	RowPaused DigestRowClass = "paused"
+	// RowRemoved — no longer part of the estate (dropped from config or
+	// its Ingress deleted) while the digest was open.
+	RowRemoved DigestRowClass = "removed"
 )
 
 // DigestRow is one monitor line in the digest body.
@@ -99,7 +102,8 @@ func buildDigestBlocks(in DigestInput, footerPrefix string, footerTime time.Time
 
 // renderDigestRows renders the per-monitor lines, capped at maxRows with
 // a "…and N more" tail. Active rows sort first (what's still broken),
-// then recovered, then paused; within a class, alphabetical.
+// then recovered, then paused, then removed; within a class,
+// alphabetical.
 func renderDigestRows(rows []DigestRow, maxRows int) string {
 	if len(rows) == 0 {
 		return ""
@@ -107,7 +111,7 @@ func renderDigestRows(rows []DigestRow, maxRows int) string {
 	if maxRows <= 0 {
 		maxRows = DefaultDigestMaxRows
 	}
-	classRank := map[DigestRowClass]int{RowActive: 0, RowRecovered: 1, RowPaused: 2}
+	classRank := map[DigestRowClass]int{RowActive: 0, RowRecovered: 1, RowPaused: 2, RowRemoved: 3}
 	sorted := append([]DigestRow(nil), rows...)
 	sort.SliceStable(sorted, func(i, j int) bool {
 		if classRank[sorted[i].Class] != classRank[sorted[j].Class] {
@@ -142,6 +146,8 @@ func digestRowLine(r DigestRow) string {
 		return "✅ ~" + name + "~"
 	case RowPaused:
 		return "⏸ " + name + " _(paused — upstream incident)_"
+	case RowRemoved:
+		return "🗑 ~" + name + "~ _(removed — no longer monitored)_"
 	default:
 		return "🔴 " + name
 	}
@@ -156,6 +162,7 @@ type DigestDeltaInput struct {
 	Recovered []string
 	Flapped   []string
 	Paused    []string
+	Removed   []string
 	Mentions  []string
 }
 
@@ -178,6 +185,10 @@ func BuildDigestDelta(in DigestDeltaInput) []Block {
 	if len(in.Paused) > 0 {
 		lines = append(lines, fmt.Sprintf("⏸ *%d paused* (rolled into upstream incident): %s",
 			len(in.Paused), backticked(in.Paused)))
+	}
+	if len(in.Removed) > 0 {
+		lines = append(lines, fmt.Sprintf("🗑 *%d removed* (no longer monitored): %s",
+			len(in.Removed), backticked(in.Removed)))
 	}
 	if len(lines) == 0 {
 		return nil

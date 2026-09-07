@@ -48,6 +48,11 @@ const (
 	// push-propagation: a parent went down, so this child's failure is
 	// not actionable and rolls into the parent's "pausing N" count.
 	MemberPaused MemberState = "paused"
+	// MemberRemoved — the monitor left the estate (dropped from config,
+	// or its Ingress was deleted) while the digest was open. Rendered as
+	// removed and kept visible, but no longer counted as down, so the
+	// incident can close on the monitors that actually remain.
+	MemberRemoved MemberState = "removed"
 )
 
 // Member is one monitor's membership in a group.
@@ -74,6 +79,7 @@ const (
 	renderActive    = "active"
 	renderRecovered = "recovered"
 	renderPaused    = "paused"
+	renderRemoved   = "removed"
 )
 
 func renderClass(s MemberState) string {
@@ -84,6 +90,8 @@ func renderClass(s MemberState) string {
 		return renderRecovered
 	case MemberPaused:
 		return renderPaused
+	case MemberRemoved:
+		return renderRemoved
 	}
 	return renderNone
 }
@@ -215,6 +223,20 @@ func (g *Group) MarkPaused(slug string, now time.Time) {
 	m.ChangedAt = now
 }
 
+// MarkRemoved records that `slug` is no longer part of the estate. The
+// member stays in the digest — the operator saw it go down and is owed
+// the resolution — but leaves the down count, so an incident whose
+// remaining members recovered can close. No-op for unknown members: a
+// removal only has to be reflected in the digests that carry it.
+func (g *Group) MarkRemoved(slug string, now time.Time) {
+	m, ok := g.Members[slug]
+	if !ok || m.State == MemberRemoved {
+		return
+	}
+	m.State = MemberRemoved
+	m.ChangedAt = now
+}
+
 // ActionKind is one Slack side-effect Evaluate asks the caller to do.
 type ActionKind string
 
@@ -243,12 +265,13 @@ type Delta struct {
 	Recovered []string // confirmed recovered this window
 	Flapped   []string // were recovered/recovering, went down again
 	Paused    []string // pulled out by push-propagation this window
+	Removed   []string // left the estate this window
 }
 
 // Empty reports whether the delta carries no changes.
 func (d Delta) Empty() bool {
 	return len(d.NewlyDown) == 0 && len(d.Recovered) == 0 &&
-		len(d.Flapped) == 0 && len(d.Paused) == 0
+		len(d.Flapped) == 0 && len(d.Paused) == 0 && len(d.Removed) == 0
 }
 
 // Action is one item of work returned by Evaluate.
@@ -340,9 +363,11 @@ func (g *Group) delta() Delta {
 			continue
 		}
 		switch {
+		case cur == renderRemoved:
+			d.Removed = append(d.Removed, m.Slug)
 		case cur == renderPaused:
 			d.Paused = append(d.Paused, m.Slug)
-		case cur == renderActive && (prev == renderNone || prev == renderPaused):
+		case cur == renderActive && (prev == renderNone || prev == renderPaused || prev == renderRemoved):
 			d.NewlyDown = append(d.NewlyDown, m.Slug)
 		case cur == renderActive && prev == renderRecovered:
 			d.Flapped = append(d.Flapped, m.Slug)
@@ -354,6 +379,7 @@ func (g *Group) delta() Delta {
 	sort.Strings(d.Recovered)
 	sort.Strings(d.Flapped)
 	sort.Strings(d.Paused)
+	sort.Strings(d.Removed)
 	return d
 }
 
@@ -405,12 +431,14 @@ type Counts struct {
 	Recovering int
 	Recovered  int
 	Paused     int
+	Removed    int
 	Total      int
 }
 
 // Scoreboard returns the header counts ("X down · Y recovered (of N)").
 // Paused members are excluded from Total since they belong to the
-// parent's incident, not this digest.
+// parent's incident, not this digest; removed members are excluded
+// because they are no longer part of the estate the digest reports on.
 func (g *Group) Scoreboard() Counts {
 	c := Counts{}
 	for _, m := range g.Members {
@@ -423,6 +451,8 @@ func (g *Group) Scoreboard() Counts {
 			c.Recovered++
 		case MemberPaused:
 			c.Paused++
+		case MemberRemoved:
+			c.Removed++
 		}
 	}
 	c.Total = c.Down + c.Recovering + c.Recovered

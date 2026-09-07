@@ -266,6 +266,14 @@ Static and kube monitors share a soft-delete shape:
   - A non-threaded `⚠️ Monitor removed` warning to the
     last-known channel (resolved via the persisted
     `slack_channel_slug` against the current YAML).
+- Removal also reaches the burst dispatcher
+  (`coalesce.Manager.Remove`), which drops the monitor from the
+  channel's burst count and, when a digest is open, marks it
+  `removed` in the group. The digest keeps the row visible but stops
+  counting it down, so an outage-sized incident closes on the
+  monitors that remain instead of standing red on one that is no
+  longer probed. A monitor still waiting in a pending pool is dropped
+  from it, so an intentional deletion pages nobody.
 
 Slack delivery failures during removal log and continue; the
 DB-side soft-delete is the source of truth.

@@ -230,6 +230,12 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	if err != nil {
 		log.Warn("list prior static monitors", "error", err)
 	}
+	// Removals reached here before the coalesce manager exists, so the
+	// (channel, slug) pairs are replayed into it once it has reattached
+	// the open digests — otherwise a digest from the prior process keeps
+	// counting a monitor this config no longer declares.
+	type removedMonitor struct{ channel, slug string }
+	var removedStatic []removedMonitor
 	for _, m := range priorStatic {
 		if _, kept := declared[m.Slug]; kept {
 			continue
@@ -241,6 +247,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		}
 		log.Info("monitor removed from config (soft-deleted)", "slug", m.Slug, "was_status", m.Status)
 		if m.SlackChannelSlug != "" {
+			removedStatic = append(removedStatic, removedMonitor{channel: m.SlackChannelSlug, slug: m.Slug})
 			notifier.NotifyRemoved(ctx, m.SlackChannelSlug, view, "removed from config", "static config")
 		}
 	}
@@ -376,6 +383,9 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	}
 	if err := groupMgr.Reattach(ctx); err != nil {
 		log.Warn("reattach incident groups", "error", err)
+	}
+	for _, rm := range removedStatic {
+		groupMgr.Remove(ctx, rm.channel, rm.slug, time.Now())
 	}
 
 	// planSource is constructed empty here so the push-propagation
@@ -588,7 +598,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	// wire the actual watcher loop + the removal sink that runs
 	// when an ingress disappears.
 	if kc := opts.Config.Kube; kc != nil {
-		removalSink := &kubeRemovalSink{repo: repo, notifier: notifier, log: log}
+		removalSink := &kubeRemovalSink{repo: repo, notifier: notifier, groups: groupMgr, log: log}
 		kubeOpts := kube.Options{
 			ResyncInterval: kc.ResyncInterval.AsDuration(),
 			WatchDebounce:  kc.EffectiveWatchDebounce(),
@@ -993,6 +1003,7 @@ func (c *cascadeSource) ResolveEnv(namespace string) merger.Env {
 type kubeRemovalSink struct {
 	repo     *store.Repo
 	notifier *slack.Notifier
+	groups   *coalesce.Manager
 	log      *slog.Logger
 }
 
@@ -1015,6 +1026,11 @@ func (k *kubeRemovalSink) OnKubeMonitorRemoved(ctx context.Context, monitorSlug,
 	}
 	k.log.Info("kube monitor removed (soft-deleted)", "slug", monitorSlug, "was_status", row.Status, "reason", reason)
 	if row.SlackChannelSlug != "" {
+		// Drop the monitor from the channel's dispatcher state first: a
+		// removal during a large outage otherwise leaves the digest
+		// counting a monitor nobody probes any more, so the incident
+		// reads as down forever and never closes.
+		k.groups.Remove(ctx, row.SlackChannelSlug, monitorSlug, time.Now())
 		k.notifier.NotifyRemoved(ctx, row.SlackChannelSlug, view, reason, "k8s ingress")
 	}
 }

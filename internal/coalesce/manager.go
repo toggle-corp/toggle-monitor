@@ -257,6 +257,47 @@ func (m *Manager) Pause(ctx context.Context, channel, slug string, at time.Time)
 	}
 }
 
+// Remove stages a monitor's departure from the estate: config stopped
+// declaring it, or its Ingress was deleted. The per-monitor notifier
+// closes the monitor's own thread (slack.Notifier.NotifyRemoved) and
+// posts the removal warning, so this call only has to stop the
+// dispatcher and the digest from reporting a monitor that no longer
+// exists. Routes by channel mode:
+//   - group: MarkRemoved — the digest renders it removed and stops
+//     counting it down, so the incident closes on what remains.
+//   - pending: drop from the pool — the removal notice is the message,
+//     and no individual was ever posted.
+//   - individual: nothing left to do here.
+//
+// The group is persisted inline rather than at the evaluator's next
+// pass: removals arrive from the kube watcher and the config reconcile,
+// so a restart in between would reattach a digest that still counts the
+// removed monitor as down.
+func (m *Manager) Remove(ctx context.Context, channel, slug string, at time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cs := m.channelStateFor(channel)
+	cs.clearDown(slug)
+	switch cs.mode {
+	case modeGroup:
+		lg := m.groups[channel]
+		if lg == nil {
+			return
+		}
+		lg.g.MarkRemoved(slug, at)
+		if err := m.store.SaveIncidentGroup(ctx, m.toRow(lg)); err != nil {
+			m.log.Warn("save incident group", "channel", channel, "error", err)
+		}
+	case modePending:
+		delete(cs.pending, slug)
+		if len(cs.pending) == 0 {
+			cs.mode = modeIndividual
+			cs.pending = nil
+			cs.pendingDue = time.Time{}
+		}
+	}
+}
+
 // ensureGroupLocked returns the live group for a channel, loading a
 // persisted open group or creating a new one. Caller holds m.mu.
 func (m *Manager) ensureGroupLocked(ctx context.Context, channel string, at time.Time) *liveGroup {
@@ -486,6 +527,7 @@ func (m *Manager) deltaInput(lg *liveGroup, d group.Delta) slack.DigestDeltaInpu
 		Recovered: m.names(lg, d.Recovered),
 		Flapped:   m.names(lg, d.Flapped),
 		Paused:    m.names(lg, d.Paused),
+		Removed:   m.names(lg, d.Removed),
 		Mentions:  m.unionMentions(lg, d.NewlyDown),
 	}
 }
@@ -548,6 +590,8 @@ func rowClass(s group.MemberState) slack.DigestRowClass {
 		return slack.RowRecovered
 	case group.MemberPaused:
 		return slack.RowPaused
+	case group.MemberRemoved:
+		return slack.RowRemoved
 	default:
 		return slack.RowActive
 	}

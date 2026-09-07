@@ -790,3 +790,131 @@ func TestDispatch_reattachedGroup_recoversUnknownMonitorIndividually(t *testing.
 		t.Errorf("recovery of a non-member was swallowed by the digest: %d sink resolves", got)
 	}
 }
+
+// TestDispatch_groupMode_removedMonitorStopsCountingAsDown is the
+// reported bug: a big outage promotes the channel to a digest, then one
+// of the down monitors is removed from the estate (Ingress deleted).
+// The digest must stop reporting it as down so the incident can close on
+// what remains, instead of standing red forever.
+func TestDispatch_groupMode_removedMonitorStopsCountingAsDown(t *testing.T) {
+	clock := base
+	m, fs, fp, sink := newDispatchManager(t, &clock, 2, 5*time.Minute)
+	ctx := context.Background()
+
+	m.Route(ctx, "ops", downEntry("gone", clock))
+	m.Route(ctx, "ops", downEntry("recovers", clock))
+	clock = base.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+	if fp.posts != 1 {
+		t.Fatalf("setup: want 1 digest post, got %d", fp.posts)
+	}
+
+	// The Ingress behind "gone" is deleted; "recovers" comes back.
+	clock = base.Add(1 * time.Minute)
+	m.Remove(ctx, "ops", "gone", clock)
+	m.Up(ctx, "ops", "recovers", clock)
+
+	m.mu.Lock()
+	sb := m.groups["ops"].g.Scoreboard()
+	m.mu.Unlock()
+	if sb.Down != 0 || sb.Removed != 1 {
+		t.Fatalf("removed monitor still counts as down: %+v", sb)
+	}
+
+	// Past the resolve debounce, nothing is down → the group closes.
+	clock = base.Add(10 * time.Minute)
+	m.evaluateAll(ctx)
+	if open, _ := fs.ListOpenIncidentGroups(ctx); len(open) != 0 {
+		t.Fatalf("digest with a removed member never closed: %d open", len(open))
+	}
+	if got := len(sink.calls); got != 0 {
+		t.Fatalf("removal must not fire the individual sink, got %d", got)
+	}
+}
+
+// TestDispatch_groupMode_removalPersistsImmediately: removals arrive off
+// the evaluator's goroutine, so the digest row has to be written when the
+// removal happens — a restart before the next evaluator pass would
+// otherwise reattach a digest that still counts the monitor down.
+func TestDispatch_groupMode_removalPersistsImmediately(t *testing.T) {
+	clock := base
+	m, fs, _, _ := newDispatchManager(t, &clock, 2, 5*time.Minute)
+	ctx := context.Background()
+
+	m.Route(ctx, "ops", downEntry("gone", clock))
+	m.Route(ctx, "ops", downEntry("stays", clock))
+	clock = base.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+
+	m.Remove(ctx, "ops", "gone", base.Add(1*time.Minute))
+
+	open, _ := fs.ListOpenIncidentGroups(ctx)
+	if len(open) != 1 {
+		t.Fatalf("want 1 open group row, got %d", len(open))
+	}
+	var state string
+	for _, mem := range open[0].Members {
+		if mem.MonitorSlug == "gone" {
+			state = mem.State
+		}
+	}
+	if state != string(group.MemberRemoved) {
+		t.Fatalf("persisted member state = %q, want %q", state, group.MemberRemoved)
+	}
+}
+
+// TestDispatch_pendingRemovalRemovesFromPool closes ADR-0011's residual
+// race: a monitor whose failure is still waiting in the pending pool
+// when its Ingress disappears is never paged — the removal notice is the
+// only message.
+func TestDispatch_pendingRemovalRemovesFromPool(t *testing.T) {
+	clock := base
+	m, _, fp, sink := newDispatchManager(t, &clock, 5, 0)
+	ctx := context.Background()
+
+	for _, slug := range []string{"a", "b", "gone"} {
+		m.Route(ctx, "ops", downEntry(slug, clock))
+	}
+	m.Remove(ctx, "ops", "gone", clock.Add(5*time.Second))
+
+	clock = base.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+
+	if got := sink.countByType(alert.EventOpen); got != 2 {
+		t.Fatalf("want 2 EventOpen flushes, got %d", got)
+	}
+	for _, c := range sink.calls {
+		if c.slug == "gone" {
+			t.Fatalf("removed monitor was paged from the pending pool")
+		}
+	}
+	if fp.posts != 0 {
+		t.Fatalf("sub-threshold pool posted a digest: %d", fp.posts)
+	}
+}
+
+// TestDispatch_removalDropsBurstCount: a removed monitor is not part of
+// the outage any more, so it must not push the channel over
+// burstThreshold on its own.
+func TestDispatch_removalDropsBurstCount(t *testing.T) {
+	clock := base
+	m, _, fp, sink := newDispatchManager(t, &clock, 2, 5*time.Minute)
+	ctx := context.Background()
+
+	m.Route(ctx, "ops", downEntry("gone", clock))
+	m.Remove(ctx, "ops", "gone", clock.Add(5*time.Second))
+
+	// A fresh, unrelated failure: with the removal forgotten the channel
+	// is back to a burst of one, so it flushes individually.
+	clock = base.Add(1 * time.Minute)
+	m.Route(ctx, "ops", downEntry("z", clock))
+	clock = clock.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+
+	if got := sink.countByType(alert.EventOpen); got != 1 {
+		t.Fatalf("want 1 individual flush, got %d", got)
+	}
+	if fp.posts != 0 {
+		t.Fatalf("removed monitor still counted toward the burst: %d digest posts", fp.posts)
+	}
+}

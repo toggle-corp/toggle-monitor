@@ -61,6 +61,27 @@ func TestBuildDigestParent_closedIsGreen(t *testing.T) {
 	}
 }
 
+// A monitor removed mid-incident stays visible but reads as removed
+// rather than down, and sorts below everything still being monitored.
+func TestBuildDigestParent_removedRowSortsLastAndReadsRemoved(t *testing.T) {
+	out := slack.BuildDigestParent(slack.DigestInput{
+		Down:     1,
+		Total:    1,
+		OpenedAt: t0,
+		Rows: []slack.DigestRow{
+			{Name: "gone", Class: slack.RowRemoved},
+			{Name: "api", Class: slack.RowActive},
+		},
+	})
+	got := dump(t, out.Attachments)
+	if !strings.Contains(got, "🗑 ~gone~ _(removed — no longer monitored)_") {
+		t.Fatalf("removed row wrong: %s", got)
+	}
+	if strings.Index(got, "🔴 api") > strings.Index(got, "🗑 ~gone~") {
+		t.Fatalf("removed row should sort after active rows: %s", got)
+	}
+}
+
 func TestRenderDigestRows_capsWithTail(t *testing.T) {
 	rows := make([]slack.DigestRow, 45)
 	for i := range rows {
@@ -79,13 +100,14 @@ func TestBuildDigestDelta_batchesAllBucketsOneReply(t *testing.T) {
 		Recovered: []string{"c"},
 		Flapped:   []string{"d"},
 		Paused:    []string{"e"},
+		Removed:   []string{"f"},
 		Mentions:  []string{"<@U1>"},
 	})
 	if len(blocks) != 1 {
 		t.Fatalf("delta should be a single block, got %d", len(blocks))
 	}
 	got := dump(t, blocks)
-	for _, want := range []string{"+2 down", "1 recovered", "1 flapped", "1 paused", "<@U1>"} {
+	for _, want := range []string{"+2 down", "1 recovered", "1 flapped", "1 paused", "1 removed", "<@U1>"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("delta missing %q: %s", want, got)
 		}
