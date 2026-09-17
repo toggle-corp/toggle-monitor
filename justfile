@@ -81,6 +81,11 @@ tailwind: install-tailwind
 fonts:
     scripts/fonts.sh --force
 
+# Rasterize favicon.ico + apple-touch-icon.png from favicon.svg. The
+# outputs are committed, so this only needs running when the mark changes.
+icons:
+    scripts/icons.sh
+
 # Install every local tool into bin/.
 tools: install-golangci-lint install-templ install-tailwind
 

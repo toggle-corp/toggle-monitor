@@ -80,6 +80,12 @@ templ Layout(title string) {
 			<meta charset="utf-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
 			<title>{ title } — toggle-monitor</title>
+			// SVG first for browsers that take it (one file, any size);
+			// the .ico is the fallback and is also what a bare
+			// /favicon.ico request gets.
+			<link rel="icon" href="/static/favicon.svg" type="image/svg+xml"/>
+			<link rel="alternate icon" href="/favicon.ico" sizes="48x48 32x32 16x16"/>
+			<link rel="apple-touch-icon" href="/static/apple-touch-icon.png"/>
 			<link rel="stylesheet" href="/static/css/app.css"/>
 			@themeBoot()
 			<script src="https://unpkg.com/htmx.org@2.0.4" defer></script>

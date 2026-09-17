@@ -169,6 +169,9 @@ Two checked-in artifacts are generated:
 - `internal/web/static/css/app.css` — produced by `just tailwind`
   from `internal/web/tailwind/input.css`. Re-run manually after
   changing utility classes in `.templ` files.
+- `internal/web/static/favicon.ico` + `apple-touch-icon.png` — produced
+  by `just icons` from `internal/web/static/favicon.svg` (needs
+  ImageMagick + librsvg). Only re-run when the mark changes.
 
 ## Production deployment summary
 

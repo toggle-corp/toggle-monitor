@@ -273,6 +273,12 @@ func (s *Server) Routes() http.Handler {
 
 	staticFS, _ := fs.Sub(StaticAssets, "static")
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
+	// Browsers request /favicon.ico on their own, regardless of the
+	// <link> tags, so the root path serves the same embedded file
+	// instead of logging a 404 per tab.
+	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFileFS(w, r, staticFS, "favicon.ico")
+	})
 
 	if s.metrics != nil {
 		mux.Handle("GET /metrics", s.metrics)
