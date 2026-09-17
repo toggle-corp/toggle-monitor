@@ -242,7 +242,7 @@ templ kvDiscoveredFrom(label string, d DiscoveredFrom) {
 	}
 }
 
-templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []string, history []store.AlertEventRow, appearsOn []AppearsOnEntry, discoveredFrom *DiscoveredFrom) {
+templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []string, history AlertHistory, appearsOn []AppearsOnEntry, discoveredFrom *DiscoveredFrom) {
 	{{ layoutTitle := m.FriendlyName }}
 	if m.Archived {
 		{{ layoutTitle = "[archived] " + m.FriendlyName }}
@@ -330,15 +330,18 @@ templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []stri
 					@kv("ssl issuer", *m.SSLIssuer)
 				}
 			}
-			@List("Alert history", false) {
-				if len(history) == 0 {
-					<div class="py-[11px] font-mono text-xs text-faint">No alert history yet.</div>
-				} else {
-					for _, ev := range history {
-						@historyEntry(ev)
+			<div id="alert-history" class="flex flex-col gap-3 scroll-mt-4">
+				@List(historyLabel(history), false) {
+					if len(history.Items) == 0 {
+						<div class="py-[11px] font-mono text-xs text-faint">{ historyEmptyLabel(history) }</div>
+					} else {
+						for _, ev := range history.Items {
+							@historyEntry(ev)
+						}
 					}
 				}
-			}
+				@PaginatorAnchored("/monitor/"+m.Slug, "alert-history", history.Page, history.PerPage, history.Total, nil)
+			</div>
 		</div>
 		if cfg != nil {
 			@configDialog(m, *cfg, discoveredFrom)
@@ -365,6 +368,34 @@ func downtimeLabel(seconds int64) string {
 		return "<1s"
 	}
 	return humanInterval(time.Duration(seconds) * time.Second)
+}
+
+// AlertHistory is one page of a monitor's alert history plus the
+// paginator's state. Page/PerPage come from the request; Total counts
+// every event the monitor has, not just this page.
+type AlertHistory struct {
+	Items   []store.AlertEventRow
+	Page    int
+	PerPage int
+	Total   int
+}
+
+// historyLabel names the panel, carrying the total so the count is
+// visible while paging through it.
+func historyLabel(h AlertHistory) string {
+	if h.Total == 0 {
+		return "Alert history"
+	}
+	return fmt.Sprintf("Alert history · %d", h.Total)
+}
+
+// historyEmptyLabel distinguishes a monitor that has never alerted from
+// a page number past the end of one that has.
+func historyEmptyLabel(h AlertHistory) string {
+	if h.Total == 0 {
+		return "No alert history yet."
+	}
+	return "No events on this page."
 }
 
 // historyEntry is one alert event in the per-monitor history: what

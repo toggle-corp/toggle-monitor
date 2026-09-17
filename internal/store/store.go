@@ -1018,29 +1018,42 @@ type AlertEventRow struct {
 	DowntimeSeconds *int64
 }
 
-// ListAlertsForMonitor returns the alert history for a single monitor,
-// newest first.
-func (r *Repo) ListAlertsForMonitor(ctx context.Context, slug string, limit int) ([]AlertEventRow, error) {
+// AlertEventListing is one page of a monitor's alert history plus the
+// unpaginated total the paginator needs.
+type AlertEventListing struct {
+	Items []AlertEventRow
+	Total int
+}
+
+// ListAlertsForMonitor returns one page of the alert history for a
+// single monitor, newest first. Total counts every event for the
+// monitor, not just this page.
+func (r *Repo) ListAlertsForMonitor(ctx context.Context, slug string, limit, offset int) (AlertEventListing, error) {
+	var total int
+	if err := r.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM alert_events WHERE monitor_slug = $1`, slug).Scan(&total); err != nil {
+		return AlertEventListing{}, fmt.Errorf("count alerts for %q: %w", slug, err)
+	}
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, monitor_slug, type, at, status_code, error, downtime_seconds
 		FROM alert_events
 		WHERE monitor_slug = $1
 		ORDER BY at DESC, id DESC
-		LIMIT $2
-	`, slug, limit)
+		LIMIT $2 OFFSET $3
+	`, slug, limit, offset)
 	if err != nil {
-		return nil, fmt.Errorf("list alerts for %q: %w", slug, err)
+		return AlertEventListing{}, fmt.Errorf("list alerts for %q: %w", slug, err)
 	}
 	defer rows.Close()
-	var out []AlertEventRow
+	out := AlertEventListing{Total: total}
 	for rows.Next() {
 		var ev AlertEventRow
 		var typ string
 		if err := rows.Scan(&ev.ID, &ev.MonitorSlug, &typ, &ev.At, &ev.StatusCode, &ev.Error, &ev.DowntimeSeconds); err != nil {
-			return nil, err
+			return AlertEventListing{}, err
 		}
 		ev.Type = alert.EventType(typ)
-		out = append(out, ev)
+		out.Items = append(out.Items, ev)
 	}
 	return out, rows.Err()
 }

@@ -114,7 +114,10 @@ func pageCount(total, perPage int) int {
 	return n
 }
 
-func paginatorLink(base string, extra url.Values, page int) templ.SafeURL {
+// paginatorLink builds a page link, optionally ending in a fragment so
+// the browser lands on the paginated section instead of the top of the
+// page. Empty fragment → no fragment.
+func paginatorLink(base, fragment string, extra url.Values, page int) templ.SafeURL {
 	v := url.Values{}
 	for k, vals := range extra {
 		for _, val := range vals {
@@ -124,7 +127,11 @@ func paginatorLink(base string, extra url.Values, page int) templ.SafeURL {
 		}
 	}
 	v.Set("page", strconv.Itoa(page))
-	return templ.URL(base + "?" + v.Encode())
+	href := base + "?" + v.Encode()
+	if fragment != "" {
+		href += "#" + fragment
+	}
+	return templ.URL(href)
 }
 
 // sortHref builds the link for a clickable column header. Clicking

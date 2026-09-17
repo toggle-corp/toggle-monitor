@@ -155,10 +155,11 @@ func TestApplyCheck_fullUptimeLifecycle(t *testing.T) {
 	}
 
 	// Two alert events recorded.
-	events, err := repo.ListAlertsForMonitor(ctx, "api", 10)
+	listing, err := repo.ListAlertsForMonitor(ctx, "api", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	events := listing.Items
 	if len(events) != 2 {
 		t.Fatalf("alert event count: got %d, want 2", len(events))
 	}
@@ -171,6 +172,73 @@ func TestApplyCheck_fullUptimeLifecycle(t *testing.T) {
 	}
 	if events[1].Type != alert.EventOpen {
 		t.Errorf("events[1].Type: got %q, want open", events[1].Type)
+	}
+}
+
+// Total counts the monitor's whole history, not the page — the
+// paginator sizes itself from it — and offset walks backwards through
+// the newest-first order.
+func TestListAlertsForMonitor_pagesAndTotals(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+
+	if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
+		Slug: "api", FriendlyName: "API", URL: "http://x", Source: store.SourceStatic,
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	// A second monitor's events must not leak into either count or page.
+	if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
+		Slug: "other", FriendlyName: "Other", URL: "http://y", Source: store.SourceStatic,
+	}); err != nil {
+		t.Fatalf("reconcile other: %v", err)
+	}
+
+	base := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		at := base.Add(time.Duration(i) * time.Hour)
+		if err := repo.ApplyCheck(ctx, "api",
+			alert.State{Status: alert.StatusDown, OpenedAt: at}, at, 503, "boom",
+			&alert.Event{Type: alert.EventOpen, At: at, StatusCode: 503, Error: "boom"},
+		); err != nil {
+			t.Fatalf("apply %d: %v", i, err)
+		}
+	}
+	if err := repo.ApplyCheck(ctx, "other",
+		alert.State{Status: alert.StatusDown, OpenedAt: base}, base, 503, "elsewhere",
+		&alert.Event{Type: alert.EventOpen, At: base, StatusCode: 503, Error: "elsewhere"},
+	); err != nil {
+		t.Fatalf("apply other: %v", err)
+	}
+
+	first, err := repo.ListAlertsForMonitor(ctx, "api", 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Total != 5 {
+		t.Errorf("Total: got %d, want 5 (api's events only)", first.Total)
+	}
+	if len(first.Items) != 2 {
+		t.Fatalf("page size: got %d items, want 2", len(first.Items))
+	}
+	if !first.Items[0].At.Equal(base.Add(4 * time.Hour)) {
+		t.Errorf("first page should start at the newest event, got %v", first.Items[0].At)
+	}
+
+	last, err := repo.ListAlertsForMonitor(ctx, "api", 2, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(last.Items) != 1 || !last.Items[0].At.Equal(base) {
+		t.Errorf("last page should hold the single oldest event, got %+v", last.Items)
+	}
+
+	past, err := repo.ListAlertsForMonitor(ctx, "api", 2, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(past.Items) != 0 || past.Total != 5 {
+		t.Errorf("offset past the end: got %d items, total %d; want 0 items, total 5", len(past.Items), past.Total)
 	}
 }
 
@@ -189,10 +257,11 @@ func TestApplyCheck_nilEvent_onlyUpdatesLastFields(t *testing.T) {
 		t.Fatalf("ApplyCheck (no event): %v", err)
 	}
 
-	events, err := repo.ListAlertsForMonitor(ctx, "api", 10)
+	listing, err := repo.ListAlertsForMonitor(ctx, "api", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	events := listing.Items
 	if len(events) != 0 {
 		t.Errorf("expected no alert events, got %d", len(events))
 	}
@@ -280,9 +349,9 @@ func TestSoftDeleteMonitor_archivesAndPreservesHistory(t *testing.T) {
 	if got.ArchiveReason == nil || *got.ArchiveReason != "removed from config" {
 		t.Errorf("archive_reason: got %v, want 'removed from config'", got.ArchiveReason)
 	}
-	events, _ := repo.ListAlertsForMonitor(ctx, "api", 10)
-	if len(events) != 1 {
-		t.Errorf("history should be preserved across soft-delete, got %d events", len(events))
+	alerts, _ := repo.ListAlertsForMonitor(ctx, "api", 10, 0)
+	if len(alerts.Items) != 1 {
+		t.Errorf("history should be preserved across soft-delete, got %d events", len(alerts.Items))
 	}
 
 	// Default listing should hide it.

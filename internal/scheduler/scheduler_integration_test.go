@@ -121,10 +121,11 @@ func TestTick_endToEndUptimeLifecycle(t *testing.T) {
 		}
 	}
 
-	events, err := repo.ListAlertsForMonitor(ctx, "api", 10)
+	listing, err := repo.ListAlertsForMonitor(ctx, "api", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	events := listing.Items
 	if len(events) != 2 {
 		t.Fatalf("event count: got %d, want 2 (open + resolve)", len(events))
 	}
@@ -201,8 +202,8 @@ func TestTick_dependsOn_pausesChildWhenParentDown(t *testing.T) {
 	if row.Status != alert.StatusTemporaryPaused {
 		t.Errorf("child status: got %q, want %q", row.Status, alert.StatusTemporaryPaused)
 	}
-	if events, _ := repo.ListAlertsForMonitor(ctx, "child", 10); len(events) != 0 {
-		t.Errorf("paused tick must not write alert_events; got %d", len(events))
+	if listing, _ := repo.ListAlertsForMonitor(ctx, "child", 10, 0); len(listing.Items) != 0 {
+		t.Errorf("paused tick must not write alert_events; got %d", len(listing.Items))
 	}
 
 	// Bring the parent back up.
@@ -223,9 +224,9 @@ func TestTick_dependsOn_pausesChildWhenParentDown(t *testing.T) {
 	if called.Load() != 1 {
 		t.Errorf("probe should run once after resume, called %d time(s)", called.Load())
 	}
-	events, _ := repo.ListAlertsForMonitor(ctx, "child", 10)
-	if len(events) != 1 || events[0].Type != alert.EventOpen {
-		t.Errorf("expected exactly 1 open event after resume, got %d", len(events))
+	resumed, _ := repo.ListAlertsForMonitor(ctx, "child", 10, 0)
+	if len(resumed.Items) != 1 || resumed.Items[0].Type != alert.EventOpen {
+		t.Errorf("expected exactly 1 open event after resume, got %d", len(resumed.Items))
 	}
 }
 
@@ -301,10 +302,11 @@ func TestTick_dependsOn_resumeFromPaused_preservesOpenIncident(t *testing.T) {
 		t.Fatalf("resumed tick: %v", err)
 	}
 
-	events, err := repo.ListAlertsForMonitor(ctx, "child", 10)
+	listing, err := repo.ListAlertsForMonitor(ctx, "child", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	events := listing.Items
 	opens := 0
 	for _, ev := range events {
 		if ev.Type == alert.EventOpen {
@@ -463,10 +465,11 @@ func TestTick_inCycleRetriesSuppressTransientFailure(t *testing.T) {
 		t.Fatalf("tick: %v", err)
 	}
 
-	events, err := repo.ListAlertsForMonitor(ctx, "api", 10)
+	listing, err := repo.ListAlertsForMonitor(ctx, "api", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	events := listing.Items
 	if len(events) != 0 {
 		t.Errorf("expected zero events (transient failure suppressed by retry), got %d", len(events))
 	}

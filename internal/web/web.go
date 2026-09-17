@@ -800,10 +800,17 @@ func (s *Server) handleMonitorDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	history, err := s.repo.ListAlertsForMonitor(ctx, slug, 50)
+	page, perPage := s.pagination(r, s.pageSizes.MonitorHistory)
+	events, err := s.repo.ListAlertsForMonitor(ctx, slug, perPage, (page-1)*perPage)
 	if err != nil {
 		s.renderDBUnavailable(ctx, w, err)
 		return
+	}
+	history := templates.AlertHistory{
+		Items:   events.Items,
+		Page:    page,
+		PerPage: perPage,
+		Total:   events.Total,
 	}
 	var cfg *templates.MonitorConfig
 	if s.configLookup != nil {

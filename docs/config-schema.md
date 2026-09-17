@@ -99,7 +99,7 @@ env:
 | `kube.watchDebounce` | duration | — | `0s` or 1s–1m | Wait after the first Ingress event of a burst before reconciling. Default `5s`; `0s` disables watch-driven reconciles. |
 | `ui.pageSize.homepageAlerts` | int | ✓ | 1–`maxPerPage` | |
 | `ui.pageSize.monitorListing` | int | ✓ | 1–`maxPerPage` | |
-| `ui.pageSize.monitorHistory` | int | ✓ | 1–`maxPerPage` | |
+| `ui.pageSize.monitorHistory` | int | ✓ | 1–`maxPerPage` | Alert-history page size on the monitor detail page (`?page=` / `?per_page=`) |
 | `ui.pageSize.discoveryListing` | int | ✓ | 1–`maxPerPage` | |
 | `ui.maxPerPage` | int | ✓ | >= 1 | Cap on `?per_page=` query param |
 | `theme.defaultGroupColor` | string | ✓ | `^#[0-9a-fA-F]{6}$` | Fallback color for groups without `color:` |

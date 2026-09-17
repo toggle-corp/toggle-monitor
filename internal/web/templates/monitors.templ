@@ -223,6 +223,13 @@ templ sortableHeader(label, key string, f MonitorsFilter) {
 // extraParams are URL-encoded query-string entries to keep on every
 // link (filters, search, etc.).
 templ Paginator(basePath string, page, perPage, total int, extraParams url.Values) {
+	@PaginatorAnchored(basePath, "", page, perPage, total, extraParams)
+}
+
+// PaginatorAnchored is Paginator for a section that isn't the whole
+// page: every link ends in #fragment, so paging a panel further down
+// the page returns to that panel rather than to the page header.
+templ PaginatorAnchored(basePath, fragment string, page, perPage, total int, extraParams url.Values) {
 	if total <= perPage && page == 1 {
 		// Nothing to paginate.
 	} else {
@@ -230,10 +237,10 @@ templ Paginator(basePath string, page, perPage, total int, extraParams url.Value
 			<span>page { fmt.Sprint(page) } of { fmt.Sprint(pageCount(total, perPage)) } · { fmt.Sprint(total) } total</span>
 			<span class="flex gap-2">
 				if page > 1 {
-					@paginatorStep(paginatorLink(basePath, extraParams, page-1), "prev")
+					@paginatorStep(paginatorLink(basePath, fragment, extraParams, page-1), "prev")
 				}
 				if page*perPage < total {
-					@paginatorStep(paginatorLink(basePath, extraParams, page+1), "next")
+					@paginatorStep(paginatorLink(basePath, fragment, extraParams, page+1), "next")
 				}
 			</span>
 		</nav>

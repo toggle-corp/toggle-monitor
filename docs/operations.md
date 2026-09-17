@@ -16,7 +16,7 @@ The binary exposes a single HTTP listener on port `:8080`. Routes:
 |---|---|---|
 | `GET /` | none | Homepage: up/down/paused/ssl stat tiles, latest alerts (paginated), Slack mapping health panel (only when something's flagged). |
 | `GET /monitors` | none | Paginated monitor listing with filters: `?q=`, `?status=`, `?group=`, `?archived=true`, `?page=`, `?per_page=` (capped at `ui.maxPerPage`). |
-| `GET /monitor/{slug}` | none | Per-monitor detail: current state, last error, alert history, SSL info, gating-parent links when `temporary-paused`. |
+| `GET /monitor/{slug}` | none | Per-monitor detail: current state, last error, paginated alert history (`?page=`, `?per_page=`), SSL info, gating-parent links when `temporary-paused`. |
 | `GET /group/{slug}` | none | Per-group monitor listing. |
 | `GET /discovery` | none | Auto-discovery snapshot: every observed Ingress with status + reason + materialized monitor link. |
 | `GET /discovery/{ns}/{name}/{host}` | none | Per-ingress detail: raw annotation set, resolved preset, materialization outcome. |

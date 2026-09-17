@@ -227,6 +227,126 @@ func TestMonitorDetail_renders(t *testing.T) {
 	}
 }
 
+// The per-monitor alert history used to render every event ever
+// recorded, so a monitor with a long incident history rendered a page
+// that only grew. These pin the paging: one page at a time, the total
+// visible, and a page past the end reading as such rather than as "no
+// history".
+func TestMonitorDetail_alertHistoryPaginates(t *testing.T) {
+	srv, repo := newServer(t)
+	ctx := context.Background()
+	if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
+		Slug: "api", FriendlyName: "API", URL: "http://api/health",
+		Source: store.SourceStatic,
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	// Six events: down/up three times, each with a distinguishable error.
+	base := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < 3; i++ {
+		down := base.Add(time.Duration(i) * time.Hour)
+		up := down.Add(10 * time.Minute)
+		if err := repo.ApplyCheck(ctx, "api",
+			alert.State{Status: alert.StatusDown, OpenedAt: down},
+			down, 503, "outage-"+strconv.Itoa(i),
+			&alert.Event{Type: alert.EventOpen, At: down, StatusCode: 503, Error: "outage-" + strconv.Itoa(i)},
+		); err != nil {
+			t.Fatalf("apply open %d: %v", i, err)
+		}
+		if err := repo.ApplyCheck(ctx, "api",
+			alert.State{Status: alert.StatusUp},
+			up, 200, "",
+			&alert.Event{Type: alert.EventResolve, At: up, StatusCode: 200, Downtime: 10 * time.Minute},
+		); err != nil {
+			t.Fatalf("apply resolve %d: %v", i, err)
+		}
+	}
+
+	// Page 1 of 3, newest first: the most recent outage is here, the
+	// oldest is not.
+	resp, body := get(t, srv.Routes(), "/monitor/api?per_page=2")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("detail status: got %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(body, "outage-2") || strings.Contains(body, "outage-0") {
+		t.Errorf("page 1 should carry the newest events only; first 2000:\n%s", firstN(body, 2000))
+	}
+	if !strings.Contains(body, "page 1 of 3") {
+		t.Errorf("paginator missing from the history panel; first 2000:\n%s", firstN(body, 2000))
+	}
+	// The next link keeps the reader in the history panel.
+	if !strings.Contains(body, "page=2#alert-history") {
+		t.Errorf("next link should anchor to the history panel; first 2000:\n%s", firstN(body, 2000))
+	}
+	if !strings.Contains(body, "Alert history · 6") {
+		t.Errorf("panel heading should carry the unpaginated total")
+	}
+
+	// Page 3 reaches the oldest outage.
+	_, body = get(t, srv.Routes(), "/monitor/api?per_page=2&page=3")
+	if !strings.Contains(body, "outage-0") || strings.Contains(body, "outage-2") {
+		t.Errorf("page 3 should carry the oldest events only")
+	}
+
+	// Past the end: honest about there being history, just not here.
+	_, body = get(t, srv.Routes(), "/monitor/api?per_page=2&page=9")
+	if !strings.Contains(body, "No events on this page.") {
+		t.Errorf("page past the end should not read as an empty history")
+	}
+}
+
+// A monitor that has never alerted keeps the original empty state and
+// renders no paginator at all.
+func TestMonitorDetail_alertHistoryEmptyState(t *testing.T) {
+	srv, repo := newServer(t)
+	ctx := context.Background()
+	if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
+		Slug: "quiet", FriendlyName: "Quiet", URL: "http://quiet/health",
+		Source: store.SourceStatic,
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	_, body := get(t, srv.Routes(), "/monitor/quiet")
+	if !strings.Contains(body, "No alert history yet.") {
+		t.Errorf("empty history should keep its own copy")
+	}
+	if strings.Contains(body, "alert-history\"") && strings.Contains(body, "page 1 of") {
+		t.Errorf("no paginator should render for an empty history")
+	}
+}
+
+// The configured page size is what the detail page uses; it used to
+// render a hardcoded 50 regardless of ui.pageSize.monitorHistory.
+func TestMonitorDetail_alertHistoryHonoursConfiguredPageSize(t *testing.T) {
+	srv, repo := newServer(t)
+	srv.SetPageSizes(web.PageSizes{MonitorHistory: 1, MaxPerPage: 200})
+	ctx := context.Background()
+	if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
+		Slug: "api", FriendlyName: "API", URL: "http://api/health",
+		Source: store.SourceStatic,
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	base := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < 2; i++ {
+		at := base.Add(time.Duration(i) * time.Hour)
+		if err := repo.ApplyCheck(ctx, "api",
+			alert.State{Status: alert.StatusDown, OpenedAt: at},
+			at, 503, "outage-"+strconv.Itoa(i),
+			&alert.Event{Type: alert.EventOpen, At: at, StatusCode: 503, Error: "outage-" + strconv.Itoa(i)},
+		); err != nil {
+			t.Fatalf("apply open %d: %v", i, err)
+		}
+	}
+	_, body := get(t, srv.Routes(), "/monitor/api")
+	if !strings.Contains(body, "page 1 of 2") {
+		t.Errorf("page size 1 should split 2 events across 2 pages; first 2000:\n%s", firstN(body, 2000))
+	}
+	if strings.Contains(body, "outage-0") {
+		t.Errorf("only the newest event belongs on page 1 at page size 1")
+	}
+}
+
 // fakeConfigLookup feeds the detail page a canned MonitorConfig per
 // slug, mirroring what lifecycle's combinedPlanSource would produce
 // at runtime. Tests assert that the rendered detail page actually
