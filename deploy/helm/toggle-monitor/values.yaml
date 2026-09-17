@@ -187,6 +187,26 @@ resources:
     cpu: 500m
     memory: 256Mi
 
+# ICMP (`pingMonitors:` in the config) needs an unprivileged ICMP
+# datagram socket, which the kernel grants only to processes whose GID
+# is inside net.ipv4.ping_group_range. Some runtimes already widen that
+# range for every sandbox (containerd's enable_unprivileged_icmp, on by
+# default in containerd 2.x); others leave it at the kernel default
+# `1 0`, where the socket call fails. Setting it here makes the
+# capability independent of the runtime. It is a Kubernetes *safe*
+# sysctl: namespaced per-pod, no CAP_NET_RAW, no node configuration,
+# and not itself a restricted-PodSecurityStandard violation. The
+# rendered range is the pod's runAsGroup (65532).
+#
+# The binary refuses to start when pingMonitors are configured and the
+# socket is unavailable, so leaving this false with ping monitors
+# declared is a CrashLoopBackOff, not silent downtime. Cluster network
+# policy still applies: NetworkPolicy has no ICMP protocol, so a
+# namespace with default-deny egress needs a CNI-specific rule
+# (CiliumNetworkPolicy / Calico) to let echo requests out.
+ping:
+  enabled: false
+
 # K8s probes use the binary's /healthz + /readyz endpoints.
 probes:
   liveness:

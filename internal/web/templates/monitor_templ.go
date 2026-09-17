@@ -1220,7 +1220,7 @@ func MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []strin
 					return templ_7745c5c3_Err
 				}
 			}
-			if m.Kind == store.KindSMTP {
+			if m.Kind != "" && m.Kind != store.KindHTTP {
 				templ_7745c5c3_Err = KindBadge(string(m.Kind)).Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
@@ -1927,9 +1927,11 @@ func configDialog(m store.MonitorRow, cfg MonitorConfig, discoveredFrom *Discove
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = kvWide("follow redirects", boolYesNo(cfg.FollowRedirects)).Render(ctx, templ_7745c5c3_Buffer)
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
+				if m.Kind == "" || m.Kind == store.KindHTTP {
+					templ_7745c5c3_Err = kvWide("follow redirects", boolYesNo(cfg.FollowRedirects)).Render(ctx, templ_7745c5c3_Buffer)
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
 				}
 				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 84, " ")
 				if templ_7745c5c3_Err != nil {

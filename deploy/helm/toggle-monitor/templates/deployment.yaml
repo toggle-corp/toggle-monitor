@@ -36,6 +36,13 @@ spec:
         runAsUser: 65532
         runAsGroup: 65532
         fsGroup: 65532
+        {{- if .Values.ping.enabled }}
+        # Safe sysctl: lets the nonroot process open unprivileged ICMP
+        # datagram sockets for pingMonitors. No CAP_NET_RAW involved.
+        sysctls:
+          - name: net.ipv4.ping_group_range
+            value: "65532 65532"
+        {{- end }}
       containers:
         - name: toggle-monitor
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"

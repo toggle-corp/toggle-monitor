@@ -240,6 +240,45 @@ func TestChart_PrometheusRuleIsOffByDefault(t *testing.T) {
 	}
 }
 
+// The ping sysctl is the whole reason a nonroot pod can send ICMP
+// (ADR-0016): the binary refuses to start with pingMonitors declared
+// and no socket, so a chart that renders the wrong group range turns
+// every ping deployment into a CrashLoopBackOff.
+func TestChart_PingSysctlRendersForThePodsGroup(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH; skipping chart render test")
+	}
+
+	rendered, err := helmTemplate(t, chartDir(t), "", []string{"ping.enabled=true"}, nil)
+	if err != nil {
+		t.Fatalf("helm template failed: %v\n--- output ---\n%s", err, rendered)
+	}
+	if !strings.Contains(rendered, "name: net.ipv4.ping_group_range") {
+		t.Fatalf("ping.enabled=true rendered no ping_group_range sysctl\n--- rendered ---\n%s", rendered)
+	}
+	// The range has to contain runAsGroup, or the socket call still
+	// fails with EACCES.
+	if !strings.Contains(rendered, `value: "65532 65532"`) {
+		t.Errorf("ping_group_range does not cover runAsGroup 65532\n--- rendered ---\n%s", rendered)
+	}
+}
+
+// A sysctl the deployment never asked for would be a surprising
+// privilege widening on every unrelated install.
+func TestChart_PingSysctlIsOffByDefault(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH; skipping chart render test")
+	}
+
+	rendered, err := helmTemplate(t, chartDir(t), "", nil, nil)
+	if err != nil {
+		t.Fatalf("helm template failed: %v\n--- output ---\n%s", err, rendered)
+	}
+	if strings.Contains(rendered, "ping_group_range") {
+		t.Error("ping sysctl rendered without ping.enabled")
+	}
+}
+
 // Namespace annotations feed namespaceAnnotation-scoped *From blocks
 // (ADR-0009); without this verb the informer cache never syncs and the
 // pod fails to start.

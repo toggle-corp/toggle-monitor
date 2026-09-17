@@ -28,14 +28,16 @@ import (
 // import config.
 type Plan struct {
 	Slug string
-	// Kind is the probe kind: "http" (default) or "smtp". Display +
-	// plan-equality only; the actual probe behaviour lives in Prober.
+	// Kind is the probe kind: "http" (default), "smtp" or "ping".
+	// Display + plan-equality only; the actual probe behaviour lives in
+	// Prober.
 	Kind         string
 	FriendlyName string
 	URL          string
 	HTTPMethod   string
-	// Host / Port / TLSMode describe an SMTP monitor; empty for HTTP.
-	// Carried for the detail UI; the probe itself reads them via Prober.
+	// Host / Port / TLSMode describe an SMTP monitor; a ping monitor
+	// sets Host only; all three are empty for HTTP. Carried for the
+	// detail UI; the probe itself reads them via Prober.
 	Host                string
 	Port                int
 	TLSMode             string
@@ -46,8 +48,9 @@ type Plan struct {
 	RetryBackoff        time.Duration
 	FollowRedirects     bool
 	// Prober runs one probe tick and returns the neutral probe.Result.
-	// Resolved by the wiring layer (httpcheck.Config / smtpcheck.Config
-	// both satisfy probe.Prober). The scheduler is probe-agnostic: it
+	// Resolved by the wiring layer (httpcheck.Config / smtpcheck.Config /
+	// pingcheck.Config all satisfy probe.Prober). The scheduler is
+	// probe-agnostic: it
 	// never inspects Kind to decide how to probe, only Prober.
 	Prober probe.Prober
 	// TLSInsecureSkipVerify disables Go's TLS chain verification on

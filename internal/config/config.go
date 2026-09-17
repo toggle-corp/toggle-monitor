@@ -52,6 +52,7 @@ type Config struct {
 	Proxies         []Proxy             `yaml:"proxies,omitempty"`
 	Monitors        []Monitor           `yaml:"monitors"`
 	SMTPMonitors    []SMTPMonitor       `yaml:"smtpMonitors,omitempty"` // optional; static-only SMTP probes
+	PingMonitors    []PingMonitor       `yaml:"pingMonitors,omitempty"` // optional; static-only ICMP probes
 	StatusPages     []StatusPage        `yaml:"statusPages,omitempty"`  // optional; empty → /status renders empty listing
 }
 
@@ -1084,6 +1085,37 @@ func (m SMTPMonitor) TracksSSL() bool {
 	return m.TLSMode() != SMTPTLSNone && !m.TLSInsecureSkipVerify
 }
 
+// PingMonitor is one statically-declared ICMP echo probe. It reuses the
+// HTTP monitor's scheduling / alerting / routing fields and adds only a
+// host — ICMP has no port, no TLS and no application-level reply code.
+// Ping monitors are static-only: kube discovery never produces them.
+// See ADR-0016.
+type PingMonitor struct {
+	Slug         string `yaml:"slug"`
+	FriendlyName string `yaml:"friendlyName"`
+	Host         string `yaml:"host"`
+
+	Interval     Duration `yaml:"interval"`
+	Timeout      Duration `yaml:"timeout"`
+	Retries      int      `yaml:"retries"`
+	RetryBackoff Duration `yaml:"retryBackoff"`
+	// No proxy field: SOCKS5 carries TCP only, so an ICMP probe cannot
+	// be routed through the `proxies:` block.
+	ReminderInterval Duration `yaml:"reminderInterval"`
+	Slack            string   `yaml:"slack"`
+	Notify           []string `yaml:"notify,omitempty"`
+	DependsOn        []string `yaml:"dependsOn,omitempty"`
+	Tags             []string `yaml:"tags,omitempty"`
+	Critical         bool     `yaml:"critical,omitempty"` // opt out of coalescing; see Monitor.Critical
+}
+
+// URL returns the synthesized ping://host identity persisted in the
+// monitors.url column so URL-keyed features (rendering, /status
+// hostRegex) keep working.
+func (m PingMonitor) URL() string {
+	return "ping://" + m.Host
+}
+
 // Load parses and validates the YAML config. Returns a populated
 // Config on success, or a descriptive error on validation failure.
 //
@@ -1378,6 +1410,9 @@ func (c *checker) validate(cfg *Config) {
 	// for cross-kind duplicate detection.
 	c.validateSMTPMonitors(cfg, seenMonitors, seenProxies, seenSlackChannels)
 
+	// Ping monitors join the same slug namespace and dependsOn graph.
+	c.validatePingMonitors(cfg, seenMonitors, seenSlackChannels)
+
 	// Global dependsOn pass: every reference resolves to a known
 	// static monitor (HTTP or SMTP), and the graph has no cycles. Done
 	// after the per-monitor passes so we have the full slug set.
@@ -1399,6 +1434,17 @@ func (c *checker) validate(cfg *Config) {
 	}
 	for i, m := range cfg.SMTPMonitors {
 		base := []any{"smtpMonitors", i}
+		for j, dep := range m.DependsOn {
+			if dep == m.Slug {
+				continue // already reported above
+			}
+			if _, ok := knownSlugs[dep]; !ok {
+				c.errf(append(base, "dependsOn", j), "unknown monitor slug %q (parents must be declared static monitors)", dep)
+			}
+		}
+	}
+	for i, m := range cfg.PingMonitors {
+		base := []any{"pingMonitors", i}
 		for j, dep := range m.DependsOn {
 			if dep == m.Slug {
 				continue // already reported above
@@ -1564,6 +1610,67 @@ func (c *checker) validateSMTPMonitors(cfg *Config, seenMonitors, seenProxies, s
 	}
 }
 
+// validatePingMonitors validates the pingMonitors block. Ping monitors
+// share the slug namespace (seenMonitors already carries the HTTP and
+// SMTP slugs) and reuse the scheduling / routing validators; the only
+// ping-specific field is host. There is no TLS, so no SSL-threshold
+// rule, and no proxy field to resolve. dependsOn cross-references +
+// cycles are resolved in the shared global pass in validate().
+func (c *checker) validatePingMonitors(cfg *Config, seenMonitors, seenSlackChannels map[string]struct{}) {
+	for i, m := range cfg.PingMonitors {
+		base := []any{"pingMonitors", i}
+		if err := slug.Validate(m.Slug); err != nil {
+			c.errf(append(base, "slug"), "%v", err)
+		}
+		if strings.HasPrefix(m.Slug, slug.KubeSlugPrefix) {
+			c.errf(append(base, "slug"),
+				"monitor slug %q must not start with %q — that prefix is reserved for kube-discovered monitors",
+				m.Slug, slug.KubeSlugPrefix)
+		}
+		if _, dup := seenMonitors[m.Slug]; dup {
+			c.errf(append(base, "slug"), "duplicate slug %q", m.Slug)
+		}
+		seenMonitors[m.Slug] = struct{}{}
+
+		host := strings.TrimSpace(m.Host)
+		if host == "" {
+			c.errf(append(base, "host"), "required")
+		} else if strings.ContainsAny(host, "/:") {
+			c.errf(append(base, "host"),
+				"%q must be a bare hostname or IP — ICMP has no scheme, port or path", m.Host)
+		}
+		for j, tag := range m.Tags {
+			if err := slug.ValidateTag(tag); err != nil {
+				c.errf(append(base, "tags", j), "%v", err)
+			}
+		}
+		if _, ok := seenSlackChannels[m.Slack]; !ok {
+			c.errf(append(base, "slack"), "unknown channel slug %q", m.Slack)
+		}
+		for j, n := range m.Notify {
+			if !c.isValidNotifyEntry(cfg.Slack.UserMapping, n) {
+				c.errf(append(base, "notify", j),
+					"%q must be a userMapping slug or raw Slack markup wrapped in <…>", n)
+			}
+		}
+		interval := m.Interval.AsDuration()
+		timeout := m.Timeout.AsDuration()
+		backoff := m.RetryBackoff.AsDuration()
+		if timeout >= interval {
+			c.errf(base, "timeout (%s) must be less than interval (%s)", timeout, interval)
+		}
+		retryWindow := time.Duration(m.Retries) * (timeout + backoff)
+		if retryWindow >= interval {
+			c.errf(base, "retries × (timeout + retryBackoff) = %s must be less than interval (%s)", retryWindow, interval)
+		}
+		for j, dep := range m.DependsOn {
+			if dep == m.Slug {
+				c.errf(append(base, "dependsOn", j), "monitor cannot depend on itself")
+			}
+		}
+	}
+}
+
 // validateSectionMatch recurses through the predicate tree rooted at
 // m, enforcing the rules in ADR-0003 §Validation: exactly one of
 // any/all on a branch (with non-empty children), at least one of
@@ -1619,20 +1726,24 @@ func (c *checker) validateSectionMatch(m *SectionMatch, base []any) {
 	}
 }
 
-// depNode is one vertex in the combined (HTTP + SMTP) dependsOn graph.
+// depNode is one vertex in the combined (HTTP + SMTP + ping) dependsOn
+// graph.
 type depNode struct {
 	slug string
 	deps []string
 }
 
-// collectDepNodes gathers every static monitor (HTTP then SMTP) as a
-// dependsOn graph vertex, in declaration order.
+// collectDepNodes gathers every static monitor (HTTP, then SMTP, then
+// ping) as a dependsOn graph vertex, in declaration order.
 func collectDepNodes(cfg *Config) []depNode {
-	out := make([]depNode, 0, len(cfg.Monitors)+len(cfg.SMTPMonitors))
+	out := make([]depNode, 0, len(cfg.Monitors)+len(cfg.SMTPMonitors)+len(cfg.PingMonitors))
 	for _, m := range cfg.Monitors {
 		out = append(out, depNode{slug: m.Slug, deps: m.DependsOn})
 	}
 	for _, m := range cfg.SMTPMonitors {
+		out = append(out, depNode{slug: m.Slug, deps: m.DependsOn})
+	}
+	for _, m := range cfg.PingMonitors {
 		out = append(out, depNode{slug: m.Slug, deps: m.DependsOn})
 	}
 	return out

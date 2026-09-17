@@ -258,7 +258,7 @@ templ MonitorDetail(m store.MonitorRow, cfg *MonitorConfig, gatingParents []stri
 			} else {
 				@StatusBadge(string(m.Status))
 			}
-			if m.Kind == store.KindSMTP {
+			if m.Kind != "" && m.Kind != store.KindHTTP {
 				@KindBadge(string(m.Kind))
 			}
 			if cfg != nil {
@@ -440,7 +440,9 @@ templ configDialog(m store.MonitorRow, cfg MonitorConfig, discoveredFrom *Discov
 				if cfg.RetryBackoff > 0 {
 					@kvWide("retry backoff", humanInterval(cfg.RetryBackoff))
 				}
-				@kvWide("follow redirects", boolYesNo(cfg.FollowRedirects))
+				if m.Kind == "" || m.Kind == store.KindHTTP {
+					@kvWide("follow redirects", boolYesNo(cfg.FollowRedirects))
+				}
 				if cfg.IsHTTPS {
 					@kvWide("tls insecure skip verify", boolYesNo(cfg.TLSInsecureSkipVerify))
 				}

@@ -29,6 +29,7 @@ import (
 	"github.com/toggle-corp/toggle-monitor/internal/merger"
 	"github.com/toggle-corp/toggle-monitor/internal/migrate"
 	"github.com/toggle-corp/toggle-monitor/internal/observability"
+	"github.com/toggle-corp/toggle-monitor/internal/pingcheck"
 	"github.com/toggle-corp/toggle-monitor/internal/proxypool"
 	"github.com/toggle-corp/toggle-monitor/internal/scheduler"
 	"github.com/toggle-corp/toggle-monitor/internal/secret"
@@ -102,6 +103,17 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	// Wrap the caller's logger so ERROR records also go to Sentry.
 	// The base handler keeps emitting to stdout regardless.
 	log = slog.New(tmsentry.NewMultiHandler(log.Handler(), tmsentry.Handler()))
+
+	// Ping monitors need an unprivileged ICMP socket, which the kernel
+	// grants only to a process whose GID is inside
+	// net.ipv4.ping_group_range. Prove it before anything slower runs:
+	// without this the pod reports every ping target as down for a
+	// purely local reason. See ADR-0016.
+	if len(opts.Config.PingMonitors) > 0 {
+		if err := pingcheck.Preflight(); err != nil {
+			return fmt.Errorf("ping monitors declared but ICMP is unavailable: %w", err)
+		}
+	}
 
 	pool, err := db.ConnectWithBackoff(ctx, opts.DBConfig, log)
 	if err != nil {
@@ -190,7 +202,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	// soft-delete any prior static monitor that is no longer
 	// declared. Soft-delete fires the in-thread closeout + the
 	// non-threaded "monitor removed" warning via the notifier.
-	declared := make(map[string]struct{}, len(opts.Config.Monitors)+len(opts.Config.SMTPMonitors))
+	declared := make(map[string]struct{}, len(opts.Config.Monitors)+len(opts.Config.SMTPMonitors)+len(opts.Config.PingMonitors))
 	for _, m := range opts.Config.Monitors {
 		declared[m.Slug] = struct{}{}
 		spec := store.MonitorSpec{
@@ -217,6 +229,23 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 			Host:             m.Host,
 			Port:             m.Port,
 			TLSMode:          m.TLSMode(),
+			Source:           store.SourceStatic,
+			DependsOn:        m.DependsOn,
+			SlackChannelSlug: m.Slack,
+			Tags:             m.Tags,
+		}
+		if err := repo.ReconcileMonitor(ctx, spec); err != nil {
+			return fmt.Errorf("reconcile %q: %w", m.Slug, err)
+		}
+	}
+	for _, m := range opts.Config.PingMonitors {
+		declared[m.Slug] = struct{}{}
+		spec := store.MonitorSpec{
+			Slug:             m.Slug,
+			Kind:             store.KindPing,
+			FriendlyName:     m.FriendlyName,
+			URL:              m.URL(),
+			Host:             m.Host,
 			Source:           store.SourceStatic,
 			DependsOn:        m.DependsOn,
 			SlackChannelSlug: m.Slack,
@@ -737,7 +766,7 @@ func compileSectionMatch(m config.SectionMatch) templates.StatusMatch {
 }
 
 func buildPlans(cfg config.Config, proxies *proxypool.Pool) []scheduler.Plan {
-	out := make([]scheduler.Plan, 0, len(cfg.Monitors)+len(cfg.SMTPMonitors))
+	out := make([]scheduler.Plan, 0, len(cfg.Monitors)+len(cfg.SMTPMonitors)+len(cfg.PingMonitors))
 	for _, m := range cfg.Monitors {
 		isHTTPS := strings.HasPrefix(m.URL, "https://")
 		out = append(out, scheduler.Plan{
@@ -813,6 +842,30 @@ func buildPlans(cfg config.Config, proxies *proxypool.Pool) []scheduler.Plan {
 			SSLAlertThreshold:      m.SSLAlertThreshold.AsDuration(),
 			SSLEscalationThreshold: m.SSLEscalationThreshold.AsDuration(),
 			SSLReminderInterval:    m.SSLReminderInterval.AsDuration(),
+		})
+	}
+	for _, m := range cfg.PingMonitors {
+		out = append(out, scheduler.Plan{
+			Slug:         m.Slug,
+			Kind:         "ping",
+			FriendlyName: m.FriendlyName,
+			URL:          m.URL(),
+			Host:         m.Host,
+			Prober: pingcheck.Config{
+				Host:    m.Host,
+				Timeout: m.Timeout.AsDuration(),
+			},
+			Interval:         m.Interval.AsDuration(),
+			Timeout:          m.Timeout.AsDuration(),
+			Retries:          m.Retries,
+			RetryBackoff:     m.RetryBackoff.AsDuration(),
+			ReminderInterval: m.ReminderInterval.AsDuration(),
+			ChannelSlug:      m.Slack,
+			Mentions:         slack.ResolveMentions(m.Notify, cfg.Slack.UserMapping),
+			DependsOn:        m.DependsOn,
+			Critical:         m.Critical,
+			// No TLS on an ICMP echo: TLSBearing stays false and the SSL
+			// state machine is skipped.
 		})
 	}
 	return out

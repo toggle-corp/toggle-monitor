@@ -40,13 +40,14 @@ const (
 )
 
 // MonitorKind is the probe protocol of a monitor. HTTP is the default
-// (and the only kind kube discovery produces); SMTP monitors come from
-// the static `smtpMonitors:` config block.
+// (and the only kind kube discovery produces); SMTP and ping monitors
+// come from the static `smtpMonitors:` / `pingMonitors:` config blocks.
 type MonitorKind string
 
 const (
 	KindHTTP MonitorKind = "http"
 	KindSMTP MonitorKind = "smtp"
+	KindPing MonitorKind = "ping"
 )
 
 // MonitorSpec is the config-side projection of a monitor — the fields
@@ -57,10 +58,11 @@ type MonitorSpec struct {
 	Kind         MonitorKind // "" defaults to KindHTTP at reconcile time
 	FriendlyName string
 	URL          string
-	// Host / Port / TLSMode are populated for SMTP monitors; empty/zero
-	// for HTTP. URL still carries the synthesized smtp://host:port for
-	// SMTP so every URL-keyed feature (rendering, /status hostRegex)
-	// keeps working.
+	// Host / Port / TLSMode are populated for SMTP monitors; ping
+	// monitors set Host only; all three are empty/zero for HTTP. URL
+	// still carries the synthesized smtp://host:port (or ping://host)
+	// so every URL-keyed feature (rendering, /status hostRegex) keeps
+	// working.
 	Host             string
 	Port             int
 	TLSMode          string
