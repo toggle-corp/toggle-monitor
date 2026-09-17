@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0-dev0](https://github.com/toggle-corp/toggle-monitor/compare/0.8.0..0.9.0-dev0) - 2026-09-17
+### Changes:
+
+#### 🚀  Features
+
+- *(ping)* Add ICMP ping monitors - ([2947f9a](https://github.com/toggle-corp/toggle-monitor/commit/2947f9a13f8487aab2aaef0cde6ee42869f5abbb))
+
+#### 📚 Documentation
+
+- *(ping)* Add ADR-0016 and document pingMonitors + the ICMP sysctl - ([9d531ff](https://github.com/toggle-corp/toggle-monitor/commit/9d531ffa62b094227bf63753aeaadde29d0a0cfe))
+
+
 ## [0.8.0](https://github.com/toggle-corp/toggle-monitor/compare/0.7.0..0.8.0) - 2026-09-07
 ### Changes:
 
