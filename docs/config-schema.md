@@ -789,6 +789,70 @@ smtpMonitors:
 
 ---
 
+## 5d. Ping monitors
+
+`pingMonitors:` declares ICMP echo probes — "does this host answer a
+ping?". They are **static-only** (kube auto-discovery never produces
+them) and carry no port, no TLS and no application-level reply code, so
+the SSL state machine is skipped entirely and the persisted status code
+is always `0` (rendered as no code).
+
+Ping monitors share the slug namespace, the `dependsOn` graph, the
+status-page tag matching and the alert/Slack/metrics machinery with the
+other kinds. They are stored in the same `monitors` table with `kind:
+ping`; the `url` column holds a synthesized `ping://host` identity.
+
+One echo is sent per tick — packet loss is absorbed by the existing
+`retries` × `retryBackoff` in-cycle retries, not by a per-tick packet
+count.
+
+**Deployment requirement:** the process needs a GID inside
+`net.ipv4.ping_group_range` to open an unprivileged ICMP socket. Some
+container runtimes grant that to every pod already; where they don't, it
+is a pod sysctl (`ping.enabled: true` in the Helm chart). Either way the
+binary refuses to start whenever `pingMonitors` is non-empty and the
+socket is unavailable. See [ADR-0016](./adr/0016-icmp-ping-monitors.md) and [operations.md](./operations.md#icmp-ping-monitors).
+
+```yaml
+pingMonitors:
+  - slug: edge-router
+    friendlyName: Edge Router
+    host: router.example.test   # bare hostname or IP — no scheme, port or path
+    interval: 1m
+    timeout: 5s
+    retries: 2
+    retryBackoff: 2s
+    reminderInterval: 3d
+    slack: ops-alerts
+    tags: [network]
+```
+
+| Field | Type | Req | Validation | Notes |
+|---|---|---|---|---|
+| `pingMonitors` | list | — | optional | |
+| `pingMonitors[].slug` | string | ✓ | slug regex; unique across **all** monitors (HTTP + SMTP + ping + kube namespace) | |
+| `pingMonitors[].friendlyName` | string | ✓ | non-empty | |
+| `pingMonitors[].host` | string | ✓ | non-empty; no `/` or `:` | Hostname or literal IP. Hostnames re-resolve every tick (a lookup failure classifies as DNS and feeds self-health) |
+| `pingMonitors[].interval` | duration | ✓ | | |
+| `pingMonitors[].timeout` | duration | ✓ | < interval; covers resolve + echo + reply | |
+| `pingMonitors[].retries` | int | ✓ | >= 0 | The packet-loss tolerance knob |
+| `pingMonitors[].retryBackoff` | duration | ✓ | | |
+| `pingMonitors[].reminderInterval` | duration | ✓ | | |
+| `pingMonitors[].slack` | string | ✓ | resolves to a `slack.channels[].slug` | |
+| `pingMonitors[].notify` | list[string] | — | each: a `slack.userMapping` slug OR `<...>` raw markup | |
+| `pingMonitors[].tags` | list[string] | — | each: slug regex | |
+| `pingMonitors[].dependsOn` | list[string] | — | each: resolves to a declared static monitor (any kind) | Shares the cycle-checked graph |
+| `pingMonitors[].critical` | bool | — | default `false` | As `monitors[].critical` |
+
+There is deliberately **no `proxy:` field** — SOCKS5 carries TCP only,
+so an ICMP probe cannot be routed through the `proxies:` block. Declaring
+one is a validation error, not a silently ignored key.
+
+**Cross-field validation:**
+- `timeout < interval` and `retries × (timeout + retryBackoff) < interval`.
+
+---
+
 ## Env var interpolation in values
 
 Any YAML scalar value can contain `${VAR}` references (docker-compose style). Env vars are expanded **before** YAML deserialization, so the rest of the schema sees the resolved string.

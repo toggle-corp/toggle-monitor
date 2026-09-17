@@ -118,6 +118,31 @@ helm upgrade --install toggle-monitor deploy/helm/toggle-monitor \
   -f deploy/helm/toggle-monitor/examples/values-external-cm.yaml
 ```
 
+### ICMP ping monitors
+
+`pingMonitors:` in the config needs an unprivileged ICMP socket, which
+the kernel grants only to processes whose GID is inside
+`net.ipv4.ping_group_range`:
+
+```yaml
+ping:
+  enabled: true      # pod sysctl net.ipv4.ping_group_range: "65532 65532"
+```
+
+That is a Kubernetes *safe* sysctl — namespaced per-pod, no node
+configuration, no CAP_NET_RAW, and no restricted-PodSecurityStandard
+violation. The pod keeps running as nonroot. Some runtimes already allow
+unprivileged ICMP for every pod (containerd's
+`enable_unprivileged_icmp`, default on in containerd 2.x); setting it
+here makes ping behave the same way regardless.
+
+The binary refuses to start when `pingMonitors` is non-empty and the
+socket is unavailable, so a forgotten `ping.enabled` is a
+CrashLoopBackOff with an explicit message rather than every ping target
+reporting down. Note that `NetworkPolicy` cannot express ICMP: in a
+namespace with default-deny egress you need a CNI-specific rule
+(Cilium / Calico) for echo requests to leave at all.
+
 ## Secrets
 
 Every env var the binary reads (`database.passwordEnv`,

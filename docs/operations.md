@@ -429,6 +429,80 @@ The fresh-parent fallback ensures we don't go fully silent across a
 sustained outage; non-zero `fresh_parent_total` in a healthy cluster
 suggests the retry budget should be tuned up.
 
+## ICMP (ping monitors)
+
+`pingMonitors:` sends real ICMP echo requests from the pod. The process
+runs as nonroot (UID/GID 65532) and has **no CAP_NET_RAW** — it uses an
+*unprivileged* ICMP datagram socket instead, which the kernel grants
+only to processes whose GID falls inside `net.ipv4.ping_group_range`.
+
+Enable it in the chart:
+
+```yaml
+ping:
+  enabled: true      # renders the pod sysctl net.ipv4.ping_group_range: "65532 65532"
+```
+
+`net.ipv4.ping_group_range` is a Kubernetes **safe** sysctl: namespaced
+per-pod, no kubelet flag, no node configuration, and not itself a
+restricted-PodSecurityStandard violation (verified on a namespace
+enforcing `restricted`).
+
+Some runtimes already widen the range for every sandbox —
+containerd's `enable_unprivileged_icmp` sets `0 2147483647` and is on by
+default in containerd 2.x, so pods there can ping with no sysctl at all.
+Others (older containerd, CRI-O, or an explicit
+`enable_unprivileged_icmp = false`) leave the pod's network namespace at
+the kernel default `1 0`, where the socket call fails. Setting it in the
+chart makes ping work the same way on every cluster. To check what your
+nodes do:
+
+```bash
+kubectl run icmp-check --rm -it --image=busybox:1.36 --restart=Never \
+  -- cat /proc/sys/net/ipv4/ping_group_range
+# "0  2147483647" → the runtime already allows it
+# "1  0"          → the sysctl is required
+```
+
+The binary calls a one-shot preflight at startup whenever
+`pingMonitors` is non-empty, so a pod missing the sysctl fails loudly:
+
+```
+ping monitors declared but ICMP is unavailable: open unprivileged ICMP
+socket: … permission denied — the process GID must be inside
+net.ipv4.ping_group_range …
+```
+
+That is deliberate. Without it the pod would start and report every
+ping target as down for a purely local reason.
+
+### Ping monitors all down, everything else fine
+
+In order of likelihood:
+
+1. **`ping.enabled` is false** — but then the pod is in
+   CrashLoopBackOff with the message above, not running (unless the
+   runtime allows unprivileged ICMP on its own, in which case ping works
+   without the sysctl and this is not your problem).
+2. **NetworkPolicy.** A `NetworkPolicy` can only select TCP, UDP and
+   SCTP; it has no ICMP protocol. A namespace with a default-deny
+   egress policy therefore blocks echo requests and *cannot* re-allow
+   them in stock NetworkPolicy — you need a CNI-specific rule
+   (`CiliumNetworkPolicy` with an `icmps:` rule, or a Calico
+   `GlobalNetworkPolicy`).
+3. **The target drops ICMP.** Plenty of hosts and cloud load balancers
+   answer HTTP but never answer a ping. Confirm from outside the
+   cluster before treating it as an outage.
+4. **Egress firewall / security group** strips ICMP on the way out of
+   the node.
+
+### Why a ping monitor has no status code
+
+ICMP carries no application-level reply code, so the check persists
+code `0` — which the store writes as NULL and the detail page renders
+as no code at all. Only the error line distinguishes the failure modes
+(`resolve …` for DNS, `echo … i/o timeout` for no reply).
+
 ## Backups + retention
 
 - **Postgres backups** are CNPG's responsibility (WAL archiving +

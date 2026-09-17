@@ -352,6 +352,40 @@ smtpMonitors:
     sslEscalationThreshold: 3d
     sslReminderInterval: 24h
 
+# ── Ping monitors ─────────────────────────────────────────────────────────────
+# Static-only ICMP echo probes: "does this host answer a ping?". No
+# port, no TLS, no status code. One echo per tick — packet loss is
+# absorbed by retries × retryBackoff. Share the slug namespace +
+# dependsOn graph + status pages with the other kinds.
+#
+# Requires an unprivileged ICMP socket: the pod's GID must be inside
+# net.ipv4.ping_group_range (Helm chart: `ping.enabled: true`). The
+# binary refuses to start otherwise. See ADR-0016.
+pingMonitors:
+  - slug: edge-router
+    friendlyName: Edge Router
+    host: router.example.test                        # bare hostname or IP; no scheme/port/path
+    interval: 1m
+    timeout: 5s
+    retries: 2                                       # the packet-loss tolerance knob
+    retryBackoff: 2s
+    reminderInterval: 3d
+    slack: ops-alerts
+    tags: [network, prod]
+
+  # A ping parent explains its dependants' failures: when the host is
+  # unreachable, the HTTP checks on it pause instead of each paging.
+  - slug: app-host
+    friendlyName: App Host
+    host: 192.0.2.10
+    interval: 1m
+    timeout: 5s
+    retries: 2
+    retryBackoff: 2s
+    reminderInterval: 3d
+    slack: ops-alerts
+    tags: [network, prod]
+
 # ── Alertmanager webhook receiver ─────────────────────────────────────────────
 # First-class receiver for Prometheus Alertmanager webhooks; replaces
 # the PagerDuty pipe for k8s alerts. `match:` mirrors `kube.match`
