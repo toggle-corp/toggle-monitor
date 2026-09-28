@@ -777,6 +777,38 @@ func (r *Repo) ListActiveBySource(ctx context.Context, src MonitorSource) ([]Mon
 	return out, rows.Err()
 }
 
+// ListUpMonitorSlugs returns the subset of slugs whose live monitor
+// row is up: no open incident. Used to reconcile an incident group's
+// down members against the monitors table — a resolve commits here
+// before it reaches the group, so a crash in between strands the
+// member down.
+func (r *Repo) ListUpMonitorSlugs(ctx context.Context, slugs []string) ([]string, error) {
+	if len(slugs) == 0 {
+		return nil, nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT slug FROM monitors
+		WHERE slug = ANY($1) AND archived = FALSE AND status = 'up'
+		ORDER BY slug
+	`, slugs)
+	if err != nil {
+		return nil, fmt.Errorf("list up monitor slugs: %w", err)
+	}
+	defer rows.Close()
+	var up []string
+	for rows.Next() {
+		var slug string
+		if err := rows.Scan(&slug); err != nil {
+			return nil, fmt.Errorf("list up monitor slugs: %w", err)
+		}
+		up = append(up, slug)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list up monitor slugs: %w", err)
+	}
+	return up, nil
+}
+
 // ListGoneMonitorSlugs returns the subset of slugs that no longer
 // name a monitor this process probes: the row is archived, or it is
 // absent altogether. Used to reconcile a reattached incident group's

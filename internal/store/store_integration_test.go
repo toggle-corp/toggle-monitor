@@ -432,6 +432,42 @@ func TestListGoneMonitorSlugs_archivedAndAbsent(t *testing.T) {
 	}
 }
 
+func TestListUpMonitorSlugs_onlyLiveUpMonitors(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+	for _, slug := range []string{"up", "down", "paused", "archived"} {
+		if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
+			Slug: slug, FriendlyName: slug, URL: "http://x", Source: store.SourceKube,
+		}); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+	}
+	t0 := time.Now().UTC()
+	if err := repo.ApplyCheck(ctx, "down",
+		alert.State{Status: alert.StatusDown, OpenedAt: t0, LastReminderAt: t0},
+		t0, 503, "down", &alert.Event{Type: alert.EventOpen, At: t0}); err != nil {
+		t.Fatalf("apply check: %v", err)
+	}
+	if err := repo.MarkTemporaryPaused(ctx, "paused"); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	if err := repo.SoftDeleteMonitor(ctx, "archived", "kube ingress removed"); err != nil {
+		t.Fatalf("soft-delete: %v", err)
+	}
+
+	up, err := repo.ListUpMonitorSlugs(ctx, []string{"up", "down", "paused", "archived", "never-existed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(up) != 1 || up[0] != "up" {
+		t.Fatalf("up = %v, want [up]", up)
+	}
+
+	if up, err := repo.ListUpMonitorSlugs(ctx, nil); err != nil || up != nil {
+		t.Fatalf("empty input should be a no-op: %v %v", up, err)
+	}
+}
+
 func TestHomepageStats_countsByStatus(t *testing.T) {
 	repo := newRepo(t)
 	ctx := context.Background()

@@ -18,10 +18,15 @@ type fakeStore struct {
 	nextID int64
 	rows   map[int64]*store.IncidentGroupRow // by id
 	gone   map[string]struct{}               // monitors archived or absent
+	up     map[string]struct{}               // monitors whose stored status is up
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{rows: map[int64]*store.IncidentGroupRow{}, gone: map[string]struct{}{}}
+	return &fakeStore{
+		rows: map[int64]*store.IncidentGroupRow{},
+		gone: map[string]struct{}{},
+		up:   map[string]struct{}{},
+	}
 }
 
 // markGone stands in for a soft-deleted (or outright missing) monitor
@@ -40,6 +45,28 @@ func (f *fakeStore) ListGoneMonitorSlugs(_ context.Context, slugs []string) ([]s
 	var out []string
 	for _, s := range slugs {
 		if _, ok := f.gone[s]; ok {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+// markUp stands in for a monitor whose resolve committed to the
+// monitors table, which is what the recovered-member sweep keys on.
+func (f *fakeStore) markUp(slugs ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, s := range slugs {
+		f.up[s] = struct{}{}
+	}
+}
+
+func (f *fakeStore) ListUpMonitorSlugs(_ context.Context, slugs []string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, s := range slugs {
+		if _, ok := f.up[s]; ok {
 			out = append(out, s)
 		}
 	}

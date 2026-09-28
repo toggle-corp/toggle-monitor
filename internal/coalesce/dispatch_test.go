@@ -1009,6 +1009,81 @@ func TestSweep_evaluatorClearsMemberArchivedWhileRunning(t *testing.T) {
 	}
 }
 
+// TestSweep_reattachedDigestRecoversMemberWhoseMonitorIsUp reproduces
+// the state found in production after a node reboot: the monitor's
+// resolve committed to the monitors table, but the process died before
+// the digest persisted the MarkUp. The reattached digest counts it down
+// and, with no second resolve ever coming, reminds the channel forever.
+func TestSweep_reattachedDigestRecoversMemberWhoseMonitorIsUp(t *testing.T) {
+	clock := base
+	m, fs, fp, _ := newDispatchManager(t, &clock, 2, 5*time.Minute)
+	ctx := context.Background()
+
+	id, err := fs.CreateIncidentGroup(ctx, "ops", base)
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := fs.SaveIncidentGroup(ctx, store.IncidentGroupRow{
+		ID: id, ChannelSlug: "ops", OpenedAt: base, Posted: true,
+		DigestChannel: "C1", DigestTS: "ts1",
+		LastFlushAt: &base, LastReminderAt: &base,
+		Members: []store.IncidentGroupMemberRow{
+			{MonitorSlug: "stale", State: "down", JoinedAt: base, ChangedAt: base, Rendered: "active"},
+			{MonitorSlug: "done", State: "recovered", JoinedAt: base, ChangedAt: base, Rendered: "recovered"},
+		},
+	}); err != nil {
+		t.Fatalf("save group: %v", err)
+	}
+	fs.markUp("stale", "done")
+
+	clock = base.Add(1 * time.Hour)
+	if err := m.Reattach(ctx); err != nil {
+		t.Fatalf("reattach: %v", err)
+	}
+
+	m.mu.Lock()
+	sb := m.groups["ops"].g.Scoreboard()
+	m.mu.Unlock()
+	if sb.Down != 0 || sb.Recovering != 1 {
+		t.Fatalf("reattach should recover the member whose monitor is up: %+v", sb)
+	}
+
+	clock = clock.Add(6 * time.Minute)
+	m.evaluateAll(ctx)
+	if open, _ := fs.ListOpenIncidentGroups(ctx); len(open) != 0 {
+		t.Fatalf("digest never closed: %d open", len(open))
+	}
+	if fp.updates == 0 {
+		t.Fatalf("close should edit the digest")
+	}
+}
+
+// TestSweep_evaluatorRecoversMemberWhoseResolveWasLost: a resolve that
+// committed to the monitors table without reaching the digest must not
+// leave the member down for the life of the process.
+func TestSweep_evaluatorRecoversMemberWhoseResolveWasLost(t *testing.T) {
+	clock := base
+	m, fs, _, _ := newDispatchManager(t, &clock, 2, 5*time.Minute)
+	ctx := context.Background()
+
+	m.Route(ctx, "ops", downEntry("lost", clock))
+	m.Route(ctx, "ops", downEntry("stays", clock))
+	clock = base.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+
+	// Resolved in the monitors table; the Route never arrived.
+	fs.markUp("lost")
+
+	clock = base.Add(2 * time.Minute)
+	m.evaluateAll(ctx)
+	m.mu.Lock()
+	sb := m.groups["ops"].g.Scoreboard()
+	m.mu.Unlock()
+	if sb.Down != 1 || sb.Recovering != 1 {
+		t.Fatalf("sweep did not recover the member whose monitor is up: %+v", sb)
+	}
+}
+
 // TestSweep_leavesLiveMembersAlone guards the obvious way to break this:
 // a sweep that marks anything it cannot confirm would silence real
 // outages.

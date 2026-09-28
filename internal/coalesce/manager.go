@@ -31,6 +31,9 @@ type GroupStore interface {
 	// ListGoneMonitorSlugs returns the subset of slugs whose monitor is
 	// archived or absent. Drives the removed-member sweep.
 	ListGoneMonitorSlugs(ctx context.Context, slugs []string) ([]string, error)
+	// ListUpMonitorSlugs returns the subset of slugs whose live monitor
+	// is up. Drives the recovered-member sweep.
+	ListUpMonitorSlugs(ctx context.Context, slugs []string) ([]string, error)
 }
 
 // Poster is the Slack seam. Every call addresses Slack by channel *slug*
@@ -348,9 +351,11 @@ func (m *Manager) Reattach(ctx context.Context) error {
 	if len(rows) > 0 {
 		m.log.Info("reattached open incident groups", "count", len(rows))
 	}
-	// A digest that reattaches may carry monitors torn down while this
-	// process was stopped, which no removal event will ever revisit.
+	// A digest that reattaches may carry monitors torn down, or
+	// recovered, while this process was stopped, which no event will
+	// ever revisit.
 	m.SweepRemoved(ctx, m.now())
+	m.SweepRecovered(ctx, m.now())
 	return nil
 }
 
@@ -418,6 +423,73 @@ func (m *Manager) SweepRemoved(ctx context.Context, now time.Time) {
 	}
 }
 
+// SweepRecovered reconciles every open digest's down members against
+// the monitors table: a member whose monitor is up is marked
+// recovering, so the digest renders the recovery and the incident can
+// close.
+//
+// A resolve commits to the monitors table before its Route reaches the
+// group, and the group persists only on the evaluator's next pass. A
+// process that dies in between reattaches a digest that counts the
+// monitor down, and the monitor never emits a second resolve, so the
+// digest would remind the channel forever.
+//
+// m.mu is held across the query. The scheduler commits a transition
+// before it routes it, and routing takes m.mu, so an up read here
+// cannot overwrite a newer failure: that failure's MarkDown lands after
+// the sweep releases the lock.
+func (m *Manager) SweepRecovered(ctx context.Context, now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	seen := map[string]struct{}{}
+	for _, lg := range m.groups {
+		for _, slug := range lg.g.DownSlugs() {
+			seen[slug] = struct{}{}
+		}
+	}
+	if len(seen) == 0 {
+		return
+	}
+	slugs := make([]string, 0, len(seen))
+	for slug := range seen {
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+
+	up, err := m.store.ListUpMonitorSlugs(ctx, slugs)
+	if err != nil {
+		m.log.Warn("sweep recovered digest members", "error", err)
+		return
+	}
+	if len(up) == 0 {
+		return
+	}
+
+	for channel, lg := range m.groups {
+		var marked []string
+		for _, slug := range up {
+			mem := lg.g.Members[slug]
+			if mem == nil || mem.State != group.MemberDown {
+				continue
+			}
+			lg.g.MarkUp(slug, now)
+			marked = append(marked, slug)
+		}
+		if len(marked) == 0 {
+			continue
+		}
+		cs := m.channelStateFor(channel)
+		for _, slug := range marked {
+			cs.forgetDown(slug)
+		}
+		m.log.Info("digest members already recovered",
+			"channel", channel, "count", len(marked), "slugs", marked)
+		if err := m.store.SaveIncidentGroup(ctx, m.toRow(lg)); err != nil {
+			m.log.Warn("save incident group", "channel", channel, "error", err)
+		}
+	}
+}
+
 // RunEvaluator is the central evaluator goroutine: every `interval` it
 // advances each live group and dispatches the resulting Slack actions.
 // Blocks until ctx is cancelled.
@@ -459,9 +531,9 @@ func (m *Manager) evaluateAll(ctx context.Context) {
 	}
 	m.mu.Unlock()
 
-	// 2. Removed-member sweep, throttled. Runs before the evaluator pass
-	//    so a member that left the estate is rendered — and can close the
-	//    incident — on this same tick.
+	// 2. Removed- and recovered-member sweeps, throttled. Run before the
+	//    evaluator pass so a member that left the estate or recovered is
+	//    rendered — and can close the incident — on this same tick.
 	m.mu.Lock()
 	due := now.Sub(m.lastSweptAt) >= sweepInterval
 	if due {
@@ -470,6 +542,7 @@ func (m *Manager) evaluateAll(ctx context.Context) {
 	m.mu.Unlock()
 	if due {
 		m.SweepRemoved(ctx, now)
+		m.SweepRecovered(ctx, now)
 	}
 
 	// 3. Group evaluator pass.

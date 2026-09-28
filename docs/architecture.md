@@ -283,6 +283,14 @@ Static and kube monitors share a soft-delete shape:
   table and marks the archived-or-absent ones removed. Without it a
   monitor torn down while the daemon was stopped stays down in the
   reattached digest forever, because nothing revisits it.
+- A resolve commits to the `monitors` table before it reaches the
+  digest, and the digest persists on the evaluator's next pass, so a
+  crash in between reattaches the monitor as down. The same cadence
+  runs a **recovered-member sweep**
+  (`coalesce.Manager.SweepRecovered`), which marks a down member
+  recovering when its monitor's row is `up`. Without it the digest
+  reminds the channel about a resolved monitor forever, because the
+  monitor never emits a second resolve.
 
 Slack delivery failures during removal log and continue; the
 DB-side soft-delete is the source of truth.
