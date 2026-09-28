@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.0](https://github.com/toggle-corp/toggle-monitor/compare/0.9.0..0.10.0) - 2026-09-28
+### Changes:
+
+#### 🐛 Bug Fixes
+
+- *(coalesce)* Recover digest members whose monitor is already up - ([cd9be09](https://github.com/toggle-corp/toggle-monitor/commit/cd9be094a1569c1e480cb3ee57d8dc2a31da10a0))
+
+
 ## [0.9.0](https://github.com/toggle-corp/toggle-monitor/compare/0.8.0..0.9.0) - 2026-09-17
 ### Changes:
 
