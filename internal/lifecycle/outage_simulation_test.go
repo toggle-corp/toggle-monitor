@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -297,6 +298,30 @@ func (s *outageSim) parentBodies() []string {
 			}
 		}
 		out = append(out, text)
+	}
+	return out
+}
+
+// messageTexts returns the full text of every message the fake Slack
+// received, posts and threaded replies and edits alike — a monitor that
+// joins an open digest is named only in the digest's edit and its delta
+// reply.
+func (s *outageSim) messageTexts() []string {
+	s.slack.mu.Lock()
+	defer s.slack.mu.Unlock()
+	var out []string
+	for _, batch := range [][]map[string]any{s.slack.postMessages, s.slack.updateMessages} {
+		for _, p := range batch {
+			text := flatten(p["blocks"])
+			if atts, ok := p["attachments"].([]any); ok {
+				for _, a := range atts {
+					if am, ok := a.(map[string]any); ok {
+						text += " " + flatten(am["blocks"])
+					}
+				}
+			}
+			out = append(out, text)
+		}
 	}
 	return out
 }
@@ -873,5 +898,85 @@ func TestOutageSimulation_childProbesInFlightWhenRootGoesDown(t *testing.T) {
 	}
 	if up := sim.editedToUp(); up != 1 {
 		t.Errorf("root's DOWN parent edited to UP %d time(s); want 1", up)
+	}
+}
+
+// TestOutageSimulation_childrenStillDownWhenRootRecovers: the tree goes
+// down together, the children's Opens are drained from the pending pool
+// when root is found down, and root then recovers while every child
+// keeps failing. Nobody was paged about the children, so each one's
+// first resumed tick must announce it through the dispatcher: they
+// trickle in, count toward the burst, and land as at most
+// burstThreshold-1 individual pages plus one digest, within a probe
+// interval of root's recovery rather than at their first reminder.
+// Their own recoveries then edit whatever announced them.
+func TestOutageSimulation_childrenStillDownWhenRootRecovers(t *testing.T) {
+	const (
+		children       = 12
+		burstThreshold = 5
+	)
+	sim := newOutageSim(t)
+	cfg := sim.yaml(t, simConfig{
+		children:         children,
+		interval:         "6s",
+		pendingWait:      "2s",
+		burstThreshold:   burstThreshold,
+		burstWindow:      "12s",
+		reminderInterval: "1h",
+	})
+	stop := sim.run(t, cfg)
+	defer stop()
+
+	time.Sleep(8 * time.Second)
+	if n := sim.parentPosts(); n != 0 {
+		sim.dump(t, "healthy")
+		t.Fatalf("healthy phase already posted %d parent message(s)", n)
+	}
+
+	t.Log("--- root + children DOWN (Slack up) ---")
+	sim.setTargetsDown(true)
+	time.Sleep(30 * time.Second)
+	sim.dump(t, "during outage")
+	before := len(sim.parentBodies())
+
+	// root resolves on its next tick (up to 20s away); each child then
+	// resumes on its own next tick, still failing.
+	t.Log("--- root UP, children still DOWN ---")
+	sim.setRootDown(false)
+	time.Sleep(45 * time.Second)
+	sim.dump(t, "root recovered")
+
+	bodies := sim.parentBodies()
+	for _, body := range bodies {
+		if strings.Contains(body, "Initial notification delivery failed") {
+			t.Errorf("FALSE BANNER: Slack was up throughout: %s", body)
+		}
+	}
+	// root's own messages list the children it pauses and resumes, so
+	// only messages that do not mention root count.
+	texts := sim.messageTexts()
+	for i := 1; i <= children; i++ {
+		named := regexp.MustCompile(fmt.Sprintf(`child-%d\b`, i))
+		found := false
+		for _, text := range texts {
+			if !strings.Contains(text, "root") && named.MatchString(text) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("SILENT: child-%d is still down after root recovered and no message names it", i)
+		}
+	}
+	if after := len(bodies) - before; after > burstThreshold {
+		t.Errorf("STORM: %d parent message(s) for the resumed children; want at most %d "+
+			"(burstThreshold-1 individual pages + 1 digest)", after, burstThreshold)
+	}
+
+	t.Log("--- children UP ---")
+	sim.setLeavesDown(false)
+	time.Sleep(20 * time.Second)
+	sim.dump(t, "after recovery")
+	if down, edited := sim.downParents(), sim.editedParents(); edited < down {
+		t.Errorf("ORPHANED: %d DOWN parent(s) posted but only %d edited to resolved", down, edited)
 	}
 }

@@ -2,6 +2,8 @@ package slack_test
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -135,5 +137,24 @@ func TestNotifier_SSLOpen_threadRefWriteFailsOnce_isRetried(t *testing.T) {
 	}
 	if store.setSSLCalls != 2 {
 		t.Errorf("SetSSLThread calls: got %d, want 2 (one retry)", store.setSSLCalls)
+	}
+}
+
+// TestNotifier_Open_ofResumedIncident_datesFromOpenedAt: the Open a
+// resumed dependsOn child is announced with belongs to an incident that
+// opened before its parent went down. The DOWN dates the failure from
+// the incident's start, not from the tick that announced it.
+func TestNotifier_Open_ofResumedIncident_datesFromOpenedAt(t *testing.T) {
+	f, _, _, n := newRecoveryNotifier(t, "")
+	now := time.Now().UTC()
+	opened := now.Add(-time.Hour)
+	view := apiView
+	view.OpenedAt = opened
+	if err := n.Notify(context.Background(), "ops", nil, view, openEvent(now)); err != nil {
+		t.Fatalf("Notify(open): %v", err)
+	}
+	flat := flattenMrkdwn(t, findPostedMessage(t, f))
+	if want := fmt.Sprintf("date^%d^", opened.Unix()); !strings.Contains(flat, want) {
+		t.Errorf("want the DOWN dated %s; got:\n%s", want, flat)
 	}
 }

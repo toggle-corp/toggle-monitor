@@ -436,9 +436,12 @@ recovers later via the reminder cadence:
   reminders thread onto it normally. This emits
   `toggle_monitor_slack_fresh_parent_total{kind="uptime"}` (or
   `kind="ssl"` for the SSL path). A monitor with no parent and no
-  failed `Open` (a `dependsOn` child resumed still down after its
-  parent recovered) gets a plain Down parent instead: no banner, no
-  fresh-parent count.
+  failed `Open` gets a plain Down parent instead: no banner, no
+  fresh-parent count. A `dependsOn` child resumed still down after its
+  parent recovered does not wait for this: its first resumed tick
+  routes it to the dispatcher as an `Open`, so children that resume
+  down together land as one digest, or as at most `burstThreshold − 1`
+  individual pages first.
 - For a missed `Resolve` with no parent on file, the standalone
   resolve post is rendered with the same body as the parent edit
   (status, downtime, details) — so operators still get the full

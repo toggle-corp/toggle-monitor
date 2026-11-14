@@ -327,7 +327,7 @@ func (n *Notifier) notifyOpen(ctx context.Context, ch ChannelInfo, mentions []st
 		Mentions:     mentions,
 		StatusCode:   ev.StatusCode,
 		StatusText:   m.StatusText,
-		FailureAt:    ev.At,
+		FailureAt:    incidentStart(m, ev),
 		LastError:    ev.Error,
 		ResponseBody: m.ResponseBody,
 		BodyMaxChars: n.bodyMaxChars,

@@ -162,3 +162,113 @@ func TestTick_dependsOn_parentUpAfterProbe_opensChild(t *testing.T) {
 		t.Errorf("paused: got %v, want none", paused)
 	}
 }
+
+// TestTick_dependsOn_resumedStillDown_announcesOnce: the child failed,
+// was paused out of the dispatcher before its Open flushed, and is still
+// failing when its parent recovers. Nobody was paged about it, so its
+// first resumed tick hands the dispatcher an Open — which pools and
+// counts toward the burst like any other — instead of waiting for a
+// reminder. The incident itself continues: no second open is recorded,
+// and later failing ticks announce nothing more.
+func TestTick_dependsOn_resumedStillDown_announcesOnce(t *testing.T) {
+	cases := []struct {
+		name          string
+		critical      bool
+		reminderDue   bool
+		threadTS      bool
+		openFailed    bool
+		wantAnnounced bool
+	}{
+		{name: "coalesced", wantAnnounced: true},
+		{name: "critical", critical: true, wantAnnounced: true},
+		{name: "reminder due", reminderDue: true, wantAnnounced: true},
+		{name: "already announced", threadTS: true},
+		{name: "open delivery failed", openFailed: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newRepo(t)
+			ctx := context.Background()
+			reconcileAll(t, repo, "parent", "child")
+			openIncident(t, repo, "child", time.Now().Add(-time.Hour))
+			if tc.threadTS {
+				if err := repo.SetUptimeThread(ctx, "child", "C1", "1700000000.000100"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.openFailed {
+				if err := repo.MarkUptimeOpenFailed(ctx, "child"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := repo.MarkTemporaryPaused(ctx, "child"); err != nil {
+				t.Fatal(err)
+			}
+
+			groups := &recordingGroupSink{}
+			var sent []alert.EventType
+			s := scheduler.New(repo,
+				scheduler.WithGroupSink(groups),
+				scheduler.WithEventSink(func(_ context.Context, _ store.MonitorRow, _ string, _ []string, ev *alert.Event) error {
+					sent = append(sent, ev.Type)
+					return nil
+				}),
+			)
+			plan := childPlan(constProber{res: probe.Result{Code: 503, Error: "child's own failure"}}, tc.critical)
+			if tc.reminderDue {
+				plan.ReminderInterval = time.Minute
+			}
+			for i := 0; i < 2; i++ {
+				if err := s.Tick(ctx, plan); err != nil {
+					t.Fatalf("tick %d: %v", i, err)
+				}
+				plan.ReminderInterval = 24 * time.Hour
+			}
+
+			routed, _ := groups.snapshot()
+			got := append(routed, sent...)
+			var opens, others int
+			for _, ev := range got {
+				if ev == alert.EventOpen {
+					opens++
+				} else {
+					others++
+				}
+			}
+			want := 0
+			if tc.wantAnnounced {
+				want = 1
+			}
+			if opens != want {
+				t.Errorf("Opens announced: got %d (events %v), want %d", opens, got, want)
+			}
+			if tc.wantAnnounced && others != 0 {
+				t.Errorf("events besides the Open: %v", got)
+			}
+			if tc.wantAnnounced && tc.critical != (len(sent) == 1) {
+				t.Errorf("critical=%v: sent %v, routed %v", tc.critical, sent, routed)
+			}
+
+			listing, err := repo.ListAlertsForMonitor(ctx, "child", 10, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored := 0
+			for _, ev := range listing.Items {
+				if ev.Type == alert.EventOpen {
+					stored++
+				}
+			}
+			if stored != 1 {
+				t.Errorf("stored open events: got %d, want 1 (the incident continues)", stored)
+			}
+			row, err := repo.GetMonitor(ctx, "child")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if row.Status != alert.StatusDown {
+				t.Errorf("child status: got %q, want down", row.Status)
+			}
+		})
+	}
+}

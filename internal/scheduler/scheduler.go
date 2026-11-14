@@ -457,7 +457,8 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 	// in an open incident when the parent went down. Forcing prev=up
 	// in that case would produce a duplicate EventOpen on the next
 	// failing tick (the original user-reported bug).
-	if row.Status == alert.StatusTemporaryPaused {
+	resumed := row.Status == alert.StatusTemporaryPaused
+	if resumed {
 		if row.OpenedAt != nil {
 			row.Status = alert.StatusDown
 		} else {
@@ -480,6 +481,17 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 	nextState, event := alert.Apply(row.State(), check)
 	if err := s.repo.ApplyCheck(ctx, p.Slug, nextState, now, res.Code, res.Error, event); err != nil {
 		return err
+	}
+
+	// A child that failed, was paused before any message about it went
+	// out (pulled from the dispatcher's pending pool), and resumes still
+	// failing continues its incident, so the state machine emits nothing
+	// until a reminder. Nobody has been paged about it yet: announce it
+	// now as an Open, so it pools and counts toward the burst like any
+	// other failure. The stored incident is unchanged. Only the first
+	// resumed tick qualifies, so the announcement happens once.
+	if resumed && outcome == alert.OutcomeFail && neverAnnounced(row) {
+		event = &alert.Event{Type: alert.EventOpen, At: now, StatusCode: res.Code, Error: res.Error}
 	}
 
 	// Active-incident gauge: 1 while down, 0 while up.
@@ -582,6 +594,15 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 		}
 	}
 	return nil
+}
+
+// neverAnnounced reports whether the row is in an open incident that no
+// Slack message was attempted for: no parent thread ts on file and no
+// failed-delivery mark.
+func neverAnnounced(row store.MonitorRow) bool {
+	return row.OpenedAt != nil &&
+		(row.UptimeThreadTS == nil || *row.UptimeThreadTS == "") &&
+		row.UptimeOpenFailedAt == nil
 }
 
 // pause ends a tick for a child whose dependsOn parent is down: no

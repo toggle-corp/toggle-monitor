@@ -100,10 +100,15 @@ was every child.
   critical monitors. A monitor whose Open the dispatcher already
   flushed is the exception: its row can predate the post, so the
   recovery goes to the notifier, which knows the outcome (ADR-0018).
+- A child resumed still down after its parent recovered, with no ts and
+  no mark, is announced on its first resumed tick: the scheduler routes
+  it to the dispatcher as an Open, so it pools and counts toward the
+  burst with any siblings that resume down alongside it. The stored
+  incident continues; no second open is recorded.
 - A reminder with no ts and no mark posts a plain Down parent: it is the
   monitor's first announcement, so it carries no banner and does not
-  count as a fresh-parent fallback. This is how a child resumed still
-  down after its parent recovered gets paged.
+  count as a fresh-parent fallback. This covers a monitor whose resumed
+  tick did not announce it, such as one resumed across a restart.
 - In pending-mode, a recovery of a monitor outside the pool goes to the
   per-monitor path instead of being dropped, so a parent first posted by
   a reminder gets its resolve edit.

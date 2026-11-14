@@ -234,9 +234,13 @@ Driven by the scheduler, not by `alert.Apply`. Any monitor whose
 no SSL, no `alert_event` row, no `last_*` write). The gate runs again
 after a failing probe: a parent that went down while the child's probe
 and its retries were in flight pauses the child the same way, so the
-parent's outage never opens an incident on it. On resumption the
-state machine treats the prior state as `up` so a failing first
-tick produces a clean `EventOpen` rather than a double transition.
+parent's outage never opens an incident on it. On resumption a
+child with no open incident resumes as `up`, so a failing first tick
+produces a clean `EventOpen`. A child that was already in an incident
+resumes as `down` and continues it. If no Slack message about that
+incident was attempted (it was paused out of the dispatcher's pending
+pool), its first failing resumed tick routes an `EventOpen` to the
+dispatcher without recording a second open.
 
 ## Single-replica rationale
 
