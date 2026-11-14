@@ -429,7 +429,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 	// usual chicken-and-egg around constructor injection. Set
 	// post-construction; safe before the evaluator goroutine starts.
 	groupMgr.SetOnDemandParentProbe(makeOnDemandParentProbe(
-		repo, groupMgr, planSource, pushPropagation,
+		repo, groupMgr, planSource, pushPropagation, buildSink(notifier),
 		opts.Config.Slack.Coalesce.EffectiveOnDemandProbeTimeout(),
 		time.Now,
 		log,

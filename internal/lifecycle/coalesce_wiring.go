@@ -133,9 +133,10 @@ type planProvider interface {
 // candidate parent: fire one bounded probe through the parent's
 // configured Prober; if down, drive alert.Apply + persist its
 // EventOpen, fire push-propagation so the pool's children drain, and
-// route the parent's failure through the dispatcher for its own
-// channel (so the parent ends up named in some Slack artifact rather
-// than silently failing).
+// announce the parent's failure the way its own scheduler tick would:
+// a critical parent through sink (the per-monitor notifier), any other
+// through the dispatcher for its own channel. Either way the parent
+// ends up named in some Slack artifact rather than silently failing.
 //
 // Lifecycle owns construction so the callback can capture the same
 // repo / planSource / push closure used elsewhere. Errors are logged
@@ -146,6 +147,7 @@ func makeOnDemandParentProbe(
 	mgr *coalesce.Manager,
 	plans planProvider,
 	push scheduler.PushPropagation,
+	sink scheduler.EventSink,
 	timeout time.Duration,
 	now func() time.Time,
 	log *slog.Logger,
@@ -207,10 +209,19 @@ func makeOnDemandParentProbe(
 			if push != nil {
 				push(ctx, parentSlug, at)
 			}
-			// Route the parent's EventOpen through its own channel so the
-			// parent shows up in Slack (critical → caller's separate
-			// EventSink path; non-critical → dispatcher).
-			if !pl.Critical && pl.ChannelSlug != "" {
+			// Announce the parent's EventOpen on its own channel, routed
+			// as scheduler.Tick routes it: critical → per-monitor sink,
+			// with the pre-update row; non-critical → dispatcher.
+			switch {
+			case pl.ChannelSlug == "":
+				// No Slack destination: nothing to announce.
+			case pl.Critical:
+				if sink != nil {
+					if err := sink(ctx, row, pl.ChannelSlug, pl.Mentions, event); err != nil {
+						log.Warn("on-demand probe: notify", "parent", parentSlug, "error", err)
+					}
+				}
+			default:
 				mgr.Route(ctx, pl.ChannelSlug, coalesce.Entry{
 					Member: coalesce.MemberInfo{
 						Slug:         pl.Slug,
