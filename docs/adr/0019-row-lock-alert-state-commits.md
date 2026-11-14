@@ -46,12 +46,23 @@ blocks, calls Slack or touches the database.
 - The tick probes without any lock, then applies its result to the row
   as it is under the lock. It stamps the check there too, so a resolve
   never predates the incident it closes.
+- The tick also reads its dependsOn parents' statuses inside that
+  transaction, after the lock. While one holds the child, the tick
+  writes nothing, failure or success, and ends as a paused tick. A
+  parent can go down and push-propagation pause the child after the
+  tick's own parent checks. Without this read the tick would take that
+  pause for one to resume from: open the child and announce it, or
+  release a paused intermediate parent on a successful probe.
 - The on-demand probe and the self-health commit only ever open an
   incident. Under the lock they write nothing unless the monitor is up,
   not archived, and has had no check committed since they read it
   before their probe. A monitor already down keeps its incident, a
   paused one stays silent behind its parent, and a newer check
-  supersedes their older result.
+  supersedes their older result. They read the monitor's dependsOn
+  parents under the lock too: while one holds the monitor, they write
+  nothing, even before push-propagation has paused it. The on-demand
+  probe then runs push-propagation from that held parent, as it does
+  for a paused one, so its pooled children drain.
 - Sinks and the dispatcher are called after the commit, with the row
   `decide` saw.
 
@@ -66,6 +77,12 @@ reason about.
 - The row lock is held for one short transaction. The notifier's
   `SetUptimeThread` and `MarkUptimeOpenFailed`, and push-propagation's
   `MarkTemporaryPaused`, wait for it like any other update of the row.
+- The parent rows are read without a lock, so a tick never holds one
+  row lock while waiting on another. Push-propagation pauses a child
+  with a single update after its parent's Open committed: if the pause
+  lands before the child's lock, the parent read after it sees the
+  parent down; if after, the child's commit came first and the pause
+  then holds it.
 - Lock order: the notifier takes its per-monitor delivery lock
   (ADR-0018), then the row lock for its thread ref write. Writers take
   the row lock and release it before any sink call. Nothing takes the

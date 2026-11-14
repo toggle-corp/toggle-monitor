@@ -129,10 +129,15 @@ type planProvider interface {
 }
 
 // makeOnDemandParentProbe builds the hot-parent probe hook the
-// dispatcher invokes at pendingWait expiry (ADR-0004 Q11a). For each
-// candidate parent: fire one bounded probe through the parent's
-// configured Prober; if down, commit its EventOpen through
-// commitExtraFailure, fire push-propagation so the pool's children drain, and
+// dispatcher invokes at pendingWait expiry (ADR-0004 Q11a). A candidate
+// parent that is temporary-paused is held behind a parent of its own,
+// so it holds its children too: it is neither probed nor opened, and
+// push-propagation runs from it so the pool's children drain. The same
+// goes for a candidate whose own parent is found holding it at commit
+// time, before push-propagation paused it. For any other candidate:
+// fire one bounded probe through the parent's configured Prober; if
+// down, commit its EventOpen through commitExtraFailure, fire
+// push-propagation so the pool's children drain, and
 // announce the parent's failure the way its own scheduler tick would:
 // a critical parent through sink (the per-monitor notifier), any other
 // through the dispatcher for its own channel. Either way the parent
@@ -171,6 +176,12 @@ func makeOnDemandParentProbe(
 			log.Warn("on-demand probe: get monitor", "parent", parentSlug, "error", err)
 			return
 		}
+		if before.Status == alert.StatusTemporaryPaused && !before.Archived {
+			if push != nil {
+				push(ctx, parentSlug, now())
+			}
+			return
+		}
 
 		probeCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
@@ -180,7 +191,7 @@ func makeOnDemandParentProbe(
 		}
 
 		at := now()
-		row, event, err := commitExtraFailure(ctx, repo, parentSlug, before, alert.Check{
+		row, event, held, err := commitExtraFailure(ctx, repo, pl, before, alert.Check{
 			Outcome:          alert.OutcomeFail,
 			At:               at,
 			StatusCode:       res.Code,
@@ -224,10 +235,11 @@ func makeOnDemandParentProbe(
 			return
 		}
 
-		// Parent already known-down (no fresh EventOpen). Push-propagation
-		// may not have fired from its own tick yet — fire it now so the
-		// children get drained.
-		if row.Status == alert.StatusDown && !row.Archived && push != nil {
+		// Parent already holding its children (known down, or paused or
+		// held behind its own parent since it was read; no fresh
+		// EventOpen). Push-propagation may not have fired from it yet —
+		// fire it now so the children get drained.
+		if (held || (row.Status.HoldsChildren() && !row.Archived)) && push != nil {
 			push(ctx, parentSlug, at)
 		}
 	}
@@ -281,7 +293,7 @@ func makeSelfHealthCommit(
 		}
 
 		at := now()
-		row, event, err := commitExtraFailure(ctx, repo, slug, before, alert.Check{
+		row, event, _, err := commitExtraFailure(ctx, repo, pl, before, alert.Check{
 			Outcome:          alert.OutcomeFail,
 			At:               at,
 			StatusCode:       res.Code,
@@ -335,24 +347,34 @@ func makeSelfHealthCommit(
 // archived, and has had no check committed since before was read ahead
 // of the probe. A monitor already down keeps its incident (no second
 // Open), a paused one stays silent behind its parent, and a newer check
-// supersedes this older result. event is the committed EventOpen, nil
-// when nothing was written; row is the snapshot read before the write.
+// supersedes this older result. The plan's dependsOn parents are read
+// under the same lock, as the scheduler tick reads them: while one holds
+// the monitor, its failure is that parent's outage, so nothing is
+// written and held is true, even though push-propagation has not paused
+// the monitor yet. event is the committed EventOpen, nil when nothing
+// was written; row is the snapshot read before the write.
 func commitExtraFailure(
 	ctx context.Context,
 	repo *store.Repo,
-	slug string,
+	pl scheduler.Plan,
 	before store.MonitorRow,
 	check alert.Check,
-) (row store.MonitorRow, event *alert.Event, err error) {
-	row, _, err = repo.CommitCheck(ctx, slug, func(row store.MonitorRow) (store.CheckCommit, bool) {
+) (row store.MonitorRow, event *alert.Event, held bool, err error) {
+	row, _, err = repo.CommitCheck(ctx, pl.Slug, pl.DependsOn, func(row store.MonitorRow, parents map[string]alert.Status) (store.CheckCommit, bool) {
 		if row.Archived || row.Status != alert.StatusUp || !sameTime(row.LastCheckedAt, before.LastCheckedAt) {
 			return store.CheckCommit{}, false
+		}
+		for _, status := range parents {
+			if status.HoldsChildren() {
+				held = true
+				return store.CheckCommit{}, false
+			}
 		}
 		next, ev := alert.Apply(row.State(), check)
 		event = ev
 		return store.CheckCommit{Next: next, At: check.At, StatusCode: check.StatusCode, Error: check.Error, Event: ev}, true
 	})
-	return row, event, err
+	return row, event, held, err
 }
 
 // sameTime reports whether two optional timestamps are equal.
@@ -364,17 +386,19 @@ func sameTime(a, b *time.Time) bool {
 }
 
 // makePushPropagation builds the parent-EventOpen → reverse-deps hook
-// described in ADR-0004. The closure rebuilds the depindex from a
+// described in ADR-0004. It pauses every descendant of the parent, not
+// only its direct children: a paused child holds its own children the
+// way a down parent does. The closure rebuilds the depindex from a
 // fresh CurrentPlans snapshot on each invocation: kube discovery can
 // add/remove monitors at any time, and push-propagation is rare enough
 // that an O(N·D) rebuild per call is cheaper than maintaining a live
 // inverted index in sync with discovery.
 //
-// For each child of the parent: MarkTemporaryPaused in the store
-// (best-effort — a store error is logged but the loop continues so a
-// single bad row doesn't strand the whole burst), then call
-// dispatcher.Pause on the child's channel to drain the pending pool
-// (or render the child as paused in an already-open digest).
+// For each descendant, parents before their children: MarkTemporaryPaused
+// in the store (best-effort — a store error is logged but the loop
+// continues so a single bad row doesn't strand the whole burst), then
+// call dispatcher.Pause on the descendant's channel to drain the pending
+// pool (or render it as paused in an already-open digest).
 func makePushPropagation(repo *store.Repo, disp dispatchPauser, plans planProvider, log *slog.Logger) scheduler.PushPropagation {
 	return func(ctx context.Context, parentSlug string, at time.Time) {
 		current := plans.CurrentPlans()
@@ -385,7 +409,7 @@ func makePushPropagation(repo *store.Repo, disp dispatchPauser, plans planProvid
 			channelOf[p.Slug] = p.ChannelSlug
 		}
 		idx := depindex.Build(specs)
-		for _, child := range idx.Children(parentSlug) {
+		for _, child := range idx.Descendants(parentSlug) {
 			if err := repo.MarkTemporaryPaused(ctx, child); err != nil {
 				log.Warn("push-propagation: mark paused",
 					"parent", parentSlug, "child", child, "error", err)

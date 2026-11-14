@@ -16,6 +16,15 @@ const (
 	StatusTemporaryPaused Status = "temporary-paused"
 )
 
+// HoldsChildren reports whether a monitor in this status pauses the
+// monitors that dependsOn it. A down parent holds them, and so does a
+// temporary-paused one: it is paused behind a parent of its own, so
+// everything behind it is just as unreachable. temporary-paused is
+// only ever set by dependsOn gating.
+func (s Status) HoldsChildren() bool {
+	return s == StatusDown || s == StatusTemporaryPaused
+}
+
 // Outcome is the result of a single check tick (after in-cycle retries
 // have been collapsed by the scheduler).
 type Outcome string

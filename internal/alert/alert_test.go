@@ -161,3 +161,17 @@ func TestApply_upAndFail_transitionsToDownWithOpenEvent(t *testing.T) {
 		t.Errorf("event At: got %v, want %v", ev.At, t0)
 	}
 }
+
+func TestStatus_HoldsChildren(t *testing.T) {
+	cases := map[alert.Status]bool{
+		alert.StatusUp:              false,
+		alert.StatusDown:            true,
+		alert.StatusTemporaryPaused: true,
+		alert.Status(""):            false,
+	}
+	for status, want := range cases {
+		if got := status.HoldsChildren(); got != want {
+			t.Errorf("%q.HoldsChildren(): got %v, want %v", status, got, want)
+		}
+	}
+}

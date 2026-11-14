@@ -358,9 +358,11 @@ multi-workspace work.
 
 ### Monitor stuck at `temporary-paused` after parent recovers
 
-The next tick re-evaluates. If the parent's status flipped to `up`
-in the DB, the child's next scheduled tick will probe normally. If
-the child is stuck for > one `interval`, check whether its parent
+The next tick re-evaluates. A parent that is itself
+`temporary-paused` holds the child as a down one does, so a nested
+tree resumes one level per tick: the parent's next tick resumes it,
+then the child's next tick probes normally. If the child is stuck for
+longer than its parents' intervals added up, check whether its parent
 chain still has a down node somewhere (a transitive `dependsOn`).
 
 ### An annotation on an Ingress or Namespace has no effect

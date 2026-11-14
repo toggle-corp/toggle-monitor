@@ -76,7 +76,7 @@ type Plan struct {
 	ReminderInterval time.Duration
 	ChannelSlug      string   // slack destination slug; empty disables Slack output
 	Mentions         []string // pre-resolved raw Slack markup (parent-only)
-	DependsOn        []string // upstream static-monitor slugs; any of them down pauses this monitor
+	DependsOn        []string // upstream static-monitor slugs; any of them down or paused pauses this monitor
 	// Critical opts the monitor OUT of alert coalescing: its uptime
 	// events post an immediate, individually-paged per-monitor message
 	// (the legacy EventSink path) instead of joining the per-channel
@@ -135,8 +135,8 @@ type GroupSink interface {
 
 // PushPropagation is the hook the scheduler invokes after a parent
 // monitor's tick emits EventOpen (ADR-0004). The hook is expected to
-// look up the parent's reverse-dependsOn list, persist each child as
-// temporary-paused, and call GroupSink.Pause for each child's channel —
+// look up the parent's descendants through reverse-dependsOn, persist
+// each as temporary-paused, and call GroupSink.Pause for its channel —
 // so the parent's failure pages once and the children silently roll
 // into its narrative instead of each generating their own alert.
 //
@@ -380,10 +380,10 @@ func (s *Scheduler) runMonitor(ctx context.Context, p Plan) {
 // integration tests can drive the scheduler without running the
 // jittered loop.
 func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
-	// dependsOn gate: any parent down → skip the probe and mark
-	// the child temporary-paused. No HTTP, no DB write to last_*,
-	// no alert event.
-	if len(p.DependsOn) > 0 && s.anyParentDown(ctx, p.Slug, p.DependsOn) {
+	// dependsOn gate: any parent down, or paused behind a parent of its
+	// own → skip the probe and mark the child temporary-paused. No HTTP,
+	// no DB write to last_*, no alert event.
+	if len(p.DependsOn) > 0 && s.parentHolds(ctx, p.Slug, p.DependsOn) {
 		return s.pause(ctx, p, 0)
 	}
 
@@ -408,12 +408,14 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 		}
 	}
 
-	// A parent can go down while this child's probe and its retries are
-	// in flight: the gate above saw it up, but the failure the probe
-	// brings back is the parent's outage. Re-check before committing and
-	// end the tick exactly as a paused one, so the child neither opens an
-	// incident nor reaches Slack.
-	if res.Error != "" && len(p.DependsOn) > 0 && s.anyParentDown(ctx, p.Slug, p.DependsOn) {
+	// A parent can go down, or be paused behind its own parent, while
+	// this child's probe and its retries are in flight: the gate above
+	// saw it up, but the failure the probe brings back is the parent's
+	// outage. Re-check before reporting the failure and end the tick
+	// exactly as a paused one, so the child neither opens an incident
+	// nor reaches Slack. CommitCheck reads the parents once more under
+	// the row lock, for a parent that goes down after this check.
+	if res.Error != "" && len(p.DependsOn) > 0 && s.parentHolds(ctx, p.Slug, p.DependsOn) {
 		return s.pause(ctx, p, time.Since(tickStart))
 	}
 
@@ -455,12 +457,24 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 	// probe is out, and this result has to resolve or continue it. The
 	// check is stamped under the row lock, so it never predates an
 	// incident it resolves.
+	//
+	// The dependsOn parents are read under the same lock. A parent can
+	// go down and push-propagation pause this child after the checks
+	// above; a paused row read here is then that fresh pause, not one to
+	// resume from. While a parent holds the child, the result is not
+	// applied, whether it failed or succeeded, and the tick ends as a
+	// paused one.
 	var (
 		now     time.Time
 		resumed bool
+		held    bool
 		event   *alert.Event
 	)
-	row, _, err := s.repo.CommitCheck(ctx, p.Slug, func(row store.MonitorRow) (store.CheckCommit, bool) {
+	row, _, err := s.repo.CommitCheck(ctx, p.Slug, p.DependsOn, func(row store.MonitorRow, parents map[string]alert.Status) (store.CheckCommit, bool) {
+		if anyHolds(parents) {
+			held = true
+			return store.CheckCommit{}, false
+		}
 		now = s.now()
 		prev, paused := resumeState(row)
 		next, ev := alert.Apply(prev, alert.Check{
@@ -475,6 +489,9 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 	})
 	if err != nil {
 		return err
+	}
+	if held {
+		return s.hold(ctx, p)
 	}
 	if resumed {
 		row.Status = resumedStatus(row)
@@ -627,33 +644,46 @@ func neverAnnounced(row store.MonitorRow) bool {
 		row.UptimeOpenFailedAt == nil
 }
 
-// pause ends a tick for a child whose dependsOn parent is down: no
+// pause ends a tick for a child held by a dependsOn parent: no
 // incident, no alert event, the child marked temporary-paused and pulled
 // out of its channel's dispatcher state (no-op if it holds none). Pause
 // beats critical — even a critical monitor stays silent while its parent
-// is down, so this applies regardless of p.Critical.
+// holds it, so this applies regardless of p.Critical.
 func (s *Scheduler) pause(ctx context.Context, p Plan, took time.Duration) error {
 	if s.metrics != nil {
 		s.metrics.ObserveCheck(p.Slug, "paused", took)
 	}
+	return s.hold(ctx, p)
+}
+
+// hold marks a child temporary-paused and pulls it out of its channel's
+// dispatcher state, as pause does, without recording a check.
+func (s *Scheduler) hold(ctx context.Context, p Plan) error {
 	if s.groupSink != nil && p.ChannelSlug != "" {
 		s.groupSink.Pause(ctx, p.ChannelSlug, p.Slug, s.now())
 	}
 	return s.repo.MarkTemporaryPaused(ctx, p.Slug)
 }
 
-// anyParentDown reports whether any of the listed monitor slugs is
-// currently in StatusDown. Missing parents are skipped (recorded
-// in-memory for the /issues page, and logged at most once per
-// (parent, child) pair to avoid hammering stdout on every check)
-// so a transient outage of a single dependency lookup doesn't
-// ripple into the wrong gating decision.
-func (s *Scheduler) anyParentDown(ctx context.Context, child string, parents []string) bool {
+// parentHolds reports whether any of the listed parents holds its
+// children (alert.Status.HoldsChildren: down, or paused behind a parent
+// of its own). All parents are read in one query. A parent with no row
+// is skipped (recorded in-memory for the /issues page, and logged at
+// most once per (parent, child) pair to avoid hammering stdout on every
+// check), and so is every parent when the query fails, so a transient
+// lookup failure doesn't ripple into the wrong gating decision.
+func (s *Scheduler) parentHolds(ctx context.Context, child string, parents []string) bool {
+	statuses, err := s.repo.MonitorStatuses(ctx, parents)
+	holds := false
 	for _, slug := range parents {
-		row, err := s.repo.GetMonitor(ctx, slug)
-		if err != nil {
+		status, ok := statuses[slug]
+		if !ok {
+			lookupErr := err
+			if lookupErr == nil {
+				lookupErr = errors.New("monitor not found")
+			}
 			if s.recordMissingParent(slug, child) {
-				s.log.Warn("dependsOn parent lookup failed", "parent", slug, "child", child, "error", err)
+				s.log.Warn("dependsOn parent lookup failed", "parent", slug, "child", child, "error", lookupErr)
 			}
 			continue
 		}
@@ -661,7 +691,19 @@ func (s *Scheduler) anyParentDown(ctx context.Context, child string, parents []s
 		// so the operator stops seeing the issue once they've
 		// reconciled the config (no restart needed).
 		s.ClearMissingParent(slug)
-		if row.Status == alert.StatusDown {
+		if status.HoldsChildren() {
+			holds = true
+		}
+	}
+	return holds
+}
+
+// anyHolds reports whether any of the given parent statuses holds its
+// children. A parent with no row is absent from the map and holds
+// nothing, as in parentHolds.
+func anyHolds(parents map[string]alert.Status) bool {
+	for _, status := range parents {
+		if status.HoldsChildren() {
 			return true
 		}
 	}

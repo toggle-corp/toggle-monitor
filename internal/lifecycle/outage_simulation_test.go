@@ -436,6 +436,12 @@ type simConfig struct {
 	// child's pending pool then never holds a sibling, so the
 	// dispatcher's on-demand parent probe never fires for it.
 	childChannels bool
+	// leaves builds a nested tree instead: `mid` dependsOn the critical
+	// `root` and shares root's upstream, and that many `leaf-N` monitors
+	// dependsOn mid alone and probe the leaves' upstream. mid and every
+	// leaf post to a channel of their own. setRootDown takes root and mid
+	// down together; setLeavesDown takes the leaves down.
+	leaves int
 }
 
 func (sc simConfig) withDefaults() simConfig {
@@ -485,7 +491,7 @@ func (s *outageSim) yaml(t *testing.T, sc simConfig) config.Config {
 	for i := 1; i <= sc.internal; i++ {
 		monitor(fmt.Sprintf("int-%d", i), "127.0.0.1", s.internalPort, sc.interval, "ops-alerts", "")
 	}
-	if sc.children > 0 {
+	if sc.children > 0 || sc.leaves > 0 {
 		// root retries for longer than one child interval, so its own
 		// tick concludes "down" only after the children's first pending
 		// pool has expired. That makes the dispatcher's on-demand parent
@@ -504,12 +510,25 @@ func (s *outageSim) yaml(t *testing.T, sc simConfig) config.Config {
 			monitor(fmt.Sprintf("child-%d", i), fmt.Sprintf("child%d.outage.test", i), s.upstreamPort,
 				sc.interval, channel, "\n    dependsOn: [root]"+sc.childShape)
 		}
+		if sc.leaves > 0 {
+			monitor("mid", "mid.outage.test", s.rootPort, sc.interval, "mid-alerts", "\n    dependsOn: [root]")
+		}
+		for i := 1; i <= sc.leaves; i++ {
+			monitor(fmt.Sprintf("leaf-%d", i), fmt.Sprintf("leaf%d.outage.test", i), s.upstreamPort,
+				sc.interval, fmt.Sprintf("leaf-%d-alerts", i), "\n    dependsOn: [mid]")
+		}
 	}
 
 	channels := "\n    - { slug: ops-alerts, channelId: C0123ABCD, tokenEnv: TOGGLE_SLACK_TOKEN }"
 	if sc.childChannels {
 		for i := 1; i <= sc.children; i++ {
 			channels += fmt.Sprintf("\n    - { slug: child-%d-alerts, channelId: C0CHILD%02d, tokenEnv: TOGGLE_SLACK_TOKEN }", i, i)
+		}
+	}
+	if sc.leaves > 0 {
+		channels += "\n    - { slug: mid-alerts, channelId: C0MID0001, tokenEnv: TOGGLE_SLACK_TOKEN }"
+		for i := 1; i <= sc.leaves; i++ {
+			channels += fmt.Sprintf("\n    - { slug: leaf-%d-alerts, channelId: C0LEAF%03d, tokenEnv: TOGGLE_SLACK_TOKEN }", i, i)
 		}
 	}
 
@@ -973,6 +992,168 @@ func TestOutageSimulation_childrenStillDownWhenRootRecovers(t *testing.T) {
 	}
 
 	t.Log("--- children UP ---")
+	sim.setLeavesDown(false)
+	time.Sleep(20 * time.Second)
+	sim.dump(t, "after recovery")
+	if down, edited := sim.downParents(), sim.editedParents(); edited < down {
+		t.Errorf("ORPHANED: %d DOWN parent(s) posted but only %d edited to resolved", down, edited)
+	}
+}
+
+// nestedTreeConfig is the root ← mid ← leaf-N tree the nested-dependsOn
+// scenarios share. root probes every second so it is known down within
+// a leaf's first failing ticks; every other interval is several times
+// pendingWait.
+func nestedTreeConfig(leaves int) simConfig {
+	return simConfig{
+		leaves:           leaves,
+		interval:         "8s",
+		rootInterval:     "1s",
+		pendingWait:      "2s",
+		burstThreshold:   5,
+		burstWindow:      "16s",
+		reminderInterval: "1h",
+	}
+}
+
+// nestedTally sorts the top-level messages of a nested-tree run by the
+// monitor their title names.
+type nestedTally struct {
+	rootDown, mid, lateNotice int
+	leafDown                  map[string]int
+	other                     []string
+}
+
+func (s *outageSim) nestedTally(leaves int) nestedTally {
+	tally := nestedTally{leafDown: map[string]int{}}
+	for _, body := range s.parentBodies() {
+		if strings.Contains(body, "Initial notification delivery failed") {
+			tally.lateNotice++
+		}
+		switch {
+		case strings.Contains(body, "*root is DOWN*"):
+			tally.rootDown++
+			continue
+		case strings.Contains(body, "*mid is"):
+			tally.mid++
+			continue
+		}
+		matched := false
+		for i := 1; i <= leaves; i++ {
+			leaf := fmt.Sprintf("leaf-%d", i)
+			if strings.Contains(body, "*"+leaf+" is DOWN*") {
+				tally.leafDown[leaf]++
+				matched = true
+			}
+		}
+		if !matched {
+			tally.other = append(tally.other, body)
+		}
+	}
+	return tally
+}
+
+// TestOutageSimulation_nestedTreeAnnouncesOnlyTheRoot: root ← mid ←
+// leaf-N, with mid and every leaf on a channel of its own, and the whole
+// tree goes down while Slack keeps working. root's outage pauses mid,
+// and a leaf behind a paused mid is as unreachable as one behind a down
+// parent: only root is announced, mid and the leaves stay silent, and
+// root's DOWN is edited to UP when the tree recovers.
+func TestOutageSimulation_nestedTreeAnnouncesOnlyTheRoot(t *testing.T) {
+	const leaves = 6
+	sim := newOutageSim(t)
+	stop := sim.run(t, sim.yaml(t, nestedTreeConfig(leaves)))
+	defer stop()
+
+	time.Sleep(10 * time.Second)
+	if n := sim.parentPosts(); n != 0 {
+		sim.dump(t, "healthy")
+		t.Fatalf("healthy phase already posted %d parent message(s)", n)
+	}
+
+	t.Log("--- root + mid + leaves DOWN (Slack up) ---")
+	sim.setTargetsDown(true)
+	time.Sleep(25 * time.Second)
+	sim.dump(t, "during outage")
+
+	t.Log("--- root + mid + leaves UP ---")
+	sim.setTargetsDown(false)
+	time.Sleep(25 * time.Second)
+	sim.dump(t, "after recovery")
+
+	tally := sim.nestedTally(leaves)
+	if tally.lateNotice != 0 {
+		t.Errorf("FALSE BANNER: %d message(s) claim the initial notification failed; Slack was up throughout", tally.lateNotice)
+	}
+	if tally.rootDown != 1 {
+		t.Errorf("channel got %d DOWN message(s) for root; want exactly 1", tally.rootDown)
+	}
+	if tally.mid != 0 {
+		t.Errorf("STORM: %d message(s) about mid; mid is paused behind root", tally.mid)
+	}
+	if len(tally.leafDown) != 0 || len(tally.other) != 0 {
+		t.Errorf("STORM: leaves paged behind a paused mid: %v, other parents: %d", tally.leafDown, len(tally.other))
+	}
+	if up := sim.editedToUp(); up != 1 {
+		t.Errorf("root's DOWN parent edited to UP %d time(s); want 1", up)
+	}
+}
+
+// TestOutageSimulation_nestedLeavesStillDownWhenRootRecovers: the
+// nested tree goes down together, then root and mid recover while every
+// leaf keeps failing. Nothing about the leaves is posted while mid is
+// held behind root. Once mid is back up, each leaf's first resumed tick
+// announces it through the dispatcher, once, on its own channel, and its
+// recovery edits that message.
+func TestOutageSimulation_nestedLeavesStillDownWhenRootRecovers(t *testing.T) {
+	const leaves = 4
+	sim := newOutageSim(t)
+	stop := sim.run(t, sim.yaml(t, nestedTreeConfig(leaves)))
+	defer stop()
+
+	time.Sleep(10 * time.Second)
+	if n := sim.parentPosts(); n != 0 {
+		sim.dump(t, "healthy")
+		t.Fatalf("healthy phase already posted %d parent message(s)", n)
+	}
+
+	t.Log("--- root + mid + leaves DOWN (Slack up) ---")
+	sim.setTargetsDown(true)
+	time.Sleep(25 * time.Second)
+	sim.dump(t, "during outage")
+	if tally := sim.nestedTally(leaves); tally.rootDown != 1 || tally.mid != 0 || len(tally.leafDown) != 0 || len(tally.other) != 0 {
+		t.Errorf("during outage: root DOWN %d (want 1), mid %d, leaves %v, other %d (want none)",
+			tally.rootDown, tally.mid, tally.leafDown, len(tally.other))
+	}
+
+	// mid resumes on its next tick after root's recovery; each leaf then
+	// resumes still failing on its own next tick.
+	t.Log("--- root + mid UP, leaves still DOWN ---")
+	sim.setRootDown(false)
+	time.Sleep(30 * time.Second)
+	sim.dump(t, "root recovered")
+
+	tally := sim.nestedTally(leaves)
+	if tally.lateNotice != 0 {
+		t.Errorf("FALSE BANNER: %d message(s) claim the initial notification failed; Slack was up throughout", tally.lateNotice)
+	}
+	if tally.mid != 0 {
+		t.Errorf("%d message(s) about mid; mid never failed on its own", tally.mid)
+	}
+	for i := 1; i <= leaves; i++ {
+		leaf := fmt.Sprintf("leaf-%d", i)
+		if n := tally.leafDown[leaf]; n != 1 {
+			t.Errorf("%s announced %d time(s) after mid recovered; want exactly 1", leaf, n)
+		}
+	}
+	if len(tally.other) != 0 {
+		t.Errorf("unexpected parent message(s): %v", tally.other)
+	}
+	if up := sim.editedToUp(); up != 1 {
+		t.Errorf("root's DOWN parent edited to UP %d time(s); want 1", up)
+	}
+
+	t.Log("--- leaves UP ---")
 	sim.setLeavesDown(false)
 	time.Sleep(20 * time.Second)
 	sim.dump(t, "after recovery")

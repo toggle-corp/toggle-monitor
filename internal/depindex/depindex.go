@@ -79,3 +79,30 @@ func (i *Index) Children(parent string) []string {
 	}
 	return i.children[parent]
 }
+
+// Descendants returns every monitor that depends on `parent` directly or
+// through other monitors, breadth-first: each level after the one above
+// it, sorted within a parent's children. A monitor reachable along
+// several paths (a diamond) is listed once, and `parent` itself never
+// is. Returns nil when nothing depends on `parent`.
+func (i *Index) Descendants(parent string) []string {
+	if i == nil {
+		return nil
+	}
+	seen := map[string]struct{}{parent: {}}
+	var out []string
+	queue := []string{parent}
+	for len(queue) > 0 {
+		next := queue[0]
+		queue = queue[1:]
+		for _, child := range i.children[next] {
+			if _, dup := seen[child]; dup {
+				continue
+			}
+			seen[child] = struct{}{}
+			out = append(out, child)
+			queue = append(queue, child)
+		}
+	}
+	return out
+}

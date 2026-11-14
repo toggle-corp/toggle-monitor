@@ -800,7 +800,7 @@ func (s *Server) handleMonitorDetail(w http.ResponseWriter, r *http.Request) {
 	if m.Status == "temporary-paused" && len(m.DependsOn) > 0 {
 		for _, dep := range m.DependsOn {
 			p, perr := s.repo.GetMonitor(ctx, dep)
-			if perr == nil && p.Status == "down" {
+			if perr == nil && p.Status.HoldsChildren() {
 				gatingParents = append(gatingParents, dep)
 			}
 		}

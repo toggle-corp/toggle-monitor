@@ -80,3 +80,46 @@ func TestBuild_unknownParentReferencesAreIndexed(t *testing.T) {
 		t.Errorf("unknown parent should still be indexable; got %v", got)
 	}
 }
+
+func TestDescendants_nestedTreeBreadthFirst(t *testing.T) {
+	idx := depindex.Build([]depindex.Spec{
+		{Slug: "root"},
+		{Slug: "mid", DependsOn: []string{"root"}},
+		{Slug: "api", DependsOn: []string{"root"}},
+		{Slug: "leaf-b", DependsOn: []string{"mid"}},
+		{Slug: "leaf-a", DependsOn: []string{"mid"}},
+		{Slug: "deep", DependsOn: []string{"leaf-a"}},
+	})
+	want := []string{"api", "mid", "leaf-a", "leaf-b", "deep"}
+	if got := idx.Descendants("root"); !reflect.DeepEqual(got, want) {
+		t.Errorf("Descendants(root): got %v, want %v", got, want)
+	}
+	if got := idx.Descendants("deep"); got != nil {
+		t.Errorf("Descendants(deep): got %v, want nil", got)
+	}
+}
+
+func TestDescendants_diamondListedOnce(t *testing.T) {
+	idx := depindex.Build([]depindex.Spec{
+		{Slug: "root"},
+		{Slug: "left", DependsOn: []string{"root"}},
+		{Slug: "right", DependsOn: []string{"root"}},
+		{Slug: "bottom", DependsOn: []string{"left", "right"}},
+	})
+	want := []string{"left", "right", "bottom"}
+	if got := idx.Descendants("root"); !reflect.DeepEqual(got, want) {
+		t.Errorf("Descendants(root): got %v, want %v", got, want)
+	}
+}
+
+func TestDescendants_cycleTerminates(t *testing.T) {
+	// Config validation rejects cycles; the walk still terminates and
+	// never lists the starting monitor.
+	idx := depindex.Build([]depindex.Spec{
+		{Slug: "a", DependsOn: []string{"b"}},
+		{Slug: "b", DependsOn: []string{"a"}},
+	})
+	if got := idx.Descendants("a"); !reflect.DeepEqual(got, []string{"b"}) {
+		t.Errorf("Descendants(a): got %v, want [b]", got)
+	}
+}

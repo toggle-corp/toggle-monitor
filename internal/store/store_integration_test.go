@@ -546,6 +546,55 @@ func TestListUpMonitorSlugs_onlyLiveUpMonitors(t *testing.T) {
 	}
 }
 
+func TestMonitorStatuses_oneQueryForEveryListedRow(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+	for _, slug := range []string{"up", "down", "paused", "archived"} {
+		if err := repo.ReconcileMonitor(ctx, store.MonitorSpec{
+			Slug: slug, FriendlyName: slug, URL: "http://monitor.example.test", Source: store.SourceStatic,
+		}); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+	}
+	t0 := time.Now().UTC()
+	for _, slug := range []string{"down", "archived"} {
+		if err := repo.ApplyCheck(ctx, slug,
+			alert.State{Status: alert.StatusDown, OpenedAt: t0, LastReminderAt: t0},
+			t0, 503, "down", &alert.Event{Type: alert.EventOpen, At: t0}); err != nil {
+			t.Fatalf("apply check: %v", err)
+		}
+	}
+	if err := repo.MarkTemporaryPaused(ctx, "paused"); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	if err := repo.SoftDeleteMonitor(ctx, "archived", "removed from config"); err != nil {
+		t.Fatalf("soft-delete: %v", err)
+	}
+
+	got, err := repo.MonitorStatuses(ctx, []string{"up", "down", "paused", "archived", "never-existed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]alert.Status{
+		"up":       alert.StatusUp,
+		"down":     alert.StatusDown,
+		"paused":   alert.StatusTemporaryPaused,
+		"archived": alert.StatusDown,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("statuses = %v, want %v", got, want)
+	}
+	for slug, status := range want {
+		if got[slug] != status {
+			t.Errorf("%s: got %q, want %q", slug, got[slug], status)
+		}
+	}
+
+	if got, err := repo.MonitorStatuses(ctx, nil); err != nil || got != nil {
+		t.Fatalf("empty input should be a no-op: %v %v", got, err)
+	}
+}
+
 func TestHomepageStats_countsByStatus(t *testing.T) {
 	repo := newRepo(t)
 	ctx := context.Background()

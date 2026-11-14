@@ -719,6 +719,13 @@ type CheckCommit struct {
 // of a monitor's alert state goes through here, so each one decides
 // against the latest committed state and no two interleave.
 //
+// decide also gets the status of each listed parent, read after the
+// lock is taken, keyed as MonitorStatuses keys them. The parent rows
+// are read without a lock. Push-propagation pauses a child with an
+// update of the child's row after its parent's Open committed, so a
+// pause that lands before this lock comes with a parent read here as
+// holding it.
+//
 // It returns the row as decide saw it, before the write: the snapshot
 // the sinks take, with thread refs a resolve clears. wrote reports
 // whether anything was written.
@@ -728,7 +735,8 @@ type CheckCommit struct {
 func (r *Repo) CommitCheck(
 	ctx context.Context,
 	slug string,
-	decide func(row MonitorRow) (CheckCommit, bool),
+	parents []string,
+	decide func(row MonitorRow, parents map[string]alert.Status) (CheckCommit, bool),
 ) (row MonitorRow, wrote bool, err error) {
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -740,7 +748,11 @@ func (r *Repo) CommitCheck(
 	if err != nil {
 		return MonitorRow{}, false, err
 	}
-	c, ok := decide(row)
+	statuses, err := monitorStatuses(ctx, tx, parents)
+	if err != nil {
+		return row, false, err
+	}
+	c, ok := decide(row, statuses)
 	if !ok {
 		return row, false, nil
 	}
@@ -932,8 +944,8 @@ func (r *Repo) SoftDeleteMonitor(ctx context.Context, slug, reason string) error
 
 // MarkTemporaryPaused sets a monitor's status to 'temporary-paused'
 // without touching last_* fields or appending an alert_event. Called
-// by the scheduler when at least one dependsOn parent is currently
-// down. Idempotent — repeat calls while paused are no-ops.
+// by the scheduler when at least one dependsOn parent holds it, and by
+// push-propagation. Idempotent — repeat calls while paused are no-ops.
 func (r *Repo) MarkTemporaryPaused(ctx context.Context, slug string) error {
 	_, err := r.pool.Exec(ctx, `
 		UPDATE monitors
@@ -945,6 +957,44 @@ func (r *Repo) MarkTemporaryPaused(ctx context.Context, slug string) error {
 		return fmt.Errorf("mark temporary-paused %q: %w", slug, err)
 	}
 	return nil
+}
+
+// MonitorStatuses returns the status of each listed monitor that has a
+// row, archived ones included, keyed by slug, in one query. A slug with
+// no row is absent from the map. The scheduler's dependsOn gate reads a
+// monitor's parents through it.
+func (r *Repo) MonitorStatuses(ctx context.Context, slugs []string) (map[string]alert.Status, error) {
+	return monitorStatuses(ctx, r.pool, slugs)
+}
+
+// querier is what pgxpool.Pool and pgx.Tx share for reads.
+type querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+func monitorStatuses(ctx context.Context, q querier, slugs []string) (map[string]alert.Status, error) {
+	if len(slugs) == 0 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, `
+		SELECT slug, status FROM monitors WHERE slug = ANY($1)
+	`, slugs)
+	if err != nil {
+		return nil, fmt.Errorf("monitor statuses: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]alert.Status, len(slugs))
+	for rows.Next() {
+		var slug, status string
+		if err := rows.Scan(&slug, &status); err != nil {
+			return nil, fmt.Errorf("monitor statuses: %w", err)
+		}
+		out[slug] = alert.Status(status)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("monitor statuses: %w", err)
+	}
+	return out, nil
 }
 
 // ListChildrenOf returns the slugs of every active monitor whose

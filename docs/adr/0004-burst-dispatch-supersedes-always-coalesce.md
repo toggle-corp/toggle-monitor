@@ -279,6 +279,32 @@ collection, so the group's own `Posted=false` branch is bypassed.
   immediately post-restart. Persisting pending state would add a
   table and reattach logic for a ~30-second window — not worth it.
 
+## Amendment (2026-11-14): a paused parent holds its children
+
+In a nested tree (root ← mid ← leaf), root's outage paused mid, but
+only a down parent held a child. leaf was probed behind a paused mid,
+failed with root, and paged on its own channel; the on-demand probe
+skipped mid because it was not up, so leaf's pool flushed. Every
+grandchild paged for one root outage.
+
+- `alert.Status.HoldsChildren` is the one definition: a parent holds
+  its children while it is down or temporary-paused. temporary-paused
+  is only set by dependsOn gating, so there is no manual pause to tell
+  apart. The scheduler's gate and its post-probe re-check, the
+  push-propagation fallback in the on-demand probe and the web UI's
+  gating-parents list all use it. With several parents, any one
+  holding pauses the child, as for down parents.
+- The scheduler reads every parent's status in one query
+  (`store.MonitorStatuses`).
+- Push-propagation pauses every descendant of the parent
+  (`depindex.Descendants`, breadth-first, each monitor once), not only
+  its direct children.
+- The on-demand probe does not probe or open a temporary-paused hot
+  parent. It runs push-propagation from it, so the pool's children
+  drain.
+- Recovery resumes one level per tick: a child stays paused until its
+  parent's own tick resumes it, then the child's next tick probes.
+
 ## References
 
 - `MEMORY.md` → `project-alert-coalescing-design` — the superseded

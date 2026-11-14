@@ -163,14 +163,25 @@ func assertMonitor(t *testing.T, repo *store.Repo, wantStatus alert.Status, want
 }
 
 func onDemandProbe(repo *store.Repo, prober probe.Prober, sink *recordingSink, pushed *[]string) coalesce.OnDemandParentProbe {
+	return onDemandProbeOf(repo, apiPlan(prober), sink, pushed)
+}
+
+// onDemandProbeOf builds the on-demand probe over plan, recording the
+// slugs push-propagation runs from.
+func onDemandProbeOf(repo *store.Repo, plan scheduler.Plan, sink *recordingSink, pushed *[]string) coalesce.OnDemandParentProbe {
 	mgr := coalesce.New(coalesce.Options{Store: repo, Sink: coalesce.Sink(sink.sink)})
 	push := func(_ context.Context, parent string, _ time.Time) { *pushed = append(*pushed, parent) }
-	return makeOnDemandParentProbe(repo, mgr, staticPlans{apiPlan(prober)}, push, sink.sink, 5*time.Second, time.Now, slog.Default())
+	return makeOnDemandParentProbe(repo, mgr, staticPlans{plan}, push, sink.sink, 5*time.Second, time.Now, slog.Default())
 }
 
 func selfHealthCommit(repo *store.Repo, prober probe.Prober, sink *recordingSink) commitFunc {
+	return selfHealthCommitOf(repo, apiPlan(prober), sink)
+}
+
+// selfHealthCommitOf builds the self-health commit over plan, made
+// non-critical so its Open routes through the dispatcher.
+func selfHealthCommitOf(repo *store.Repo, plan scheduler.Plan, sink *recordingSink) commitFunc {
 	mgr := coalesce.New(coalesce.Options{Store: repo, Sink: coalesce.Sink(sink.sink)})
-	plan := apiPlan(prober)
 	plan.Critical = false
 	return makeSelfHealthCommit(repo, mgr, staticPlans{plan}, nil, nil, time.Now, slog.Default())
 }
@@ -357,3 +368,145 @@ func equalTimePtr(a, b *time.Time) bool {
 	}
 	return a.Equal(*b)
 }
+
+// childPlan is a critical "child" that dependsOn "parent".
+func childPlan(prober probe.Prober) scheduler.Plan {
+	p := apiPlan(prober)
+	p.Slug, p.FriendlyName, p.URL = "child", "child", "https://child.example.test/"
+	p.DependsOn = []string{"parent"}
+	return p
+}
+
+// parentDownPausesChild commits an Open on "parent" and pauses "child",
+// as the parent's tick and its push-propagation do.
+func parentDownPausesChild(t *testing.T, repo *store.Repo) {
+	t.Helper()
+	openParent(t, repo)
+	if err := repo.MarkTemporaryPaused(context.Background(), "child"); err != nil {
+		t.Errorf("pause child: %v", err)
+	}
+}
+
+// openParent commits an Open on "parent", as its tick does before its
+// push-propagation reaches "child".
+func openParent(t *testing.T, repo *store.Repo) {
+	t.Helper()
+	at := time.Now()
+	if err := repo.ApplyCheck(context.Background(), "parent",
+		alert.State{Status: alert.StatusDown, OpenedAt: at, LastReminderAt: at},
+		at, 503, "down",
+		&alert.Event{Type: alert.EventOpen, At: at, StatusCode: 503, Error: "down"},
+	); err != nil {
+		t.Errorf("open parent: %v", err)
+	}
+}
+
+// reconcileParentAndChild adds the "parent" and "child" monitors.
+func reconcileParentAndChild(t *testing.T, repo *store.Repo) {
+	t.Helper()
+	for _, slug := range []string{"parent", "child"} {
+		if err := repo.ReconcileMonitor(context.Background(), store.MonitorSpec{
+			Slug: slug, FriendlyName: slug, URL: "https://" + slug + ".example.test/", Source: store.SourceStatic,
+		}); err != nil {
+			t.Fatalf("reconcile %s: %v", slug, err)
+		}
+	}
+}
+
+// TestCommitRace_parentPausesChildBeforeTickCommit_childStaysPaused: the
+// child's dependsOn checks see its parent up, then the parent goes down
+// and push-propagation pauses the child just before the child's tick
+// commits. The tick must not read that pause as a resume: with the
+// parent still down, the child stays paused, whatever its probe saw.
+func TestCommitRace_parentPausesChildBeforeTickCommit_childStaysPaused(t *testing.T) {
+	for name, res := range map[string]probe.Result{"fail": probeFail, "ok": probeOK} {
+		t.Run(name, func(t *testing.T) {
+			repo, trap := newTrappedRepo(t)
+			ctx := context.Background()
+			reconcileParentAndChild(t, repo)
+
+			sink := &recordingSink{}
+			s := scheduler.New(repo, scheduler.WithEventSink(sink.sink))
+			prober := raceProber{res: res, during: func() {
+				trap.arm(func() { parentDownPausesChild(t, repo) })
+			}}
+			if err := s.Tick(ctx, childPlan(prober)); err != nil {
+				t.Fatalf("tick: %v", err)
+			}
+
+			if got := sink.got(); len(got) != 0 {
+				t.Errorf("sink: got %v, want nothing while the parent is down", got)
+			}
+			row, err := repo.GetMonitor(ctx, "child")
+			if err != nil {
+				t.Fatalf("get child: %v", err)
+			}
+			if row.Status != alert.StatusTemporaryPaused {
+				t.Errorf("child status: got %q, want %q", row.Status, alert.StatusTemporaryPaused)
+			}
+			if got := alertEventTypes(t, repo, "child"); len(got) != 0 {
+				t.Errorf("child alert_events: got %v, want none", got)
+			}
+		})
+	}
+}
+
+// TestCommitRace_parentDownBeforeExtraCommit_childStaysSilent: the
+// child's parent opens an incident while the on-demand probe or the
+// self-health commit probes the child, and push-propagation has not
+// paused the child yet. The extra writer reads the parents under the
+// child's row lock, so it neither opens the child nor announces it. The
+// on-demand probe runs push-propagation from the child instead, since a
+// held hot parent holds its own children.
+func TestCommitRace_parentDownBeforeExtraCommit_childStaysSilent(t *testing.T) {
+	writers := map[string]struct {
+		build      func(repo *store.Repo, prober probe.Prober, sink *recordingSink, pushed *[]string) func(ctx context.Context)
+		wantPushed []string
+	}{
+		"on-demand": {
+			build: func(repo *store.Repo, prober probe.Prober, sink *recordingSink, pushed *[]string) func(ctx context.Context) {
+				p := onDemandProbeOf(repo, childPlan(prober), sink, pushed)
+				return func(ctx context.Context) { p(ctx, "child") }
+			},
+			wantPushed: []string{"child"},
+		},
+		"self-health": {
+			build: func(repo *store.Repo, prober probe.Prober, sink *recordingSink, _ *[]string) func(ctx context.Context) {
+				c := selfHealthCommitOf(repo, childPlan(prober), sink)
+				return func(ctx context.Context) { c(ctx, "child") }
+			},
+		},
+	}
+	for name, w := range writers {
+		t.Run(name, func(t *testing.T) {
+			repo, trap := newTrappedRepo(t)
+			ctx := context.Background()
+			reconcileParentAndChild(t, repo)
+
+			sink := &recordingSink{}
+			var pushed []string
+			prober := raceProber{res: probeFail, during: func() {
+				trap.arm(func() { openParent(t, repo) })
+			}}
+			w.build(repo, prober, sink, &pushed)(ctx)
+
+			if got := sink.got(); len(got) != 0 {
+				t.Errorf("sink: got %v, want nothing while the parent is down", got)
+			}
+			if !slices.Equal(pushed, w.wantPushed) {
+				t.Errorf("push-propagation: got %v, want %v", pushed, w.wantPushed)
+			}
+			row, err := repo.GetMonitor(ctx, "child")
+			if err != nil {
+				t.Fatalf("get child: %v", err)
+			}
+			if row.Status != alert.StatusUp {
+				t.Errorf("child status: got %q, want %q", row.Status, alert.StatusUp)
+			}
+			if got := alertEventTypes(t, repo, "child"); len(got) != 0 {
+				t.Errorf("child alert_events: got %v, want none", got)
+			}
+		})
+	}
+}
+

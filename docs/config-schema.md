@@ -172,7 +172,7 @@ slack:
 
 **Why the count spans `burstWindow`, not one pool.** The scheduler jitters each monitor's first tick across its whole `interval`, so a cluster-wide outage does not arrive as a burst — it arrives as a trickle of roughly `N x pendingWait / interval` monitors per window. Sizing the burst off a single pool under-counts every real outage: each window flushes sub-threshold and the operator gets one message per monitor. Counting cumulatively bounds that at `burstThreshold - 1` individual messages, after which the channel promotes and the rest of the outage lands in one digest. Set `burstWindow` above your widest `monitors[].interval`; lower `burstThreshold` to shorten the individual prefix.
 
-At pendingWait expiry the dispatcher also fires one bounded probe (within `onDemandProbeTimeout`) of any dependsOn parent referenced by ≥2 pool entries that isn't already in the pool. If the parent probes down, push-propagation drains its children from the pool — leaving the parent as the named root cause instead of a digest of symptoms.
+At pendingWait expiry the dispatcher also fires one bounded probe (within `onDemandProbeTimeout`) of any dependsOn parent referenced by ≥2 pool entries that isn't already in the pool. If the parent probes down, push-propagation drains its children from the pool — leaving the parent as the named root cause instead of a digest of symptoms. A parent that is already `temporary-paused` behind its own parent is not probed: its children drain the same way and the parent is not announced.
 
 `monitors[].critical: true` opts a monitor out of the dispatcher entirely — it pages immediately as an individual message regardless of channel mode. A `dependsOn` pause still wins over `critical` (a paused monitor stays silent). Give shared `dependsOn` parents a **short interval**; the startup logs a WARN for any parent whose interval is slower than a child's.
 
@@ -714,7 +714,7 @@ monitors:
 | `monitors[].slack` | string | ✓ | resolves to a `slack.channels[].slug` | |
 | `monitors[].notify` | list[string] | — | each entry: a `slack.userMapping` slug OR `<...>` raw markup | |
 | `monitors[].tags` | list[string] | — | each: slug regex | |
-| `monitors[].dependsOn` | list[string] | — | each: resolves to a **static** `monitors[].slug` | Validator detects cycles. Startup logs a WARN if a parent's interval is slower than this monitor's (widens the dependsOn race) |
+| `monitors[].dependsOn` | list[string] | — | each: resolves to a **static** `monitors[].slug` | Any parent down, or paused behind its own parent, pauses this monitor; a down root holds its whole subtree. Validator detects cycles. Startup logs a WARN if a parent's interval is slower than this monitor's (widens the dependsOn race) |
 | `monitors[].critical` | bool | — | default `false` | Opt out of alert coalescing: page immediately as an individual message instead of joining the per-channel digest. A `dependsOn` pause still wins (paused → silent) |
 
 **Cross-field validation:**

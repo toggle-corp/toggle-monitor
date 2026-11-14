@@ -98,7 +98,8 @@ testable in isolation.
 
 1. The scheduler's per-monitor goroutine ticks at the configured
    `interval` (with startup jitter to avoid thundering-herd).
-2. If `DependsOn` has any parent currently in `StatusDown`, the
+2. If `DependsOn` has any parent currently in `StatusDown` or
+   `StatusTemporaryPaused` (paused behind a parent of its own), the
    tick short-circuits: status flips to `temporary-paused`, no
    probe runs, no alert event lands. Done.
 3. Otherwise the scheduler runs `httpcheck.Check`. In-cycle retries
@@ -232,15 +233,20 @@ Reminders fire when `now - LastReminderAt ≥ cadence`.
 
 ### temporary-paused
 
-Driven by the scheduler, not by `alert.Apply`. Any monitor whose
-`dependsOn` chain has at least one down parent enters
-`StatusTemporaryPaused`. The probe is skipped entirely (no HTTP,
+Driven by the scheduler, not by `alert.Apply`. Any monitor with a
+`dependsOn` parent that is down, or itself temporary-paused, enters
+`StatusTemporaryPaused`, so a down root holds its whole subtree
+(`alert.Status.HoldsChildren` is the one definition the gate, the
+post-probe re-check, push-propagation and the on-demand probe share).
+With several parents, any one holding is enough. The probe is skipped entirely (no HTTP,
 no SSL, no `alert_event` row, no `last_*` write). The gate runs again
-after a failing probe: a parent that went down while the child's probe
-and its retries were in flight pauses the child the same way, so the
+after a failing probe: a parent that went down or was paused while
+the child's probe and its retries were in flight pauses the child the
+same way, so the
 parent's outage never opens an incident on it. On resumption a
 child with no open incident resumes as `up`, so a failing first tick
-produces a clean `EventOpen`. A child that was already in an incident
+produces a clean `EventOpen`. A nested tree resumes one level per
+tick: a child stays paused until its parent's own tick has resumed it. A child that was already in an incident
 resumes as `down` and continues it. If no Slack message about that
 incident was attempted (it was paused out of the dispatcher's pending
 pool), its first failing resumed tick routes an `EventOpen` to the
