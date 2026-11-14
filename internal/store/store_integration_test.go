@@ -231,6 +231,28 @@ func TestUptimeOpenFailed_markAndClear(t *testing.T) {
 	marked(false, "resolved")
 }
 
+// TestSetUptimeThread_outsideAnIncident_storesNothing: an Open whose
+// post finishes after its incident resolved must not leave a thread ref
+// on an up monitor, where the next incident would read it as its own.
+func TestSetUptimeThread_outsideAnIncident_storesNothing(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+	spec := store.MonitorSpec{Slug: "api", FriendlyName: "API", URL: "https://api.example.test/health", Source: store.SourceStatic}
+	if err := repo.ReconcileMonitor(ctx, spec); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if err := repo.SetUptimeThread(ctx, "api", "C1", "1700000000.000100"); err != nil {
+		t.Fatalf("SetUptimeThread: %v", err)
+	}
+	row, err := repo.GetMonitor(ctx, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.UptimeThreadTS != nil {
+		t.Errorf("UptimeThreadTS: got %q on an up monitor, want none", *row.UptimeThreadTS)
+	}
+}
+
 // Total counts the monitor's whole history, not the page — the
 // paginator sizes itself from it — and offset walks backwards through
 // the newest-first order.

@@ -37,7 +37,11 @@
 // A recovery with neither a thread ts nor that mark belongs to an
 // incident no message was ever attempted for — typically a dependsOn
 // child paused out of the pending pool before it flushed. Nobody was
-// paged, so it posts nothing.
+// paged, so it posts nothing. The exception is a monitor whose Open
+// this dispatcher flushed to the per-monitor sink: its recovery can
+// commit while that post is still in flight, so the row says nothing
+// yet. That recovery goes to the sink, which waits for the Open's
+// delivery and acts on its outcome (ADR-0018).
 //
 // The dispatch state is in-memory only. A restart loses any pending
 // pools (they re-fill from the next probe) and reattaches open groups
@@ -335,6 +339,14 @@ func (m *Manager) routeResolve(ctx context.Context, channel string, e Entry) {
 	owned := cs.ownedByIndividual(e.Member.Slug)
 	cs.clearDown(e.Member.Slug)
 	if owned {
+		if !hasUptimeThread(e.Row) && !openDeliveryFailed(e.Row) {
+			// The Open was flushed to the sink, so a row with neither a
+			// thread ts nor the mark only says its post had not finished
+			// when this recovery committed. The sink holds the outcome.
+			m.mu.Unlock()
+			m.flushSink(ctx, channel, e)
+			return
+		}
 		m.resolveIndividually(ctx, channel, cs, e)
 		return
 	}

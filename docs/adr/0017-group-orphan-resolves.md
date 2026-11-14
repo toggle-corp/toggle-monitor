@@ -92,7 +92,9 @@ was every child.
 - A recovery with no ts **and** the mark is an orphan, as above. With no
   ts and no mark, nobody was paged: the dispatcher drops it (no pool, no
   sink) and `Notifier.Notify` posts nothing for it, which also covers
-  critical monitors.
+  critical monitors. A monitor whose Open the dispatcher already
+  flushed is the exception: its row can predate the post, so the
+  recovery goes to the notifier, which knows the outcome (ADR-0018).
 - A reminder with no ts and no mark posts a plain Down parent: it is the
   monitor's first announcement, so it carries no banner and does not
   count as a fresh-parent fallback. This is how a child resumed still

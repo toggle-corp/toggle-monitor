@@ -1026,7 +1026,9 @@ func (r *Repo) SetSSLThread(ctx context.Context, slug, channel, ts string) error
 // SetUptimeThread persists the Slack thread ref for the currently-open
 // uptime incident on this monitor. Called by the notifier after
 // successfully posting the parent down message. A stored ref
-// supersedes any open-failed mark.
+// supersedes any open-failed mark. Only a monitor in an open incident
+// stores one: a post that finishes after its incident resolved would
+// otherwise leave the ref for the next incident to read as its own.
 func (r *Repo) SetUptimeThread(ctx context.Context, slug, channel, ts string) error {
 	_, err := r.pool.Exec(ctx, `
 		UPDATE monitors
@@ -1034,7 +1036,7 @@ func (r *Repo) SetUptimeThread(ctx context.Context, slug, channel, ts string) er
 			uptime_thread_ts = $2,
 			uptime_open_failed_at = NULL,
 			updated_at = now()
-		WHERE slug = $3
+		WHERE slug = $3 AND opened_at IS NOT NULL
 	`, channel, ts, slug)
 	if err != nil {
 		return fmt.Errorf("set uptime thread for %q: %w", slug, err)

@@ -444,6 +444,11 @@ recovers later via the reminder cadence:
   channel post as a single grouped message instead (ADR-0017). A
   recovery with no parent and no failed `Open` posts nothing (logged at
   INFO as `resolve of a never-announced incident`).
+- A recovery that arrives while its monitor's `Open` is still being
+  posted waits for that post and edits the message it produced. An
+  `Open` that reaches the notifier after its own recovery posts nothing
+  (logged at INFO as `open of an incident already announced or
+  resolved`). See [ADR-0018](adr/0018-serialize-uptime-deliveries-per-monitor.md).
 
 This is intentional: the design favors "DB is the source of truth,
 Slack is best-effort" over blocking the worker on a Slack outage.

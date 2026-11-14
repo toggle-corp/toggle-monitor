@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/toggle-corp/toggle-monitor/internal/alert"
@@ -65,6 +66,72 @@ type Notifier struct {
 	publicBase        string
 	log               *slog.Logger
 	observer          NotifierObserver
+
+	mu       sync.Mutex
+	monitors map[string]*monitorDelivery // slug → uptime delivery state
+}
+
+// monitorDelivery serializes one monitor's uptime deliveries and
+// remembers what became of its latest incident's parent message.
+//
+// Deliveries for one monitor reach the notifier from several goroutines:
+// the monitor's own scheduler tick, the dispatcher's evaluator flushing a
+// pending pool, the on-demand parent probe and the self-health commit.
+// Each sink call carries a row snapshot read before its own transition
+// committed, so a recovery can carry a snapshot taken while its Open was
+// still being posted: no thread ts and no failed-delivery mark, although
+// a DOWN is about to land. Holding the lock across a delivery makes a
+// recovery wait for an Open in flight, and parent records what that Open
+// produced.
+type monitorDelivery struct {
+	sync.Mutex
+	parent uptimeParent
+}
+
+// uptimeParent is what this process knows about one incident's parent
+// message, beyond the row snapshot a delivery is handed.
+type uptimeParent struct {
+	incident time.Time // OpenedAt of the incident; zero when nothing is recorded
+	channel  string    // parent message posted for it, when one was
+	ts       string
+	failed   bool // a parent post for it failed
+	resolved bool // its recovery was delivered
+}
+
+// sameIncident reports whether the record describes the incident that
+// opened at `at`. A row's opened_at round-trips through Postgres at
+// microsecond precision, hence the tolerance.
+func (p uptimeParent) sameIncident(at time.Time) bool {
+	if p.incident.IsZero() || at.IsZero() {
+		return false
+	}
+	d := p.incident.Sub(at)
+	return d < time.Millisecond && d > -time.Millisecond
+}
+
+// incidentStart identifies the incident an uptime event belongs to: the
+// row's OpenedAt, or for an Open from an up monitor (whose row has none
+// yet) the Open's own time, which becomes OpenedAt when it commits.
+func incidentStart(m MonitorView, ev *alert.Event) time.Time {
+	if !m.OpenedAt.IsZero() {
+		return m.OpenedAt
+	}
+	return ev.At
+}
+
+// delivery returns the monitor's delivery state, creating it on first use.
+func (n *Notifier) delivery(slug string) *monitorDelivery {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.monitors == nil {
+		n.monitors = map[string]*monitorDelivery{}
+	}
+	d, ok := n.monitors[slug]
+	if !ok {
+		d = &monitorDelivery{}
+		n.monitors[slug] = d
+	}
+	return d
 }
 
 // NotifierOptions configures a Notifier.
@@ -167,10 +234,16 @@ type SSLView struct {
 }
 
 // Notify dispatches the right Slack call(s) for an alert event:
-//   - EventOpen:     post a new parent, persist the thread ref.
+//   - EventOpen:     post a new parent, persist the thread ref; nothing
+//     for an incident whose recovery was already delivered, or whose
+//     parent this process already posted.
 //   - EventReminder: post a thread reply.
 //   - EventResolve:  edit the parent and post a thread reply; nothing
 //     at all for an incident no message was ever attempted for.
+//
+// Deliveries for one monitor run one at a time, and the thread ref or
+// failed-delivery mark of a parent this process posted fills in a row
+// snapshot that predates it (see monitorDelivery).
 //
 // channelSlug identifies the monitor's configured Slack destination;
 // mentions are pre-resolved raw markup (`<!here>`, `<@U…>`, etc).
@@ -183,13 +256,34 @@ func (n *Notifier) Notify(ctx context.Context, channelSlug string, mentions []st
 		return fmt.Errorf("slack channel slug %q is not registered", channelSlug)
 	}
 
+	d := n.delivery(m.Slug)
+	d.Lock()
+	defer d.Unlock()
+	incident := incidentStart(m, ev)
+	known := d.parent.sameIncident(incident)
+	if known && m.UptimeThreadTS == "" {
+		if d.parent.ts != "" {
+			m.UptimeThreadChannel, m.UptimeThreadTS = d.parent.channel, d.parent.ts
+		} else if d.parent.failed {
+			m.UptimeOpenFailed = true
+		}
+	}
+
 	var err error
 	switch ev.Type {
 	case alert.EventOpen:
-		err = n.notifyOpen(ctx, ch, mentions, m, ev)
+		if known && (d.parent.resolved || d.parent.ts != "") {
+			// The incident already recovered, or its parent is already
+			// up: a DOWN posted now would stand with nothing left to
+			// edit it, or duplicate the one posted.
+			n.log.Info("open of an incident already announced or resolved: posting nothing", "monitor", m.Slug)
+			return nil
+		}
+		err = n.notifyOpen(ctx, ch, mentions, m, ev, &d.parent)
 	case alert.EventReminder:
-		err = n.notifyReminder(ctx, ch, mentions, m, ev)
+		err = n.notifyReminder(ctx, ch, mentions, m, ev, &d.parent)
 	case alert.EventResolve:
+		d.parent = uptimeParent{incident: incident, resolved: true}
 		if m.UptimeThreadTS == "" && !m.UptimeOpenFailed {
 			// No parent and no failed delivery: no message about this
 			// incident was ever attempted, so nobody needs to hear it
@@ -210,7 +304,7 @@ func (n *Notifier) Notify(ctx context.Context, channelSlug string, mentions []st
 	return err
 }
 
-func (n *Notifier) notifyOpen(ctx context.Context, ch ChannelInfo, mentions []string, m MonitorView, ev *alert.Event) error {
+func (n *Notifier) notifyOpen(ctx context.Context, ch ChannelInfo, mentions []string, m MonitorView, ev *alert.Event, rec *uptimeParent) error {
 	in := DownInput{
 		FriendlyName: m.FriendlyName,
 		Tags:         m.Tags,
@@ -232,9 +326,11 @@ func (n *Notifier) notifyOpen(ctx context.Context, ch ChannelInfo, mentions []st
 		Attachments: msg.Attachments,
 	})
 	if err != nil {
+		*rec = uptimeParent{incident: incidentStart(m, ev), failed: true}
 		n.markOpenFailed(ctx, m.Slug)
 		return err
 	}
+	*rec = uptimeParent{incident: incidentStart(m, ev), channel: res.Channel, ts: res.TS}
 	if err := n.store.SetUptimeThread(ctx, m.Slug, res.Channel, res.TS); err != nil {
 		n.log.Warn("persist uptime thread ref", "monitor", m.Slug, "error", err)
 		// don't return: the Slack message went out; we just won't be
@@ -244,14 +340,14 @@ func (n *Notifier) notifyOpen(ctx context.Context, ch ChannelInfo, mentions []st
 	return nil
 }
 
-func (n *Notifier) notifyReminder(ctx context.Context, ch ChannelInfo, mentions []string, m MonitorView, ev *alert.Event) error {
+func (n *Notifier) notifyReminder(ctx context.Context, ch ChannelInfo, mentions []string, m MonitorView, ev *alert.Event, rec *uptimeParent) error {
 	if m.UptimeThreadTS == "" {
 		// No parent recorded: either the initial Open delivery failed,
 		// or no Open was ever sent (a dependsOn child paused before its
 		// Open flushed, now resumed and still down). Post the Down
 		// parent, persist its ts, and let subsequent reminders thread
 		// onto it.
-		return n.postFreshUptimeParent(ctx, ch, mentions, m)
+		return n.postFreshUptimeParent(ctx, ch, mentions, m, rec)
 	}
 	blocks := BuildReminderReply(ReminderInput{
 		DownDuration:  ev.At.Sub(m.OpenedAt),
@@ -272,7 +368,7 @@ func (n *Notifier) notifyReminder(ctx context.Context, ch ChannelInfo, mentions 
 // for a monitor never announced it is a plain Down parent. Persists the
 // new ts so subsequent reminders thread normally, or marks the delivery
 // failed when the post fails.
-func (n *Notifier) postFreshUptimeParent(ctx context.Context, ch ChannelInfo, mentions []string, m MonitorView) error {
+func (n *Notifier) postFreshUptimeParent(ctx context.Context, ch ChannelInfo, mentions []string, m MonitorView, rec *uptimeParent) error {
 	banner := ""
 	if m.UptimeOpenFailed {
 		banner = freshParentBanner
@@ -299,9 +395,11 @@ func (n *Notifier) postFreshUptimeParent(ctx context.Context, ch ChannelInfo, me
 		Attachments: msg.Attachments,
 	})
 	if err != nil {
+		*rec = uptimeParent{incident: m.OpenedAt, failed: true}
 		n.markOpenFailed(ctx, m.Slug)
 		return err
 	}
+	*rec = uptimeParent{incident: m.OpenedAt, channel: res.Channel, ts: res.TS}
 	if m.UptimeOpenFailed {
 		n.observeFreshParent("uptime")
 	}

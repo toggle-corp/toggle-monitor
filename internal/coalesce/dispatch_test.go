@@ -1525,3 +1525,28 @@ func TestDispatch_reminderAnnouncedMonitor_resolvesWhileChannelPending(t *testin
 		t.Errorf("want no digest, got %d posts", fp.posts)
 	}
 }
+
+// TestDispatch_resolveOfFlushedOpen_withoutThreadRef_goesToNotifier: the
+// Open was handed to the notifier when the pending pool flushed, so a
+// row snapshot with neither a thread ts nor a failed-delivery mark only
+// means the post had not finished when the recovery committed. The
+// notifier holds that delivery's outcome; the recovery goes to it
+// instead of being dropped as never announced.
+func TestDispatch_resolveOfFlushedOpen_withoutThreadRef_goesToNotifier(t *testing.T) {
+	clock := base
+	m, _, fp, sink := newDispatchManager(t, &clock, 5, 5*time.Minute)
+	ctx := context.Background()
+	opened := clock
+	pageIndividually(t, m, &clock, "ops", "a")
+	sink.calls = nil
+
+	m.Route(ctx, "ops", unannouncedResolveEntry("a", opened, clock.Add(time.Second)))
+	if got := sink.countByType(alert.EventResolve); got != 1 {
+		t.Fatalf("want a's resolve handed to the notifier, got %+v", sink.calls)
+	}
+	clock = clock.Add(10 * time.Minute)
+	m.evaluateAll(ctx)
+	if fp.posts != 0 {
+		t.Errorf("want no grouped recovery, got %d posts", fp.posts)
+	}
+}
