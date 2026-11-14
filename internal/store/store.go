@@ -675,6 +675,9 @@ func (r *Repo) HomepageStats(ctx context.Context) (HomepageStats, error) {
 //
 // On a resolve event, the uptime thread refs are cleared as well so a
 // subsequent open begins a fresh thread.
+//
+// ApplyCheck writes next unconditionally. A writer that computed next
+// from a row it read earlier uses CommitCheck instead.
 func (r *Repo) ApplyCheck(
 	ctx context.Context,
 	slug string,
@@ -690,6 +693,68 @@ func (r *Repo) ApplyCheck(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if err := applyCheckTx(ctx, tx, slug, CheckCommit{
+		Next: next, At: at, StatusCode: statusCode, Error: checkErr, Event: event,
+	}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
+// CheckCommit is one check result to record, as ApplyCheck takes it.
+type CheckCommit struct {
+	Next       alert.State
+	At         time.Time
+	StatusCode int
+	Error      string
+	Event      *alert.Event
+}
+
+// CommitCheck reads the monitor row with a row lock, hands it to
+// decide, and records what decide returns in the same transaction, as
+// ApplyCheck does. decide returns false to write nothing. Every writer
+// of a monitor's alert state goes through here, so each one decides
+// against the latest committed state and no two interleave.
+//
+// It returns the row as decide saw it, before the write: the snapshot
+// the sinks take, with thread refs a resolve clears. wrote reports
+// whether anything was written.
+//
+// decide runs while the row is locked: it must not block, call Slack,
+// or touch the database.
+func (r *Repo) CommitCheck(
+	ctx context.Context,
+	slug string,
+	decide func(row MonitorRow) (CheckCommit, bool),
+) (row MonitorRow, wrote bool, err error) {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return MonitorRow{}, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	row, err = scanMonitor(tx.QueryRow(ctx, selectMonitor+` WHERE slug = $1 FOR UPDATE`, slug))
+	if err != nil {
+		return MonitorRow{}, false, err
+	}
+	c, ok := decide(row)
+	if !ok {
+		return row, false, nil
+	}
+	if err := applyCheckTx(ctx, tx, slug, c); err != nil {
+		return row, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return row, false, fmt.Errorf("commit: %w", err)
+	}
+	return row, true, nil
+}
+
+func applyCheckTx(ctx context.Context, tx pgx.Tx, slug string, c CheckCommit) error {
+	next, event := c.Next, c.Event
 	var openedAt any
 	if !next.OpenedAt.IsZero() {
 		openedAt = next.OpenedAt
@@ -699,17 +764,18 @@ func (r *Repo) ApplyCheck(
 		lastReminderAt = next.LastReminderAt
 	}
 	var sc any
-	if statusCode != 0 {
-		sc = statusCode
+	if c.StatusCode != 0 {
+		sc = c.StatusCode
 	}
 	var msg any
-	if checkErr != "" {
-		msg = checkErr
+	if c.Error != "" {
+		msg = c.Error
 	}
 
 	// On resolve, also clear the thread refs and the open-failed mark.
 	clearThread := event != nil && event.Type == alert.EventResolve
 
+	var err error
 	if clearThread {
 		_, err = tx.Exec(ctx, `
 			UPDATE monitors
@@ -724,7 +790,7 @@ func (r *Repo) ApplyCheck(
 				uptime_open_failed_at = NULL,
 				updated_at = now()
 			WHERE slug = $7
-		`, string(next.Status), openedAt, lastReminderAt, at, sc, msg, slug)
+		`, string(next.Status), openedAt, lastReminderAt, c.At, sc, msg, slug)
 	} else {
 		_, err = tx.Exec(ctx, `
 			UPDATE monitors
@@ -736,7 +802,7 @@ func (r *Repo) ApplyCheck(
 				last_error = $6,
 				updated_at = now()
 			WHERE slug = $7
-		`, string(next.Status), openedAt, lastReminderAt, at, sc, msg, slug)
+		`, string(next.Status), openedAt, lastReminderAt, c.At, sc, msg, slug)
 	}
 	if err != nil {
 		return fmt.Errorf("update monitor row: %w", err)
@@ -754,10 +820,6 @@ func (r *Repo) ApplyCheck(
 		if err != nil {
 			return fmt.Errorf("insert alert_event: %w", err)
 		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
 }

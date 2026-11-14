@@ -98,8 +98,8 @@ type Plan struct {
 // EventSink is the seam the scheduler uses to dispatch alert events
 // (open / reminder / resolve). Production wires
 // slack.Notifier.Notify; tests can pass nil to disable. The monitor
-// row is the snapshot read BEFORE ApplyCheck so callers see thread
-// refs that are about to be cleared on resolve.
+// row is the snapshot store.CommitCheck read before its write, so
+// callers see thread refs that are about to be cleared on resolve.
 type EventSink func(ctx context.Context, m store.MonitorRow, channelSlug string, mentions []string, event *alert.Event) error
 
 // SSLSink is the analogous seam for SSL events.
@@ -444,43 +444,40 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 		}
 	}
 
-	row, err := s.repo.GetMonitor(ctx, p.Slug)
-	if err != nil {
-		return err
-	}
-
-	// Resuming from temporary-paused: restore the pre-pause uptime
-	// classification so the state machine continues the prior story
-	// instead of double-emitting transitions. MarkTemporaryPaused
-	// only overwrites `status` — opened_at / last_reminder_at are
-	// preserved, so a non-nil OpenedAt means the child was already
-	// in an open incident when the parent went down. Forcing prev=up
-	// in that case would produce a duplicate EventOpen on the next
-	// failing tick (the original user-reported bug).
-	resumed := row.Status == alert.StatusTemporaryPaused
-	if resumed {
-		if row.OpenedAt != nil {
-			row.Status = alert.StatusDown
-		} else {
-			row.Status = alert.StatusUp
-		}
-	}
-
 	outcome := alert.OutcomeFail
 	if res.Error == "" {
 		outcome = alert.OutcomeOK
 	}
-	now := s.now()
-	check := alert.Check{
-		Outcome:          outcome,
-		At:               now,
-		StatusCode:       res.Code,
-		Error:            res.Error,
-		ReminderInterval: p.ReminderInterval,
-	}
-	nextState, event := alert.Apply(row.State(), check)
-	if err := s.repo.ApplyCheck(ctx, p.Slug, nextState, now, res.Code, res.Error, event); err != nil {
+
+	// Apply the result to the row as it is at commit time, not as it was
+	// when the probe started: the dispatcher's on-demand probe or the
+	// self-health commit can open an incident on this monitor while its
+	// probe is out, and this result has to resolve or continue it. The
+	// check is stamped under the row lock, so it never predates an
+	// incident it resolves.
+	var (
+		now     time.Time
+		resumed bool
+		event   *alert.Event
+	)
+	row, _, err := s.repo.CommitCheck(ctx, p.Slug, func(row store.MonitorRow) (store.CheckCommit, bool) {
+		now = s.now()
+		prev, paused := resumeState(row)
+		next, ev := alert.Apply(prev, alert.Check{
+			Outcome:          outcome,
+			At:               now,
+			StatusCode:       res.Code,
+			Error:            res.Error,
+			ReminderInterval: p.ReminderInterval,
+		})
+		resumed, event = paused, ev
+		return store.CheckCommit{Next: next, At: now, StatusCode: res.Code, Error: res.Error, Event: ev}, true
+	})
+	if err != nil {
 		return err
+	}
+	if resumed {
+		row.Status = resumedStatus(row)
 	}
 
 	// A child that failed, was paused before any message about it went
@@ -509,7 +506,7 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 	//   - critical monitors → per-monitor EventSink, the immediate
 	//     individually-paged message. We pass the *pre*-update row so
 	//     the resolve handler still sees the uptime thread refs that
-	//     ApplyCheck just cleared.
+	//     CommitCheck just cleared.
 	//   - everything else → the dispatcher's Route, which decides
 	//     individual-vs-group per channel (pending pool with burst
 	//     threshold). Reminders for non-critical monitors are forwarded
@@ -594,6 +591,31 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 		}
 	}
 	return nil
+}
+
+// resumeState returns the state alert.Apply continues from. A
+// temporary-paused row resumes with its pre-pause classification, so
+// the state machine continues the prior story instead of
+// double-emitting transitions: MarkTemporaryPaused only overwrites
+// `status`, so a non-nil OpenedAt means the monitor was already in an
+// open incident when its parent went down. Resuming it as up would
+// open a duplicate incident on the next failing tick. resumed reports
+// whether the row was paused.
+func resumeState(row store.MonitorRow) (prev alert.State, resumed bool) {
+	prev = row.State()
+	if row.Status == alert.StatusTemporaryPaused {
+		prev.Status = resumedStatus(row)
+		return prev, true
+	}
+	return prev, false
+}
+
+// resumedStatus is the status a temporary-paused row resumes as.
+func resumedStatus(row store.MonitorRow) alert.Status {
+	if row.OpenedAt != nil {
+		return alert.StatusDown
+	}
+	return alert.StatusUp
 }
 
 // neverAnnounced reports whether the row is in an open incident that no

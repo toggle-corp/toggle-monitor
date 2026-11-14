@@ -131,8 +131,8 @@ type planProvider interface {
 // makeOnDemandParentProbe builds the hot-parent probe hook the
 // dispatcher invokes at pendingWait expiry (ADR-0004 Q11a). For each
 // candidate parent: fire one bounded probe through the parent's
-// configured Prober; if down, drive alert.Apply + persist its
-// EventOpen, fire push-propagation so the pool's children drain, and
+// configured Prober; if down, commit its EventOpen through
+// commitExtraFailure, fire push-propagation so the pool's children drain, and
 // announce the parent's failure the way its own scheduler tick would:
 // a critical parent through sink (the per-monitor notifier), any other
 // through the dispatcher for its own channel. Either way the parent
@@ -166,6 +166,12 @@ func makeOnDemandParentProbe(
 			return
 		}
 
+		before, err := repo.GetMonitor(ctx, parentSlug)
+		if err != nil {
+			log.Warn("on-demand probe: get monitor", "parent", parentSlug, "error", err)
+			return
+		}
+
 		probeCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		res := pl.Prober.Probe(probeCtx)
@@ -173,38 +179,20 @@ func makeOnDemandParentProbe(
 			return // up, or probe timed out inconclusively
 		}
 
-		row, err := repo.GetMonitor(ctx, parentSlug)
-		if err != nil {
-			log.Warn("on-demand probe: get monitor", "parent", parentSlug, "error", err)
-			return
-		}
-		// Mirror scheduler.Tick's resume-from-paused logic so a parent
-		// that was temporary-paused (because IT had a dependsOn parent
-		// down) gets the right prev-status.
-		prev := row.State()
-		if row.Status == alert.StatusTemporaryPaused {
-			if row.OpenedAt != nil {
-				prev.Status = alert.StatusDown
-			} else {
-				prev.Status = alert.StatusUp
-			}
-		}
-
 		at := now()
-		check := alert.Check{
+		row, event, err := commitExtraFailure(ctx, repo, parentSlug, before, alert.Check{
 			Outcome:          alert.OutcomeFail,
 			At:               at,
 			StatusCode:       res.Code,
 			Error:            res.Error,
 			ReminderInterval: pl.ReminderInterval,
+		})
+		if err != nil {
+			log.Warn("on-demand probe: commit check", "parent", parentSlug, "error", err)
+			return
 		}
-		next, event := alert.Apply(prev, check)
 
-		if event != nil && event.Type == alert.EventOpen {
-			if err := repo.ApplyCheck(ctx, parentSlug, next, at, res.Code, res.Error, event); err != nil {
-				log.Warn("on-demand probe: apply check", "parent", parentSlug, "error", err)
-				return
-			}
+		if event != nil {
 			// Push-propagation drains the children from the dispatcher's pool.
 			if push != nil {
 				push(ctx, parentSlug, at)
@@ -239,7 +227,7 @@ func makeOnDemandParentProbe(
 		// Parent already known-down (no fresh EventOpen). Push-propagation
 		// may not have fired from its own tick yet — fire it now so the
 		// children get drained.
-		if push != nil {
+		if row.Status == alert.StatusDown && !row.Archived && push != nil {
 			push(ctx, parentSlug, at)
 		}
 	}
@@ -249,16 +237,15 @@ func makeOnDemandParentProbe(
 // evaluator invokes for an isolated DNS failure that did NOT trip
 // degraded mode (ADR-0008). Such a failure was held provisional by the
 // scheduler (no alert.Apply, no dispatch); committing re-probes the
-// monitor and, if still failing, drives alert.Apply + persists the
-// event, then routes it through the normal path (critical → per-monitor
-// notifier; non-critical → dispatcher) so it pages ~W late as a normal
-// EventOpen. A monitor that recovered in the meantime (probe now
-// succeeds) simply commits nothing.
+// monitor and, if still failing, commits an EventOpen through
+// commitExtraFailure, then routes it through the normal path (critical →
+// per-monitor notifier; non-critical → dispatcher) so it pages ~W late
+// as a normal EventOpen. A monitor that recovered in the meantime (probe
+// now succeeds) simply commits nothing.
 //
-// This mirrors makeOnDemandParentProbe's re-probe-and-apply shape but
-// without push-propagation — an isolated leaf failure has no children to
-// drain. Errors are logged best-effort; a failure here must never crash
-// the evaluator goroutine.
+// This mirrors makeOnDemandParentProbe's re-probe-and-commit shape.
+// Errors are logged best-effort; a failure here must never crash the
+// evaluator goroutine.
 func makeSelfHealthCommit(
 	repo *store.Repo,
 	mgr *coalesce.Manager,
@@ -282,36 +269,27 @@ func makeSelfHealthCommit(
 			return
 		}
 
+		before, err := repo.GetMonitor(ctx, slug)
+		if err != nil {
+			log.Warn("self-health commit: get monitor", "slug", slug, "error", err)
+			return
+		}
+
 		res := pl.Prober.Probe(ctx)
 		if ctx.Err() != nil || res.Error == "" {
 			return // recovered or cancelled — commit nothing
 		}
 
-		row, err := repo.GetMonitor(ctx, slug)
-		if err != nil {
-			log.Warn("self-health commit: get monitor", "slug", slug, "error", err)
-			return
-		}
-		prev := row.State()
-		if row.Status == alert.StatusTemporaryPaused {
-			if row.OpenedAt != nil {
-				prev.Status = alert.StatusDown
-			} else {
-				prev.Status = alert.StatusUp
-			}
-		}
-
 		at := now()
-		check := alert.Check{
+		row, event, err := commitExtraFailure(ctx, repo, slug, before, alert.Check{
 			Outcome:          alert.OutcomeFail,
 			At:               at,
 			StatusCode:       res.Code,
 			Error:            res.Error,
 			ReminderInterval: pl.ReminderInterval,
-		}
-		next, event := alert.Apply(prev, check)
-		if err := repo.ApplyCheck(ctx, slug, next, at, res.Code, res.Error, event); err != nil {
-			log.Warn("self-health commit: apply check", "slug", slug, "error", err)
+		})
+		if err != nil {
+			log.Warn("self-health commit: commit check", "slug", slug, "error", err)
 			return
 		}
 		if event == nil || pl.ChannelSlug == "" {
@@ -344,10 +322,45 @@ func makeSelfHealthCommit(
 		}
 		// Push-propagation: a committed EventOpen may have children to
 		// pause, same as a normal tick's EventOpen.
-		if event.Type == alert.EventOpen && push != nil {
+		if push != nil {
 			push(ctx, slug, at)
 		}
 	}
+}
+
+// commitExtraFailure records a failure found by a writer other than the
+// monitor's own scheduler tick: the dispatcher's on-demand parent probe
+// or the self-health commit. Such a writer only ever opens an incident,
+// so it commits only while the row, read under its lock, is up, not
+// archived, and has had no check committed since before was read ahead
+// of the probe. A monitor already down keeps its incident (no second
+// Open), a paused one stays silent behind its parent, and a newer check
+// supersedes this older result. event is the committed EventOpen, nil
+// when nothing was written; row is the snapshot read before the write.
+func commitExtraFailure(
+	ctx context.Context,
+	repo *store.Repo,
+	slug string,
+	before store.MonitorRow,
+	check alert.Check,
+) (row store.MonitorRow, event *alert.Event, err error) {
+	row, _, err = repo.CommitCheck(ctx, slug, func(row store.MonitorRow) (store.CheckCommit, bool) {
+		if row.Archived || row.Status != alert.StatusUp || !sameTime(row.LastCheckedAt, before.LastCheckedAt) {
+			return store.CheckCommit{}, false
+		}
+		next, ev := alert.Apply(row.State(), check)
+		event = ev
+		return store.CheckCommit{Next: next, At: check.At, StatusCode: check.StatusCode, Error: check.Error, Event: ev}, true
+	})
+	return row, event, err
+}
+
+// sameTime reports whether two optional timestamps are equal.
+func sameTime(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Equal(*b)
 }
 
 // makePushPropagation builds the parent-EventOpen → reverse-deps hook

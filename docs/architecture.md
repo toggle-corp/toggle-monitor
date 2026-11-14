@@ -103,18 +103,22 @@ testable in isolation.
    probe runs, no alert event lands. Done.
 3. Otherwise the scheduler runs `httpcheck.Check`. In-cycle retries
    are bounded by `retries × (timeout + retryBackoff) < interval`.
-4. The current `MonitorRow` is loaded from the store. Its embedded
-   `alert.State` (uptime) and `alert.SSLState` (SSL) feed two pure
-   state-machine calls:
+4. `store.CommitCheck` locks the `MonitorRow` (`SELECT … FOR UPDATE`)
+   and reads it after the probe, so the result applies to the latest
+   committed state even if the dispatcher's on-demand probe or the
+   self-health commit opened an incident while the probe was out
+   (ADR-0019). Its embedded `alert.State` (uptime) and
+   `alert.SSLState` (SSL) feed two pure state-machine calls:
 
    ```
    nextState, event       = alert.Apply(prev.State(),    Check{outcome, at, code, error, reminderInterval})
    nextSSL,   sslEvent    = alert.ApplySSL(prev.SSL(),   SSLCheck{at, expiresAt, isHTTPS, thresholds...})
    ```
 
-5. `store.ApplyCheck` (and `store.ApplySSLCheck`) update the
-   `monitors` row and append to `alert_events` in a single
-   transaction. Thread refs are cleared on the resolve transitions.
+5. The uptime result is written in the same transaction that holds
+   the lock; `store.ApplySSLCheck` writes the SSL side. Each updates
+   the `monitors` row and appends to `alert_events` atomically.
+   Thread refs are cleared on the resolve transitions.
 6. If an event was emitted, the scheduler's `EventSink` (wired to
    `slack.Notifier.Notify`) dispatches the appropriate Slack call:
    - `EventOpen` → `chat.postMessage` (parent), persist the
