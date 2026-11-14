@@ -126,6 +126,11 @@ func TestClient_PostMessage_sendsCorrectBody(t *testing.T) {
 	if r.Body["channel"] != "C0123ABCD" {
 		t.Errorf("channel: got %v", r.Body["channel"])
 	}
+	for _, k := range []string{"unfurl_links", "unfurl_media"} {
+		if v, ok := r.Body[k]; !ok || v != false {
+			t.Errorf("%s: got %v (present=%v), want false", k, v, ok)
+		}
+	}
 }
 
 func TestClient_PostMessage_sendsThreadReply(t *testing.T) {

@@ -135,11 +135,20 @@ type PostMessageResult struct {
 	Error   string `json:"error"`
 }
 
+// postMessageBody is the wire body of chat.postMessage. Link and media
+// previews are always off: alert messages carry monitor URLs whose
+// previews would bury the alert itself.
+type postMessageBody struct {
+	PostMessageInput
+	UnfurlLinks bool `json:"unfurl_links"`
+	UnfurlMedia bool `json:"unfurl_media"`
+}
+
 // PostMessage calls slack.chat.postMessage. If ThreadTS is set, the
 // message is posted as a thread reply; otherwise it's a new parent.
 func (c *Client) PostMessage(ctx context.Context, token secret.SecretString, in PostMessageInput) (PostMessageResult, error) {
 	var out PostMessageResult
-	if err := c.do(ctx, "chat.postMessage", token, in, &out); err != nil {
+	if err := c.do(ctx, "chat.postMessage", token, postMessageBody{PostMessageInput: in}, &out); err != nil {
 		return PostMessageResult{}, err
 	}
 	if !out.OK {
