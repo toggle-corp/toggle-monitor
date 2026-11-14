@@ -1045,7 +1045,8 @@ func (r *Repo) SetUptimeThread(ctx context.Context, slug, channel, ts string) er
 }
 
 // MarkUptimeOpenFailed records that the monitor's uptime parent message
-// was sent to Slack and the post failed. Only a monitor in an open
+// was sent to Slack and the post failed, or that a delivered parent's
+// thread ref could not be stored. Only a monitor in an open
 // incident is marked: an Open whose post outlived the incident has no
 // recovery left to report. Called by the notifier.
 func (r *Repo) MarkUptimeOpenFailed(ctx context.Context, slug string) error {

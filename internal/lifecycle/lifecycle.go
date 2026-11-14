@@ -389,7 +389,8 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		// signature. Omitting it silently discards all routine alerts
 		// (a past regression); the SinkWired guard below makes that
 		// omission fatal at boot rather than silent in production.
-		Sink: coalesce.Sink(buildSink(notifier)),
+		Sink:         coalesce.Sink(buildSink(notifier)),
+		ParentPosted: notifier.UptimeParentPosted,
 		Config: group.Config{
 			GroupInterval:  opts.Config.Slack.Coalesce.EffectiveGroupInterval(),
 			RepeatInterval: opts.Config.Slack.Coalesce.EffectiveRepeatInterval(),

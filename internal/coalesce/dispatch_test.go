@@ -1550,3 +1550,38 @@ func TestDispatch_resolveOfFlushedOpen_withoutThreadRef_goesToNotifier(t *testin
 		t.Errorf("want no grouped recovery, got %d posts", fp.posts)
 	}
 }
+
+// TestDispatch_resolveOfPostedParent_withoutStoredRef_editsIt: the DOWN
+// went out but its thread ref could not be stored, so the row carries
+// the failed-delivery mark and no ts, the same as an Open whose post
+// failed. The notifier still holds the ref. Recoveries of such monitors
+// go to it, which edits each DOWN, instead of joining the grouped
+// recovery message and leaving the DOWNs standing.
+func TestDispatch_resolveOfPostedParent_withoutStoredRef_editsIt(t *testing.T) {
+	clock := base
+	m, _, fp, sink := newDispatchManager(t, &clock, 5, 5*time.Minute)
+	ctx := context.Background()
+	opened := clock
+	m.parentPosted = func(slug string, openedAt time.Time) bool {
+		return (slug == "a" || slug == "b") && openedAt.Equal(opened)
+	}
+	pageIndividually(t, m, &clock, "ops", "a", "b", "c")
+	sink.calls = nil
+
+	clock = clock.Add(10 * time.Minute)
+	for _, slug := range []string{"a", "b", "c"} {
+		m.Route(ctx, "ops", orphanResolveEntry(slug, opened, clock))
+	}
+	if got := sink.countByType(alert.EventResolve); got != 2 {
+		t.Fatalf("want a's and b's resolves handed to the notifier at once, got %+v", sink.calls)
+	}
+
+	clock = clock.Add(5 * time.Minute)
+	m.evaluateAll(ctx)
+	if fp.posts != 0 {
+		t.Errorf("want no grouped recovery, got %d posts", fp.posts)
+	}
+	if got := sink.countByType(alert.EventResolve); got != 3 || sink.calls[2].slug != "c" {
+		t.Errorf("want c's standalone resolve after the window, got %+v", sink.calls)
+	}
+}

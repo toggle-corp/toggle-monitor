@@ -76,6 +76,13 @@ type liveGroup struct {
 // raw pool contents.
 type OnDemandParentProbe func(ctx context.Context, parentSlug string)
 
+// ParentPosted reports whether the per-monitor sink posted an uptime
+// parent for the monitor's incident that opened at openedAt and still
+// holds its thread ref. The failed-delivery mark also covers a parent
+// that was posted but whose thread ref could not be stored; only the
+// sink can still edit that one.
+type ParentPosted func(slug string, openedAt time.Time) bool
+
 // Manager owns the live groups, the per-channel dispatcher state, and
 // the central evaluator. Under ADR-0004 the dispatcher decides
 // individual-vs-group routing per channel; the legacy "always coalesce"
@@ -85,6 +92,7 @@ type Manager struct {
 	poster         Poster
 	sink           Sink // per-monitor individual notifier; see dispatch.go
 	parentProbe    OnDemandParentProbe
+	parentPosted   ParentPosted
 	cfg            group.Config
 	pendingWait    time.Duration
 	burstThreshold int
@@ -105,6 +113,7 @@ type Options struct {
 	Poster              Poster
 	Sink                Sink                // per-monitor individual notifier
 	OnDemandParentProbe OnDemandParentProbe // hot-parent probe at pendingWait expiry
+	ParentPosted        ParentPosted        // sink's record of posted parents; nil → none
 	Config              group.Config        // group state-machine intervals
 	PendingWait         time.Duration       // dispatcher pending window; <=0 → 30s
 	BurstThreshold      int                 // promote at-or-above this many monitors down in BurstWindow; 0 disables group-mode
@@ -154,6 +163,7 @@ func New(opts Options) *Manager {
 		poster:         opts.Poster,
 		sink:           opts.Sink,
 		parentProbe:    opts.OnDemandParentProbe,
+		parentPosted:   opts.ParentPosted,
 		cfg:            opts.Config,
 		pendingWait:    pw,
 		burstThreshold: opts.BurstThreshold,

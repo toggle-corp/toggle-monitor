@@ -87,8 +87,13 @@ was owed. In an estate where every monitor `dependsOn` one root, that
 was every child.
 
 - The notifier sets `monitors.uptime_open_failed_at` when an uptime
-  parent post fails (Open, or a reminder's fresh parent). Storing a
-  thread ts and resolving clear it.
+  parent post fails (Open, or a reminder's fresh parent), or when a
+  delivered parent's thread ts still cannot be stored after a short
+  retry. Storing a thread ts and resolving clear it.
+- A recovery with the mark whose parent this process did post, its ts
+  only held in the notifier's delivery record (ADR-0018), goes to the
+  notifier, which edits that parent. The dispatcher asks the notifier
+  before it pools a marked recovery as an orphan.
 - A recovery with no ts **and** the mark is an orphan, as above. With no
   ts and no mark, nobody was paged: the dispatcher drops it (no pool, no
   sink) and `Notifier.Notify` posts nothing for it, which also covers

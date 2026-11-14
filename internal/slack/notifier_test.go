@@ -3,6 +3,7 @@ package slack_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -19,13 +20,34 @@ import (
 type fakeStore struct {
 	children map[string][]string
 
+	// setUptimeFails / setSSLFails fail that many leading calls; a
+	// negative value fails every call.
+	setUptimeFails int
+	setSSLFails    int
+
 	setUptimeCalls  int
 	setSSLCalls     int
 	openFailedMarks []string
 }
 
+var errStoreDown = errors.New("store unavailable")
+
+// failing consumes one of the leading failures a counter allows.
+func failing(left *int) bool {
+	if *left == 0 {
+		return false
+	}
+	if *left > 0 {
+		*left--
+	}
+	return true
+}
+
 func (f *fakeStore) SetUptimeThread(_ context.Context, _, _, _ string) error {
 	f.setUptimeCalls++
+	if failing(&f.setUptimeFails) {
+		return errStoreDown
+	}
 	return nil
 }
 func (f *fakeStore) MarkUptimeOpenFailed(_ context.Context, slug string) error {
@@ -34,6 +56,9 @@ func (f *fakeStore) MarkUptimeOpenFailed(_ context.Context, slug string) error {
 }
 func (f *fakeStore) SetSSLThread(_ context.Context, _, _, _ string) error {
 	f.setSSLCalls++
+	if failing(&f.setSSLFails) {
+		return errStoreDown
+	}
 	return nil
 }
 func (f *fakeStore) ListChildrenOf(_ context.Context, slug string) ([]string, error) {

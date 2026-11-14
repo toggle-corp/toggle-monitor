@@ -134,6 +134,20 @@ func (n *Notifier) delivery(slug string) *monitorDelivery {
 	return d
 }
 
+// UptimeParentPosted reports whether this process posted an uptime
+// parent for the monitor's incident that opened at openedAt and holds
+// its thread ref. The failed-delivery mark covers both a failed post
+// and a delivered parent whose ref could not be stored; the dispatcher
+// asks this to tell them apart, and sends the second kind's recovery
+// here, where the parent gets its edit. It waits for a delivery of the
+// monitor still in flight.
+func (n *Notifier) UptimeParentPosted(slug string, openedAt time.Time) bool {
+	d := n.delivery(slug)
+	d.Lock()
+	defer d.Unlock()
+	return d.parent.sameIncident(openedAt) && d.parent.ts != ""
+}
+
 // NotifierOptions configures a Notifier.
 type NotifierOptions struct {
 	Client            *Client
@@ -217,8 +231,9 @@ type MonitorView struct {
 	UptimeThreadChannel string
 	UptimeThreadTS      string
 	// UptimeOpenFailed reports that this incident's parent message was
-	// sent and the post failed. With no UptimeThreadTS and no mark, no
-	// message about the incident was ever attempted.
+	// sent and the post failed, or that a delivered parent's thread ref
+	// could not be stored. With no UptimeThreadTS and no mark, no message
+	// about the incident was ever attempted.
 	UptimeOpenFailed bool
 
 	// SSL-side counterparts.
@@ -331,13 +346,52 @@ func (n *Notifier) notifyOpen(ctx context.Context, ch ChannelInfo, mentions []st
 		return err
 	}
 	*rec = uptimeParent{incident: incidentStart(m, ev), channel: res.Channel, ts: res.TS}
-	if err := n.store.SetUptimeThread(ctx, m.Slug, res.Channel, res.TS); err != nil {
-		n.log.Warn("persist uptime thread ref", "monitor", m.Slug, "error", err)
-		// don't return: the Slack message went out; we just won't be
-		// able to update it later. The reminder fresh-parent fallback
-		// will synthesize a replacement on the next tick.
-	}
+	n.storeUptimeThread(ctx, m.Slug, res.Channel, res.TS)
 	return nil
+}
+
+// persistAttempts and persistBackoff bound the retry of a thread-ref
+// write after a delivered parent post: three attempts, 100ms then 200ms
+// apart.
+const (
+	persistAttempts = 3
+	persistBackoff  = 100 * time.Millisecond
+)
+
+// persistThreadRef runs write, retrying a failure briefly. A ref lost
+// here leaves the parent with nothing on file that can find it again.
+func persistThreadRef(ctx context.Context, write func(context.Context) error) error {
+	delay := persistBackoff
+	for attempt := 1; ; attempt++ {
+		err := write(ctx)
+		if err == nil || attempt == persistAttempts {
+			return err
+		}
+		t := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return err
+		case <-t.C:
+		}
+		delay *= 2
+	}
+}
+
+// storeUptimeThread persists a delivered uptime parent's thread ref.
+// When the write keeps failing, the row is marked the way a failed post
+// marks it: the recovery then posts the late-notice resolve rather than
+// staying silent while the DOWN stands. This process still edits the
+// parent, from the monitor's delivery record.
+func (n *Notifier) storeUptimeThread(ctx context.Context, slug, channel, ts string) {
+	err := persistThreadRef(ctx, func(ctx context.Context) error {
+		return n.store.SetUptimeThread(ctx, slug, channel, ts)
+	})
+	if err == nil {
+		return
+	}
+	n.log.Warn("persist uptime thread ref", "monitor", slug, "error", err)
+	n.markOpenFailed(ctx, slug)
 }
 
 func (n *Notifier) notifyReminder(ctx context.Context, ch ChannelInfo, mentions []string, m MonitorView, ev *alert.Event, rec *uptimeParent) error {
@@ -403,16 +457,13 @@ func (n *Notifier) postFreshUptimeParent(ctx context.Context, ch ChannelInfo, me
 	if m.UptimeOpenFailed {
 		n.observeFreshParent("uptime")
 	}
-	if err := n.store.SetUptimeThread(ctx, m.Slug, res.Channel, res.TS); err != nil {
-		// Best-effort: the message went out. Future reminders will
-		// re-synthesize on the next tick if persistence still fails.
-		n.log.Warn("persist fresh uptime thread ref", "monitor", m.Slug, "error", err)
-	}
+	n.storeUptimeThread(ctx, m.Slug, res.Channel, res.TS)
 	return nil
 }
 
 // markOpenFailed records that the monitor's uptime parent post failed,
-// so its eventual recovery reports the incident nobody was paged for.
+// or that the thread ref of a delivered one could not be stored, so its
+// eventual recovery reports the incident instead of posting nothing.
 // Best-effort: an unrecorded failure leaves that recovery silent. A
 // cancelled context (shutdown mid-post) records nothing.
 func (n *Notifier) markOpenFailed(ctx context.Context, slug string) {
@@ -540,10 +591,20 @@ func (n *Notifier) postFreshSSLParent(ctx context.Context, ch ChannelInfo, in SS
 		return err
 	}
 	n.observeFreshParent("ssl")
-	if err := n.store.SetSSLThread(ctx, slug, res.Channel, res.TS); err != nil {
-		n.log.Warn("persist fresh ssl thread ref", "monitor", slug, "error", err)
-	}
+	n.storeSSLThread(ctx, slug, res.Channel, res.TS)
 	return nil
+}
+
+// storeSSLThread persists a delivered SSL parent's thread ref. Unlike
+// the uptime side it needs no mark when the write keeps failing: an SSL
+// recovery with no ref on file already posts a standalone resolve.
+func (n *Notifier) storeSSLThread(ctx context.Context, slug, channel, ts string) {
+	err := persistThreadRef(ctx, func(ctx context.Context) error {
+		return n.store.SetSSLThread(ctx, slug, channel, ts)
+	})
+	if err != nil {
+		n.log.Warn("persist ssl thread ref", "monitor", slug, "error", err)
+	}
 }
 
 // FormatDependentsNote renders the "<prefix>: `a`, `b`, …and N more"
@@ -619,9 +680,7 @@ func (n *Notifier) notifySSL(ctx context.Context, ch ChannelInfo, mentions []str
 		if err != nil {
 			return err
 		}
-		if err := n.store.SetSSLThread(ctx, m.Slug, res.Channel, res.TS); err != nil {
-			n.log.Warn("persist ssl thread ref", "monitor", m.Slug, "error", err)
-		}
+		n.storeSSLThread(ctx, m.Slug, res.Channel, res.TS)
 		return nil
 
 	case alert.EventSSLReminder:

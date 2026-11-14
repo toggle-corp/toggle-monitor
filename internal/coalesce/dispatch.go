@@ -182,6 +182,16 @@ func hasUptimeThread(row store.MonitorRow) bool {
 	return row.UptimeThreadTS != nil && *row.UptimeThreadTS != ""
 }
 
+// postedParent reports whether a recovery marked as a failed delivery
+// belongs to a parent the per-monitor sink did post and still holds the
+// thread ref of. Caller must NOT hold m.mu.
+func (m *Manager) postedParent(e Entry) bool {
+	if m.parentPosted == nil || hasUptimeThread(e.Row) || !openDeliveryFailed(e.Row) || e.Row.OpenedAt == nil {
+		return false
+	}
+	return m.parentPosted(e.Member.Slug, *e.Row.OpenedAt)
+}
+
 // openDeliveryFailed reports whether the monitor's Open was sent to
 // Slack and the post failed. Without a thread ts and without this mark,
 // no Open was ever attempted.
@@ -332,8 +342,12 @@ func (m *Manager) routeOpen(ctx context.Context, channel string, e Entry) {
 // individual-mode, the recovery flushes through the per-monitor sink.
 // Every recovery bound for the sink whose Open failed to reach Slack
 // joins the channel's orphan pool instead, and one whose Open was never
-// attempted posts nothing.
+// attempted posts nothing. A recovery whose parent the sink posted but
+// could not store the thread ref of goes to the sink, which edits it.
 func (m *Manager) routeResolve(ctx context.Context, channel string, e Entry) {
+	// Asked before m.mu is taken: the sink's record waits for a
+	// delivery of this monitor still in flight.
+	posted := m.postedParent(e)
 	m.mu.Lock()
 	cs := m.channelStateFor(channel)
 	owned := cs.ownedByIndividual(e.Member.Slug)
@@ -347,13 +361,13 @@ func (m *Manager) routeResolve(ctx context.Context, channel string, e Entry) {
 			m.flushSink(ctx, channel, e)
 			return
 		}
-		m.resolveIndividually(ctx, channel, cs, e)
+		m.resolveIndividually(ctx, channel, cs, e, posted)
 		return
 	}
 	switch cs.mode {
 	case modeGroup:
 		if !m.digestOwns(channel, e.Member.Slug) {
-			m.resolveIndividually(ctx, channel, cs, e)
+			m.resolveIndividually(ctx, channel, cs, e, posted)
 			return
 		}
 		m.groups[channel].g.MarkUp(e.Member.Slug, e.Event.At)
@@ -363,7 +377,7 @@ func (m *Manager) routeResolve(ctx context.Context, channel string, e Entry) {
 			// Not part of this burst: a monitor first announced by a
 			// reminder, or one whose ownership a restart forgot. Its
 			// own parent, if it has one, gets the resolve edit.
-			m.resolveIndividually(ctx, channel, cs, e)
+			m.resolveIndividually(ctx, channel, cs, e, posted)
 			return
 		}
 		// A failure that recovered before its pool ever flushed —
@@ -381,16 +395,16 @@ func (m *Manager) routeResolve(ctx context.Context, channel string, e Entry) {
 	case modeIndividual:
 		// Recovery of a previously individually-notified monitor —
 		// flush through the sink.
-		m.resolveIndividually(ctx, channel, cs, e)
+		m.resolveIndividually(ctx, channel, cs, e, posted)
 	}
 }
 
 // resolveIndividually sends a recovery to the per-monitor sink, to the
 // channel's orphan pool when its Open failed to reach Slack, or nowhere
-// when no Open was ever attempted. Caller holds m.mu; this method
-// releases it.
-func (m *Manager) resolveIndividually(ctx context.Context, channel string, cs *channelState, e Entry) {
-	if !hasUptimeThread(e.Row) {
+// when no Open was ever attempted. posted is postedParent's answer for
+// e. Caller holds m.mu; this method releases it.
+func (m *Manager) resolveIndividually(ctx context.Context, channel string, cs *channelState, e Entry, posted bool) {
+	if !hasUptimeThread(e.Row) && !posted {
 		if !openDeliveryFailed(e.Row) {
 			m.mu.Unlock()
 			m.log.Info("resolve of a never-announced incident: posting nothing",

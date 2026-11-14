@@ -426,7 +426,10 @@ The DB transition is committed; Slack delivery is retried (default
 recovers later via the reminder cadence:
 
 - A failed uptime `Open` post sets `monitors.uptime_open_failed_at`;
-  storing a parent ts or resolving clears it.
+  storing a parent ts or resolving clears it. A delivered parent whose
+  thread ts cannot be stored (the write is retried twice, 100ms then
+  200ms apart) sets the mark too, so its recovery posts the late-notice
+  resolve instead of nothing. The SSL thread ts gets the same retry.
 - For a missed `Open`, the next `Reminder` tick posts a **fresh
   Down parent** with the banner `⚠️ Initial notification delivery
   failed. This alert is current.`, persists its ts, and subsequent
