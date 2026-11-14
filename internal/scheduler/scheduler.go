@@ -383,20 +383,8 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 	// dependsOn gate: any parent down → skip the probe and mark
 	// the child temporary-paused. No HTTP, no DB write to last_*,
 	// no alert event.
-	if len(p.DependsOn) > 0 {
-		if s.anyParentDown(ctx, p.Slug, p.DependsOn) {
-			if s.metrics != nil {
-				s.metrics.ObserveCheck(p.Slug, "paused", 0)
-			}
-			// dependsOn push-propagation: pull this child out of its
-			// channel digest (no-op if it isn't a member). Pause beats
-			// critical — even a critical monitor stays silent while its
-			// parent is down, so this fires regardless of p.Critical.
-			if s.groupSink != nil && p.ChannelSlug != "" {
-				s.groupSink.Pause(ctx, p.ChannelSlug, p.Slug, s.now())
-			}
-			return s.repo.MarkTemporaryPaused(ctx, p.Slug)
-		}
+	if len(p.DependsOn) > 0 && s.anyParentDown(ctx, p.Slug, p.DependsOn) {
+		return s.pause(ctx, p, 0)
 	}
 
 	var res probe.Result
@@ -418,6 +406,15 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 		if res.Error == "" {
 			break
 		}
+	}
+
+	// A parent can go down while this child's probe and its retries are
+	// in flight: the gate above saw it up, but the failure the probe
+	// brings back is the parent's outage. Re-check before committing and
+	// end the tick exactly as a paused one, so the child neither opens an
+	// incident nor reaches Slack.
+	if res.Error != "" && len(p.DependsOn) > 0 && s.anyParentDown(ctx, p.Slug, p.DependsOn) {
+		return s.pause(ctx, p, time.Since(tickStart))
 	}
 
 	if s.metrics != nil {
@@ -585,6 +582,21 @@ func (s *Scheduler) Tick(ctx context.Context, p Plan) error {
 		}
 	}
 	return nil
+}
+
+// pause ends a tick for a child whose dependsOn parent is down: no
+// incident, no alert event, the child marked temporary-paused and pulled
+// out of its channel's dispatcher state (no-op if it holds none). Pause
+// beats critical — even a critical monitor stays silent while its parent
+// is down, so this applies regardless of p.Critical.
+func (s *Scheduler) pause(ctx context.Context, p Plan, took time.Duration) error {
+	if s.metrics != nil {
+		s.metrics.ObserveCheck(p.Slug, "paused", took)
+	}
+	if s.groupSink != nil && p.ChannelSlug != "" {
+		s.groupSink.Pause(ctx, p.ChannelSlug, p.Slug, s.now())
+	}
+	return s.repo.MarkTemporaryPaused(ctx, p.Slug)
 }
 
 // anyParentDown reports whether any of the listed monitor slugs is

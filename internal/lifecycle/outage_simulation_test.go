@@ -29,6 +29,7 @@ type outageSim struct {
 	dns      *fakeDNS
 	slack    *fakeSlackRecorder
 	upstream *httptest.Server
+	rootSrv  *httptest.Server
 	internal *httptest.Server
 	slackSrv *httptest.Server
 	dbCfg    db.Config
@@ -41,8 +42,13 @@ type outageSim struct {
 	// shape of a provider/region outage, and of any egress loss where
 	// DNS still answers from cache.
 	targetDown atomic.Bool
+	// rootDown takes the dependsOn root alone offline. The root has its
+	// own upstream so its outage can start and end apart from its
+	// children's.
+	rootDown atomic.Bool
 
 	upstreamPort string
+	rootPort     string
 	internalPort string
 	slackPort    string
 }
@@ -77,6 +83,11 @@ func newOutageSim(t *testing.T) *outageSim {
 	)))
 	t.Cleanup(upstream.Close)
 
+	rootSrv := httptest.NewServer(gated(&sim.rootDown, http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) },
+	)))
+	t.Cleanup(rootSrv.Close)
+
 	// The in-cluster upstream is not gated: an egress outage leaves
 	// cluster-local services answering normally.
 	internalSrv := httptest.NewServer(http.HandlerFunc(
@@ -107,10 +118,12 @@ func newOutageSim(t *testing.T) *outageSim {
 	sim.dns = startFakeDNS(t)
 	sim.slack = recorder
 	sim.upstream = upstream
+	sim.rootSrv = rootSrv
 	sim.internal = internalSrv
 	sim.slackSrv = slackSrv
 	sim.dbCfg = dbCfg
 	sim.upstreamPort = portOf(t, upstream.URL)
+	sim.rootPort = portOf(t, rootSrv.URL)
 	sim.internalPort = portOf(t, internalSrv.URL)
 	sim.slackPort = portOf(t, slackSrv.URL)
 	return sim
@@ -123,16 +136,31 @@ func newOutageSim(t *testing.T) *outageSim {
 func (s *outageSim) setOutage(down bool) {
 	s.netDown.Store(down)
 	s.targetDown.Store(down)
+	s.rootDown.Store(down)
 	s.dns.setUp(!down)
 	s.upstream.CloseClientConnections()
+	s.rootSrv.CloseClientConnections()
 	s.slackSrv.CloseClientConnections()
 }
 
 // setTargetsDown takes the monitored estate offline while leaving the
 // monitor's resolver and Slack egress intact.
 func (s *outageSim) setTargetsDown(down bool) {
+	s.setLeavesDown(down)
+	s.setRootDown(down)
+}
+
+// setLeavesDown takes every external target except the dependsOn root
+// offline.
+func (s *outageSim) setLeavesDown(down bool) {
 	s.targetDown.Store(down)
 	s.upstream.CloseClientConnections()
+}
+
+// setRootDown takes the dependsOn root alone offline.
+func (s *outageSim) setRootDown(down bool) {
+	s.rootDown.Store(down)
+	s.rootSrv.CloseClientConnections()
 }
 
 // setSlackDown takes Slack alone offline: its connections are torn down
@@ -370,6 +398,19 @@ type simConfig struct {
 	// critical `root` monitor. root and every child probe external
 	// targets, so setTargetsDown takes the whole tree down.
 	children int
+	// rootInterval and rootShape override the root monitor's interval
+	// and retry shape (YAML lines appended to its entry). An empty
+	// rootInterval keeps the slow root described in yaml.
+	rootInterval string
+	rootShape    string
+	// childShape is appended to every child's YAML entry (e.g. a retry
+	// shape).
+	childShape string
+	// childChannels posts each child to a channel of its own, the shape
+	// of an estate whose projects each have their own Slack channel. A
+	// child's pending pool then never holds a sibling, so the
+	// dispatcher's on-demand parent probe never fires for it.
+	childChannels bool
 }
 
 func (sc simConfig) withDefaults() simConfig {
@@ -394,7 +435,7 @@ func (s *outageSim) yaml(t *testing.T, sc simConfig) config.Config {
 	var mons strings.Builder
 	// extra is appended verbatim to the monitor's YAML; it overrides the
 	// retry shape when it sets retries / retryBackoff.
-	monitor := func(slug, host, port, interval, extra string) {
+	monitor := func(slug, host, port, interval, channel, extra string) {
 		retries := "\n    retries: 0\n    retryBackoff: 1s"
 		if strings.Contains(extra, "retries:") {
 			retries = ""
@@ -410,14 +451,14 @@ func (s *outageSim) yaml(t *testing.T, sc simConfig) config.Config {
     timeout: 300ms%s
     followRedirects: false
     reminderInterval: %s
-    slack: ops-alerts%s
-`, slug, slug, host, port, interval, retries, sc.reminderInterval, extra)
+    slack: %s%s
+`, slug, slug, host, port, interval, retries, sc.reminderInterval, channel, extra)
 	}
 	for i := 1; i <= sc.external; i++ {
-		monitor(fmt.Sprintf("ext-%d", i), fmt.Sprintf("svc%d.outage.test", i), s.upstreamPort, sc.interval, "")
+		monitor(fmt.Sprintf("ext-%d", i), fmt.Sprintf("svc%d.outage.test", i), s.upstreamPort, sc.interval, "ops-alerts", "")
 	}
 	for i := 1; i <= sc.internal; i++ {
-		monitor(fmt.Sprintf("int-%d", i), "127.0.0.1", s.internalPort, sc.interval, "")
+		monitor(fmt.Sprintf("int-%d", i), "127.0.0.1", s.internalPort, sc.interval, "ops-alerts", "")
 	}
 	if sc.children > 0 {
 		// root retries for longer than one child interval, so its own
@@ -425,11 +466,25 @@ func (s *outageSim) yaml(t *testing.T, sc simConfig) config.Config {
 		// pool has expired. That makes the dispatcher's on-demand parent
 		// probe the path that finds root down. Config validation wants
 		// the retry budget inside the interval, hence root's wider one.
-		monitor("root", "root.outage.test", s.upstreamPort, "20s",
-			"\n    critical: true\n    retries: 3\n    retryBackoff: 4s")
+		rootInterval, rootShape := "20s", "\n    retries: 3\n    retryBackoff: 4s"
+		if sc.rootInterval != "" {
+			rootInterval, rootShape = sc.rootInterval, sc.rootShape
+		}
+		monitor("root", "root.outage.test", s.rootPort, rootInterval, "ops-alerts", "\n    critical: true"+rootShape)
 		for i := 1; i <= sc.children; i++ {
+			channel := "ops-alerts"
+			if sc.childChannels {
+				channel = fmt.Sprintf("child-%d-alerts", i)
+			}
 			monitor(fmt.Sprintf("child-%d", i), fmt.Sprintf("child%d.outage.test", i), s.upstreamPort,
-				sc.interval, "\n    dependsOn: [root]")
+				sc.interval, channel, "\n    dependsOn: [root]"+sc.childShape)
+		}
+	}
+
+	channels := "\n    - { slug: ops-alerts, channelId: C0123ABCD, tokenEnv: TOGGLE_SLACK_TOKEN }"
+	if sc.childChannels {
+		for i := 1; i <= sc.children; i++ {
+			channels += fmt.Sprintf("\n    - { slug: child-%d-alerts, channelId: C0CHILD%02d, tokenEnv: TOGGLE_SLACK_TOKEN }", i, i)
 		}
 	}
 
@@ -465,8 +520,7 @@ ui:
 httpClient: { userAgent: "toggle-monitor/outage-sim" }
 slack:
   bodyMaxChars: 200
-  channels:
-    - { slug: ops-alerts, channelId: C0123ABCD, tokenEnv: TOGGLE_SLACK_TOKEN }
+  channels:%s
   coalesce:
     pendingWait: %s
     burstThreshold: %d%s
@@ -476,7 +530,7 @@ slack:
 monitors:%s
 `,
 		s.dbCfg.Host, s.dbCfg.Port, s.dbCfg.User, s.dbCfg.Name, s.dbCfg.SSLMode,
-		sc.pendingWait, sc.burstThreshold, burstWindow, selfHealth, mons.String(),
+		channels, sc.pendingWait, sc.burstThreshold, burstWindow, selfHealth, mons.String(),
 	)
 
 	cfg, err := config.Load([]byte(raw))
@@ -752,6 +806,70 @@ func TestOutageSimulation_dependsOnTreeAnnouncesOnlyTheRoot(t *testing.T) {
 	}
 	if other != 0 {
 		t.Errorf("channel got %d parent message(s) besides root's DOWN; want 0", other)
+	}
+	if up := sim.editedToUp(); up != 1 {
+		t.Errorf("root's DOWN parent edited to UP %d time(s); want 1", up)
+	}
+}
+
+// TestOutageSimulation_childProbesInFlightWhenRootGoesDown: the
+// children's targets fail first and their probes start retrying while
+// root is still up, so every child passes its dependsOn gate. root then
+// goes down and is announced before any child's retries run out. Each
+// child's failure is root's outage, so none may be announced — with
+// every child on its own channel, no sibling shares its pending pool and
+// the dispatcher's on-demand parent probe never steps in.
+func TestOutageSimulation_childProbesInFlightWhenRootGoesDown(t *testing.T) {
+	const children = 8
+	sim := newOutageSim(t)
+	cfg := sim.yaml(t, simConfig{
+		children:         children,
+		childChannels:    true,
+		interval:         "8s",
+		childShape:       "\n    retries: 2\n    retryBackoff: 3s",
+		rootInterval:     "1s",
+		pendingWait:      "2s",
+		burstThreshold:   5,
+		burstWindow:      "16s",
+		reminderInterval: "1h",
+	})
+	stop := sim.run(t, cfg)
+	defer stop()
+
+	time.Sleep(10 * time.Second)
+	if n := sim.parentPosts(); n != 0 {
+		sim.dump(t, "healthy")
+		t.Fatalf("healthy phase already posted %d parent message(s)", n)
+	}
+
+	// A child probing in the next 3s fails and retries for 6s; root,
+	// probing every second, is down and announced well before that.
+	t.Log("--- children DOWN, root still up ---")
+	sim.setLeavesDown(true)
+	time.Sleep(3 * time.Second)
+	t.Log("--- root DOWN ---")
+	sim.setRootDown(true)
+	time.Sleep(20 * time.Second)
+	sim.dump(t, "during outage")
+
+	t.Log("--- root + children UP ---")
+	sim.setTargetsDown(false)
+	time.Sleep(20 * time.Second)
+	sim.dump(t, "after recovery")
+
+	var rootDown, other int
+	for _, body := range sim.parentBodies() {
+		if strings.Contains(body, "*root is DOWN*") {
+			rootDown++
+		} else {
+			other++
+		}
+	}
+	if rootDown != 1 {
+		t.Errorf("channel got %d DOWN message(s) for root; want exactly 1", rootDown)
+	}
+	if other != 0 {
+		t.Errorf("RACE: %d parent message(s) besides root's DOWN; children failing with root must stay silent", other)
 	}
 	if up := sim.editedToUp(); up != 1 {
 		t.Errorf("root's DOWN parent edited to UP %d time(s); want 1", up)

@@ -231,7 +231,10 @@ Reminders fire when `now - LastReminderAt ≥ cadence`.
 Driven by the scheduler, not by `alert.Apply`. Any monitor whose
 `dependsOn` chain has at least one down parent enters
 `StatusTemporaryPaused`. The probe is skipped entirely (no HTTP,
-no SSL, no `alert_event` row, no `last_*` write). On resumption the
+no SSL, no `alert_event` row, no `last_*` write). The gate runs again
+after a failing probe: a parent that went down while the child's probe
+and its retries were in flight pauses the child the same way, so the
+parent's outage never opens an incident on it. On resumption the
 state machine treats the prior state as `up` so a failing first
 tick produces a clean `EventOpen` rather than a double transition.
 
