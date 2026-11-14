@@ -87,6 +87,10 @@ type MonitorRow struct {
 	ArchiveReason       *string
 	UptimeThreadChannel *string
 	UptimeThreadTS      *string
+	// UptimeOpenFailedAt is set while the current incident's uptime Open
+	// was sent to Slack and the post failed. Without it, a missing
+	// thread ts means no Open was ever attempted.
+	UptimeOpenFailedAt *time.Time
 
 	SSLStatus         *alert.SSLStatus
 	SSLExpiresAt      *time.Time
@@ -703,7 +707,7 @@ func (r *Repo) ApplyCheck(
 		msg = checkErr
 	}
 
-	// On resolve, also clear the thread refs.
+	// On resolve, also clear the thread refs and the open-failed mark.
 	clearThread := event != nil && event.Type == alert.EventResolve
 
 	if clearThread {
@@ -717,6 +721,7 @@ func (r *Repo) ApplyCheck(
 				last_error = $6,
 				uptime_thread_channel = NULL,
 				uptime_thread_ts = NULL,
+				uptime_open_failed_at = NULL,
 				updated_at = now()
 			WHERE slug = $7
 		`, string(next.Status), openedAt, lastReminderAt, at, sc, msg, slug)
@@ -1020,17 +1025,36 @@ func (r *Repo) SetSSLThread(ctx context.Context, slug, channel, ts string) error
 
 // SetUptimeThread persists the Slack thread ref for the currently-open
 // uptime incident on this monitor. Called by the notifier after
-// successfully posting the parent down message.
+// successfully posting the parent down message. A stored ref
+// supersedes any open-failed mark.
 func (r *Repo) SetUptimeThread(ctx context.Context, slug, channel, ts string) error {
 	_, err := r.pool.Exec(ctx, `
 		UPDATE monitors
 		SET uptime_thread_channel = $1,
 			uptime_thread_ts = $2,
+			uptime_open_failed_at = NULL,
 			updated_at = now()
 		WHERE slug = $3
 	`, channel, ts, slug)
 	if err != nil {
 		return fmt.Errorf("set uptime thread for %q: %w", slug, err)
+	}
+	return nil
+}
+
+// MarkUptimeOpenFailed records that the monitor's uptime parent message
+// was sent to Slack and the post failed. Only a monitor in an open
+// incident is marked: an Open whose post outlived the incident has no
+// recovery left to report. Called by the notifier.
+func (r *Repo) MarkUptimeOpenFailed(ctx context.Context, slug string) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE monitors
+		SET uptime_open_failed_at = now(),
+			updated_at = now()
+		WHERE slug = $1 AND opened_at IS NOT NULL
+	`, slug)
+	if err != nil {
+		return fmt.Errorf("mark uptime open failed for %q: %w", slug, err)
 	}
 	return nil
 }
@@ -1133,7 +1157,7 @@ const selectMonitor = `
 	SELECT slug, kind, friendly_name, url, host, port, tls_mode, source, depends_on, slack_channel_slug, tags,
 	       status, opened_at, last_reminder_at, last_checked_at, last_status_code, last_error,
 	       archived, archived_at, archive_reason,
-	       uptime_thread_channel, uptime_thread_ts,
+	       uptime_thread_channel, uptime_thread_ts, uptime_open_failed_at,
 	       ssl_status, ssl_expires_at, ssl_issuer, ssl_subject,
 	       ssl_opened_at, ssl_last_reminder_at,
 	       ssl_thread_channel, ssl_thread_ts
@@ -1153,7 +1177,7 @@ func scanMonitor(row rowScanner) (MonitorRow, error) {
 		&m.Slug, &kind, &m.FriendlyName, &m.URL, &host, &port, &tlsMode, &src, &m.DependsOn, &slackSlug, &m.Tags,
 		&status, &m.OpenedAt, &m.LastReminderAt, &m.LastCheckedAt, &m.LastStatusCode, &m.LastError,
 		&m.Archived, &m.ArchivedAt, &m.ArchiveReason,
-		&m.UptimeThreadChannel, &m.UptimeThreadTS,
+		&m.UptimeThreadChannel, &m.UptimeThreadTS, &m.UptimeOpenFailedAt,
 		&sslStatus, &m.SSLExpiresAt, &m.SSLIssuer, &m.SSLSubject,
 		&m.SSLOpenedAt, &m.SSLLastReminderAt,
 		&m.SSLThreadChannel, &m.SSLThreadTS,

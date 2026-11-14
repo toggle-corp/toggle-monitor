@@ -308,6 +308,21 @@ func (s *outageSim) downParents() int {
 	return n
 }
 
+// editedToUp counts the distinct parents that received a chat.update
+// rendering them as UP.
+func (s *outageSim) editedToUp() int {
+	s.slack.mu.Lock()
+	defer s.slack.mu.Unlock()
+	seen := map[string]struct{}{}
+	for _, u := range s.slack.updateMessages {
+		ts, _ := u["ts"].(string)
+		if strings.Contains(flatten(u["blocks"]), "is UP") {
+			seen[ts] = struct{}{}
+		}
+	}
+	return len(seen)
+}
+
 func (s *outageSim) updates() int {
 	s.slack.mu.Lock()
 	defer s.slack.mu.Unlock()
@@ -351,6 +366,10 @@ type simConfig struct {
 	burstWindow    string
 	// reminderInterval is the per-monitor still-down reminder cadence.
 	reminderInterval string
+	// children adds that many `child-N` monitors that dependsOn a
+	// critical `root` monitor. root and every child probe external
+	// targets, so setTargetsDown takes the whole tree down.
+	children int
 }
 
 func (sc simConfig) withDefaults() simConfig {
@@ -373,7 +392,13 @@ func (s *outageSim) yaml(t *testing.T, sc simConfig) config.Config {
 	t.Helper()
 	sc = sc.withDefaults()
 	var mons strings.Builder
-	monitor := func(slug, host, port string) {
+	// extra is appended verbatim to the monitor's YAML; it overrides the
+	// retry shape when it sets retries / retryBackoff.
+	monitor := func(slug, host, port, interval, extra string) {
+		retries := "\n    retries: 0\n    retryBackoff: 1s"
+		if strings.Contains(extra, "retries:") {
+			retries = ""
+		}
 		fmt.Fprintf(&mons, `
   - slug: %s
     friendlyName: %s
@@ -382,19 +407,30 @@ func (s *outageSim) yaml(t *testing.T, sc simConfig) config.Config {
     httpMethod: GET
     acceptedStatusCodes: [200]
     interval: %s
-    timeout: 300ms
-    retries: 0
-    retryBackoff: 1s
+    timeout: 300ms%s
     followRedirects: false
     reminderInterval: %s
-    slack: ops-alerts
-`, slug, slug, host, port, sc.interval, sc.reminderInterval)
+    slack: ops-alerts%s
+`, slug, slug, host, port, interval, retries, sc.reminderInterval, extra)
 	}
 	for i := 1; i <= sc.external; i++ {
-		monitor(fmt.Sprintf("ext-%d", i), fmt.Sprintf("svc%d.outage.test", i), s.upstreamPort)
+		monitor(fmt.Sprintf("ext-%d", i), fmt.Sprintf("svc%d.outage.test", i), s.upstreamPort, sc.interval, "")
 	}
 	for i := 1; i <= sc.internal; i++ {
-		monitor(fmt.Sprintf("int-%d", i), "127.0.0.1", s.internalPort)
+		monitor(fmt.Sprintf("int-%d", i), "127.0.0.1", s.internalPort, sc.interval, "")
+	}
+	if sc.children > 0 {
+		// root retries for longer than one child interval, so its own
+		// tick concludes "down" only after the children's first pending
+		// pool has expired. That makes the dispatcher's on-demand parent
+		// probe the path that finds root down. Config validation wants
+		// the retry budget inside the interval, hence root's wider one.
+		monitor("root", "root.outage.test", s.upstreamPort, "20s",
+			"\n    critical: true\n    retries: 3\n    retryBackoff: 4s")
+		for i := 1; i <= sc.children; i++ {
+			monitor(fmt.Sprintf("child-%d", i), fmt.Sprintf("child%d.outage.test", i), s.upstreamPort,
+				sc.interval, "\n    dependsOn: [root]")
+		}
 	}
 
 	burstWindow := ""
@@ -647,5 +683,77 @@ func TestOutageSimulation_orphanResolvesGroupIntoOneMessage(t *testing.T) {
 	}
 	if n := sim.parentPosts(); n != 1 {
 		t.Errorf("channel got %d parent message(s) for the outage; want 1", n)
+	}
+}
+
+// TestOutageSimulation_dependsOnTreeAnnouncesOnlyTheRoot covers an
+// estate where every monitor dependsOn one critical root, and
+// the cut takes the root and its children down together while Slack
+// keeps working. The children that fail before the root is known down
+// sit in the dispatcher's pending pool; the on-demand parent probe finds
+// the root down at pendingWait expiry and push-propagation pauses them
+// out of the pool. Nobody was paged about those children, so their
+// later recoveries must post nothing — and the root must be announced
+// exactly once and edited to UP when it recovers.
+//
+// Children probe several times per pendingWait-sized slice of their
+// interval so the first pending pool almost always holds two or more of
+// them, which is what makes root a hot parent.
+func TestOutageSimulation_dependsOnTreeAnnouncesOnlyTheRoot(t *testing.T) {
+	const children = 16
+	sim := newOutageSim(t)
+	cfg := sim.yaml(t, simConfig{
+		children:         children,
+		interval:         "6s",
+		pendingWait:      "2s",
+		burstThreshold:   5,
+		burstWindow:      "12s",
+		reminderInterval: "1h",
+	})
+	stop := sim.run(t, cfg)
+	defer stop()
+
+	time.Sleep(8 * time.Second)
+	if n := sim.parentPosts(); n != 0 {
+		sim.dump(t, "healthy")
+		t.Fatalf("healthy phase already posted %d parent message(s)", n)
+	}
+
+	t.Log("--- root + children DOWN (Slack up) ---")
+	sim.setTargetsDown(true)
+	time.Sleep(30 * time.Second)
+	sim.dump(t, "during outage")
+
+	// root resolves on its next tick (up to 20s away); each child then
+	// resolves on its own next tick.
+	t.Log("--- root + children UP ---")
+	sim.setTargetsDown(false)
+	time.Sleep(40 * time.Second)
+	sim.dump(t, "after recovery")
+
+	// root's DOWN lists the children it pauses, so a message is about
+	// root only by its title.
+	var rootDown, other, lateNotice int
+	for _, body := range sim.parentBodies() {
+		if strings.Contains(body, "Initial notification delivery failed") {
+			lateNotice++
+		}
+		if strings.Contains(body, "*root is DOWN*") {
+			rootDown++
+		} else {
+			other++
+		}
+	}
+	if lateNotice != 0 {
+		t.Errorf("FALSE BANNER: %d message(s) claim the initial notification failed; Slack was up throughout", lateNotice)
+	}
+	if rootDown != 1 {
+		t.Errorf("channel got %d DOWN message(s) for root; want exactly 1", rootDown)
+	}
+	if other != 0 {
+		t.Errorf("channel got %d parent message(s) besides root's DOWN; want 0", other)
+	}
+	if up := sim.editedToUp(); up != 1 {
+		t.Errorf("root's DOWN parent edited to UP %d time(s); want 1", up)
 	}
 }

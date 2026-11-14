@@ -175,6 +175,62 @@ func TestApplyCheck_fullUptimeLifecycle(t *testing.T) {
 	}
 }
 
+// TestUptimeOpenFailed_markAndClear covers the marker that tells a
+// recovery whose Open never reached Slack apart from one nobody was
+// paged for: it is set only during an open incident, and storing a
+// thread ref or resolving clears it.
+func TestUptimeOpenFailed_markAndClear(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+	spec := store.MonitorSpec{Slug: "api", FriendlyName: "API", URL: "https://api.example.test/health", Source: store.SourceStatic}
+	if err := repo.ReconcileMonitor(ctx, spec); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	marked := func(want bool, step string) {
+		t.Helper()
+		row, err := repo.GetMonitor(ctx, "api")
+		if err != nil {
+			t.Fatalf("%s: get monitor: %v", step, err)
+		}
+		if got := row.UptimeOpenFailedAt != nil; got != want {
+			t.Errorf("%s: UptimeOpenFailedAt set = %v, want %v", step, got, want)
+		}
+	}
+
+	// No open incident: nothing to mark.
+	if err := repo.MarkUptimeOpenFailed(ctx, "api"); err != nil {
+		t.Fatalf("mark while up: %v", err)
+	}
+	marked(false, "mark while up")
+
+	t0 := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+	open := &alert.Event{Type: alert.EventOpen, At: t0, StatusCode: 503}
+	if err := repo.ApplyCheck(ctx, "api", alert.State{Status: alert.StatusDown, OpenedAt: t0}, t0, 503, "", open); err != nil {
+		t.Fatalf("ApplyCheck (open): %v", err)
+	}
+	if err := repo.MarkUptimeOpenFailed(ctx, "api"); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	marked(true, "mark during incident")
+
+	if err := repo.SetUptimeThread(ctx, "api", "C1", "1700000000.000100"); err != nil {
+		t.Fatalf("SetUptimeThread: %v", err)
+	}
+	marked(false, "thread ref stored")
+
+	if err := repo.MarkUptimeOpenFailed(ctx, "api"); err != nil {
+		t.Fatalf("re-mark: %v", err)
+	}
+	marked(true, "re-mark")
+
+	t1 := t0.Add(15 * time.Minute)
+	resolve := &alert.Event{Type: alert.EventResolve, At: t1, Downtime: 15 * time.Minute}
+	if err := repo.ApplyCheck(ctx, "api", alert.State{Status: alert.StatusUp}, t1, 200, "", resolve); err != nil {
+		t.Fatalf("ApplyCheck (resolve): %v", err)
+	}
+	marked(false, "resolved")
+}
+
 // Total counts the monitor's whole history, not the page — the
 // paginator sizes itself from it — and offset walks backwards through
 // the newest-first order.

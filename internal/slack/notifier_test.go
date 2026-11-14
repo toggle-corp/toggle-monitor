@@ -19,12 +19,17 @@ import (
 type fakeStore struct {
 	children map[string][]string
 
-	setUptimeCalls int
-	setSSLCalls    int
+	setUptimeCalls  int
+	setSSLCalls     int
+	openFailedMarks []string
 }
 
 func (f *fakeStore) SetUptimeThread(_ context.Context, _, _, _ string) error {
 	f.setUptimeCalls++
+	return nil
+}
+func (f *fakeStore) MarkUptimeOpenFailed(_ context.Context, slug string) error {
+	f.openFailedMarks = append(f.openFailedMarks, slug)
 	return nil
 }
 func (f *fakeStore) SetSSLThread(_ context.Context, _, _, _ string) error {

@@ -611,8 +611,19 @@ func resolveEntry(slug string, at time.Time) Entry {
 }
 
 // orphanResolveEntry builds the Entry for a monitor recovering at `at`
-// whose Open, at `opened`, never reached Slack: no thread ts on file.
+// whose Open, at `opened`, failed to reach Slack: no thread ts on file,
+// and the delivery failure is marked on the row.
 func orphanResolveEntry(slug string, opened, at time.Time) Entry {
+	e := unannouncedResolveEntry(slug, opened, at)
+	failedAt := opened
+	e.Row.UptimeOpenFailedAt = &failedAt
+	return e
+}
+
+// unannouncedResolveEntry builds the Entry for a monitor recovering at
+// `at` whose Open, at `opened`, was never sent to Slack: no thread ts
+// and no delivery-failure mark.
+func unannouncedResolveEntry(slug string, opened, at time.Time) Entry {
 	return Entry{
 		Member: MemberInfo{Slug: slug, FriendlyName: slug, DetailURL: "https://monitor.example.test/monitor/" + slug},
 		Row:    store.MonitorRow{MonitorSpec: store.MonitorSpec{Slug: slug}, OpenedAt: &opened},
@@ -1404,5 +1415,113 @@ func TestDispatch_orphanRemovedOrPaused_leavesPool(t *testing.T) {
 	}
 	if got := sink.countByType(alert.EventResolve); got != 1 || sink.calls[0].slug != "c" {
 		t.Errorf("want c's standalone resolve only, got %+v", sink.calls)
+	}
+}
+
+// TestDispatch_resolveNeverAnnounced_postsNothing is the dependsOn
+// shape: children fail, sit in the pending pool, and are paused out of
+// it when their parent is found down. No message about them was ever
+// attempted, so their recoveries must post nothing — not a standalone
+// resolve, not a grouped "delivery failed" message.
+func TestDispatch_resolveNeverAnnounced_postsNothing(t *testing.T) {
+	clock := base
+	m, _, fp, sink := newDispatchManager(t, &clock, 5, 5*time.Minute)
+	ctx := context.Background()
+	opened := clock
+	for _, slug := range []string{"a", "b", "c"} {
+		m.Route(ctx, "ops", downEntry(slug, clock))
+	}
+	for _, slug := range []string{"a", "b", "c"} {
+		m.Pause(ctx, "ops", slug, clock)
+	}
+	clock = clock.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+
+	clock = clock.Add(10 * time.Minute)
+	for i, slug := range []string{"a", "b", "c"} {
+		clock = clock.Add(time.Duration(i) * 40 * time.Second)
+		m.Route(ctx, "ops", unannouncedResolveEntry(slug, opened, clock))
+		m.evaluateAll(ctx)
+	}
+	clock = clock.Add(10 * time.Minute)
+	m.evaluateAll(ctx)
+
+	if got := len(sink.calls); got != 0 {
+		t.Errorf("want no per-monitor messages for never-announced monitors, got %+v", sink.calls)
+	}
+	if fp.posts != 0 {
+		t.Errorf("want no grouped recovery for never-announced monitors, got %d posts", fp.posts)
+	}
+}
+
+// TestDispatch_resolveNeverAnnounced_leavesOrphansAlone: a
+// never-announced recovery neither joins nor flushes a pool of real
+// orphans on the same channel.
+func TestDispatch_resolveNeverAnnounced_leavesOrphansAlone(t *testing.T) {
+	clock := base
+	m, _, fp, sink := newDispatchManager(t, &clock, 5, 5*time.Minute)
+	ctx := context.Background()
+	opened := clock
+	pageIndividually(t, m, &clock, "ops", "a", "b")
+	sink.calls = nil
+
+	clock = clock.Add(10 * time.Minute)
+	m.Route(ctx, "ops", orphanResolveEntry("a", opened, clock))
+	m.Route(ctx, "ops", orphanResolveEntry("b", opened, clock))
+	m.Route(ctx, "ops", unannouncedResolveEntry("x", opened, clock))
+	clock = clock.Add(5 * time.Minute)
+	m.evaluateAll(ctx)
+
+	if fp.posts != 1 || !parentContainsText(fp.lastPost, "2 recovered") {
+		t.Fatalf("want one grouped recovery of a and b, got %d posts", fp.posts)
+	}
+	if parentContainsText(fp.lastPost, "monitor/x|x") {
+		t.Errorf("never-announced monitor listed in the grouped recovery")
+	}
+	if len(sink.calls) != 0 {
+		t.Errorf("want zero per-monitor resolves, got %+v", sink.calls)
+	}
+}
+
+// reminderEntry builds the Entry for a still-down monitor's reminder.
+// No thread ts is on file, so the notifier posts the monitor's parent.
+func reminderEntry(slug string, opened, at time.Time) Entry {
+	return Entry{
+		Member: MemberInfo{Slug: slug, FriendlyName: slug},
+		Row:    store.MonitorRow{MonitorSpec: store.MonitorSpec{Slug: slug}, OpenedAt: &opened},
+		Event:  &alert.Event{Type: alert.EventReminder, At: at},
+	}
+}
+
+// TestDispatch_reminderAnnouncedMonitor_resolvesWhileChannelPending: a
+// child paused out of the pending pool and resumed still down is first
+// announced by its reminder. Its recovery must edit that parent even
+// when it lands while the channel holds a pending pool for something
+// else.
+func TestDispatch_reminderAnnouncedMonitor_resolvesWhileChannelPending(t *testing.T) {
+	clock := base
+	m, _, fp, sink := newDispatchManager(t, &clock, 5, 5*time.Minute)
+	ctx := context.Background()
+	opened := clock
+	m.Route(ctx, "ops", downEntry("a", clock))
+	m.Pause(ctx, "ops", "a", clock)
+	clock = clock.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+
+	clock = clock.Add(time.Hour)
+	m.Route(ctx, "ops", reminderEntry("a", opened, clock))
+	if got := sink.countByType(alert.EventReminder); got != 1 {
+		t.Fatalf("want the reminder forwarded to the notifier, got %d", got)
+	}
+
+	clock = clock.Add(time.Minute)
+	m.Route(ctx, "ops", downEntry("b", clock))
+	m.Route(ctx, "ops", resolveEntry("a", clock.Add(time.Second)))
+
+	if got := sink.countByType(alert.EventResolve); got != 1 {
+		t.Errorf("want a's resolve to edit its parent at once, got %d sink resolves", got)
+	}
+	if fp.posts != 0 {
+		t.Errorf("want no digest, got %d posts", fp.posts)
 	}
 }

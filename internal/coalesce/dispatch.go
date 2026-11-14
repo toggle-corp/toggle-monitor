@@ -24,8 +24,8 @@
 // burstThreshold-1 individual messages, after which the channel
 // promotes and the rest of the outage lands in one digest.
 //
-// A recovery whose Open never reached Slack — no uptime thread ts on
-// file, because Slack was unreachable when the Open flushed — has no
+// A recovery whose Open failed to reach Slack — no uptime thread ts on
+// file, and the row marked as having its Open delivery fail — has no
 // parent message to edit. Each would otherwise post its own standalone
 // "is UP" message, so an outage that also took Slack down ends in one
 // message per monitor. These orphan resolves pool per channel for
@@ -33,6 +33,11 @@
 // across a probe interval just as failures do (ADR-0017). At expiry a
 // lone orphan goes through the per-monitor sink unchanged; two or more
 // become one grouped recovery message.
+//
+// A recovery with neither a thread ts nor that mark belongs to an
+// incident no message was ever attempted for — typically a dependsOn
+// child paused out of the pending pool before it flushed. Nobody was
+// paged, so it posts nothing.
 //
 // The dispatch state is in-memory only. A restart loses any pending
 // pools (they re-fill from the next probe) and reattaches open groups
@@ -123,8 +128,9 @@ type channelState struct {
 	// edit instead of being swallowed by a group it was never a member of.
 	individual map[string]struct{}
 
-	// orphans holds the recoveries of monitors whose Open never reached
-	// Slack, keyed by slug, until orphansDue. See the package comment.
+	// orphans holds the recoveries of monitors whose Open failed to
+	// reach Slack, keyed by slug, until orphansDue. See the package
+	// comment.
 	orphans    map[string]Entry
 	orphansDue time.Time // zero while orphans is empty
 }
@@ -170,6 +176,13 @@ func (cs *channelState) takeOrphans() []Entry {
 // the row snapshot carries the parent ts its resolve edits.
 func hasUptimeThread(row store.MonitorRow) bool {
 	return row.UptimeThreadTS != nil && *row.UptimeThreadTS != ""
+}
+
+// openDeliveryFailed reports whether the monitor's Open was sent to
+// Slack and the post failed. Without a thread ts and without this mark,
+// no Open was ever attempted.
+func openDeliveryFailed(row store.MonitorRow) bool {
+	return row.UptimeOpenFailedAt != nil
 }
 
 // markDown records a monitor as currently down in this channel.
@@ -309,11 +322,13 @@ func (m *Manager) routeOpen(ctx context.Context, channel string, e Entry) {
 // channel's mode, so its parent gets its resolve edit. Otherwise: in
 // group-mode, MarkUp on the live group — or, for a monitor the digest
 // has no record of, the per-monitor sink, since MarkUp would drop the
-// recovery and leave the DOWN message standing; in pending-mode, the
-// slug is dropped from the pool silently (no individual was ever
-// notified); in individual-mode, the recovery flushes through the
-// per-monitor sink. Every recovery bound for the sink whose Open never
-// reached Slack joins the channel's orphan pool instead.
+// recovery and leave the DOWN message standing; in pending-mode, a
+// pooled slug is dropped from the pool silently (no individual was ever
+// notified) and any other goes to the per-monitor sink; in
+// individual-mode, the recovery flushes through the per-monitor sink.
+// Every recovery bound for the sink whose Open failed to reach Slack
+// joins the channel's orphan pool instead, and one whose Open was never
+// attempted posts nothing.
 func (m *Manager) routeResolve(ctx context.Context, channel string, e Entry) {
 	m.mu.Lock()
 	cs := m.channelStateFor(channel)
@@ -332,6 +347,13 @@ func (m *Manager) routeResolve(ctx context.Context, channel string, e Entry) {
 		m.groups[channel].g.MarkUp(e.Member.Slug, e.Event.At)
 		m.mu.Unlock()
 	case modePending:
+		if _, pooled := cs.pending[e.Member.Slug]; !pooled {
+			// Not part of this burst: a monitor first announced by a
+			// reminder, or one whose ownership a restart forgot. Its
+			// own parent, if it has one, gets the resolve edit.
+			m.resolveIndividually(ctx, channel, cs, e)
+			return
+		}
 		// A failure that recovered before its pool ever flushed —
 		// silently retract. The pool size shrinks; the flush decision
 		// at expiry re-reads it.
@@ -351,11 +373,18 @@ func (m *Manager) routeResolve(ctx context.Context, channel string, e Entry) {
 	}
 }
 
-// resolveIndividually sends a recovery to the per-monitor sink, or to
-// the channel's orphan pool when its Open never reached Slack. Caller
-// holds m.mu; this method releases it.
+// resolveIndividually sends a recovery to the per-monitor sink, to the
+// channel's orphan pool when its Open failed to reach Slack, or nowhere
+// when no Open was ever attempted. Caller holds m.mu; this method
+// releases it.
 func (m *Manager) resolveIndividually(ctx context.Context, channel string, cs *channelState, e Entry) {
 	if !hasUptimeThread(e.Row) {
+		if !openDeliveryFailed(e.Row) {
+			m.mu.Unlock()
+			m.log.Info("resolve of a never-announced incident: posting nothing",
+				"channel", channel, "slug", e.Member.Slug)
+			return
+		}
 		cs.poolOrphan(e, e.Event.At.Add(m.burstWindow))
 		m.mu.Unlock()
 		return

@@ -77,6 +77,36 @@ only on recoveries nobody was paged for.
   posting standalone resolves.
 - **Cross-channel grouping.** Still deferred, as in ADR-0004.
 
+## Amendment (2026-11-14): only failed deliveries are orphans
+
+A missing thread ts alone does not mean the Open failed. A `dependsOn`
+child that fails, sits in the pending pool and is paused out of it by
+push-propagation never had a message sent. Treating its recovery as an
+orphan posted "Initial notification delivery failed" for a page nobody
+was owed. In an estate where every monitor `dependsOn` one root, that
+was every child.
+
+- The notifier sets `monitors.uptime_open_failed_at` when an uptime
+  parent post fails (Open, or a reminder's fresh parent). Storing a
+  thread ts and resolving clear it.
+- A recovery with no ts **and** the mark is an orphan, as above. With no
+  ts and no mark, nobody was paged: the dispatcher drops it (no pool, no
+  sink) and `Notifier.Notify` posts nothing for it, which also covers
+  critical monitors.
+- A reminder with no ts and no mark posts a plain Down parent: it is the
+  monitor's first announcement, so it carries no banner and does not
+  count as a fresh-parent fallback. This is how a child resumed still
+  down after its parent recovered gets paged.
+- In pending-mode, a recovery of a monitor outside the pool goes to the
+  per-monitor path instead of being dropped, so a parent first posted by
+  a reminder gets its resolve edit.
+
+SSL is unchanged. SSL events skip the dispatcher, and a paused monitor
+is not probed so it emits none: every SSL Open is sent.
+
+Incidents open across the upgrade carry no mark, so the recovery of one
+whose Open had already failed is silent.
+
 ## References
 
 - `internal/coalesce/dispatch.go`: `routeResolve`, `resolveIndividually`,
@@ -84,4 +114,6 @@ only on recoveries nobody was paged for.
 - `internal/coalesce/manager.go`: `evaluateAll`, `buildOrphanParent`
 - `internal/slack/notifier.go`: `notifyResolve`, `OrphanResolvesBanner`
 - `internal/lifecycle/outage_simulation_test.go`:
-  `TestOutageSimulation_orphanResolvesGroupIntoOneMessage`
+  `TestOutageSimulation_orphanResolvesGroupIntoOneMessage`,
+  `TestOutageSimulation_dependsOnTreeAnnouncesOnlyTheRoot`
+- `internal/migrate/migrations/0014_uptime_open_failed.up.sql`

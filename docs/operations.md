@@ -165,7 +165,10 @@ message that lists every recovered monitor under the banner
 `⚠️ Initial notification delivery failed. These monitors are back up.`
 It has no mentions and no thread. A lone recovery in the pool still posts its own standalone
 resolve. A restart drops the pool: those monitors are up in the DB and
-the channel never heard of the incident. See
+the channel never heard of the incident. Only monitors whose Open post
+actually failed (`monitors.uptime_open_failed_at`) count; a monitor no
+message was ever sent for, such as a `dependsOn` child paused before
+its Open flushed, recovers silently. See
 [ADR-0017](adr/0017-group-orphan-resolves.md).
 
 **Sizing `burstWindow`.** The `burstThreshold − 1` bound above only
@@ -422,18 +425,25 @@ The DB transition is committed; Slack delivery is retried (default
 10s budget) and, if still failing, logged at WARN. The notifier
 recovers later via the reminder cadence:
 
+- A failed uptime `Open` post sets `monitors.uptime_open_failed_at`;
+  storing a parent ts or resolving clears it.
 - For a missed `Open`, the next `Reminder` tick posts a **fresh
   Down parent** with the banner `⚠️ Initial notification delivery
   failed. This alert is current.`, persists its ts, and subsequent
   reminders thread onto it normally. This emits
   `toggle_monitor_slack_fresh_parent_total{kind="uptime"}` (or
-  `kind="ssl"` for the SSL path).
+  `kind="ssl"` for the SSL path). A monitor with no parent and no
+  failed `Open` (a `dependsOn` child resumed still down after its
+  parent recovered) gets a plain Down parent instead: no banner, no
+  fresh-parent count.
 - For a missed `Resolve` with no parent on file, the standalone
   resolve post is rendered with the same body as the parent edit
   (status, downtime, details) — so operators still get the full
   story even when both Open and Resolve missed delivery. Non-critical
   monitors wait `burstWindow` first; two or more such recoveries on one
-  channel post as a single grouped message instead (ADR-0017).
+  channel post as a single grouped message instead (ADR-0017). A
+  recovery with no parent and no failed `Open` posts nothing (logged at
+  INFO as `resolve of a never-announced incident`).
 
 This is intentional: the design favors "DB is the source of truth,
 Slack is best-effort" over blocking the worker on a Slack outage.

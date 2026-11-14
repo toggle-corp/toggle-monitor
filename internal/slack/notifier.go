@@ -19,12 +19,14 @@ type ChannelInfo struct {
 }
 
 // ThreadStore is the slim seam the notifier uses to persist Slack
-// thread refs (uptime + SSL) after posting the parent message, and to
-// look up which monitors depend on a given one (so the parent message
-// can call out "this alert will pause X, Y"). Production wires this
-// to *store.Repo; tests inject a fake.
+// thread refs (uptime + SSL) after posting the parent message, to mark
+// an uptime parent whose post failed, and to look up which monitors
+// depend on a given one (so the parent message can call out "this
+// alert will pause X, Y"). Production wires this to *store.Repo; tests
+// inject a fake.
 type ThreadStore interface {
 	SetUptimeThread(ctx context.Context, monitorSlug, channelID, ts string) error
+	MarkUptimeOpenFailed(ctx context.Context, monitorSlug string) error
 	SetSSLThread(ctx context.Context, monitorSlug, channelID, ts string) error
 	ListChildrenOf(ctx context.Context, parentSlug string) ([]string, error)
 }
@@ -36,7 +38,8 @@ const DefaultDependentsNoteMax = 5
 
 // freshParentBanner is the late-notice banner rendered at the top of
 // the body when the notifier had to synthesize a parent because the
-// initial Open delivery failed.
+// initial Open delivery failed. A parent posted for a monitor whose
+// Open was never sent carries no banner: it is the first announcement.
 const freshParentBanner = "⚠️ Initial notification delivery failed. This alert is current."
 
 // OrphanResolvesBanner is the late-notice banner on the grouped
@@ -146,6 +149,10 @@ type MonitorView struct {
 	// has been recorded (used for reminders + resolve).
 	UptimeThreadChannel string
 	UptimeThreadTS      string
+	// UptimeOpenFailed reports that this incident's parent message was
+	// sent and the post failed. With no UptimeThreadTS and no mark, no
+	// message about the incident was ever attempted.
+	UptimeOpenFailed bool
 
 	// SSL-side counterparts.
 	SSLThreadChannel string
@@ -162,7 +169,8 @@ type SSLView struct {
 // Notify dispatches the right Slack call(s) for an alert event:
 //   - EventOpen:     post a new parent, persist the thread ref.
 //   - EventReminder: post a thread reply.
-//   - EventResolve:  edit the parent and post a thread reply.
+//   - EventResolve:  edit the parent and post a thread reply; nothing
+//     at all for an incident no message was ever attempted for.
 //
 // channelSlug identifies the monitor's configured Slack destination;
 // mentions are pre-resolved raw markup (`<!here>`, `<@U…>`, etc).
@@ -182,6 +190,13 @@ func (n *Notifier) Notify(ctx context.Context, channelSlug string, mentions []st
 	case alert.EventReminder:
 		err = n.notifyReminder(ctx, ch, mentions, m, ev)
 	case alert.EventResolve:
+		if m.UptimeThreadTS == "" && !m.UptimeOpenFailed {
+			// No parent and no failed delivery: no message about this
+			// incident was ever attempted, so nobody needs to hear it
+			// ended. Nothing is posted, so nothing is counted.
+			n.log.Info("resolve of a never-announced incident: posting nothing", "monitor", m.Slug)
+			return nil
+		}
 		err = n.notifyResolve(ctx, ch, mentions, m, ev)
 	default:
 		return nil
@@ -217,6 +232,7 @@ func (n *Notifier) notifyOpen(ctx context.Context, ch ChannelInfo, mentions []st
 		Attachments: msg.Attachments,
 	})
 	if err != nil {
+		n.markOpenFailed(ctx, m.Slug)
 		return err
 	}
 	if err := n.store.SetUptimeThread(ctx, m.Slug, res.Channel, res.TS); err != nil {
@@ -230,9 +246,11 @@ func (n *Notifier) notifyOpen(ctx context.Context, ch ChannelInfo, mentions []st
 
 func (n *Notifier) notifyReminder(ctx context.Context, ch ChannelInfo, mentions []string, m MonitorView, ev *alert.Event) error {
 	if m.UptimeThreadTS == "" {
-		// No parent recorded — the initial Open delivery failed. Post
-		// a fresh Down parent with a late-notice banner, persist its
-		// ts, and let subsequent reminders thread onto it.
+		// No parent recorded: either the initial Open delivery failed,
+		// or no Open was ever sent (a dependsOn child paused before its
+		// Open flushed, now resumed and still down). Post the Down
+		// parent, persist its ts, and let subsequent reminders thread
+		// onto it.
 		return n.postFreshUptimeParent(ctx, ch, mentions, m)
 	}
 	blocks := BuildReminderReply(ReminderInput{
@@ -249,9 +267,16 @@ func (n *Notifier) notifyReminder(ctx context.Context, ch ChannelInfo, mentions 
 }
 
 // postFreshUptimeParent synthesizes a Down parent when a reminder
-// fires but no parent ts is on file (because the original Open delivery
-// failed). Persists the new ts so subsequent reminders thread normally.
+// fires but no parent ts is on file. After a failed Open delivery it
+// carries the late-notice banner and counts as a fresh-parent fallback;
+// for a monitor never announced it is a plain Down parent. Persists the
+// new ts so subsequent reminders thread normally, or marks the delivery
+// failed when the post fails.
 func (n *Notifier) postFreshUptimeParent(ctx context.Context, ch ChannelInfo, mentions []string, m MonitorView) error {
+	banner := ""
+	if m.UptimeOpenFailed {
+		banner = freshParentBanner
+	}
 	in := DownInput{
 		FriendlyName: m.FriendlyName,
 		Tags:         m.Tags,
@@ -265,7 +290,7 @@ func (n *Notifier) postFreshUptimeParent(ctx context.Context, ch ChannelInfo, me
 		BodyMaxChars: n.bodyMaxChars,
 		DetailURL:    n.DetailURL(m.Slug),
 		Note:         n.dependentsNote(ctx, m.Slug, "⏸ Pauses dependents"),
-		Banner:       freshParentBanner,
+		Banner:       banner,
 	}
 	msg := BuildDownParent(in)
 	res, err := n.client.PostMessage(ctx, ch.Token, PostMessageInput{
@@ -274,15 +299,31 @@ func (n *Notifier) postFreshUptimeParent(ctx context.Context, ch ChannelInfo, me
 		Attachments: msg.Attachments,
 	})
 	if err != nil {
+		n.markOpenFailed(ctx, m.Slug)
 		return err
 	}
-	n.observeFreshParent("uptime")
+	if m.UptimeOpenFailed {
+		n.observeFreshParent("uptime")
+	}
 	if err := n.store.SetUptimeThread(ctx, m.Slug, res.Channel, res.TS); err != nil {
 		// Best-effort: the message went out. Future reminders will
 		// re-synthesize on the next tick if persistence still fails.
 		n.log.Warn("persist fresh uptime thread ref", "monitor", m.Slug, "error", err)
 	}
 	return nil
+}
+
+// markOpenFailed records that the monitor's uptime parent post failed,
+// so its eventual recovery reports the incident nobody was paged for.
+// Best-effort: an unrecorded failure leaves that recovery silent. A
+// cancelled context (shutdown mid-post) records nothing.
+func (n *Notifier) markOpenFailed(ctx context.Context, slug string) {
+	if ctx.Err() != nil {
+		return
+	}
+	if err := n.store.MarkUptimeOpenFailed(ctx, slug); err != nil {
+		n.log.Warn("persist uptime open failure", "monitor", slug, "error", err)
+	}
 }
 
 func (n *Notifier) notifyResolve(ctx context.Context, ch ChannelInfo, mentions []string, m MonitorView, ev *alert.Event) error {

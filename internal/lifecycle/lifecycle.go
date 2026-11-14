@@ -1159,6 +1159,7 @@ func monitorViewFromRow(row store.MonitorRow) slack.MonitorView {
 	if row.UptimeThreadTS != nil {
 		mv.UptimeThreadTS = *row.UptimeThreadTS
 	}
+	mv.UptimeOpenFailed = row.UptimeOpenFailedAt != nil
 	if row.SSLThreadChannel != nil {
 		mv.SSLThreadChannel = *row.SSLThreadChannel
 	}
