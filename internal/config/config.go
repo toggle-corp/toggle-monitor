@@ -689,6 +689,8 @@ type Coalesce struct {
 	// trickle spread over roughly one probe interval, not as a burst
 	// inside one PendingWait. Set it comfortably above the widest
 	// monitors[].interval in play. Default 5m; must be ≥ PendingWait.
+	// It is also how long the dispatcher pools recoveries whose Open
+	// never reached Slack before posting them as one message (ADR-0017).
 	BurstWindow Duration `yaml:"burstWindow,omitempty"`
 	// GroupMention controls the broadcast mention on group open and on
 	// each still-down reminder. One of "channel" (default), "here", or

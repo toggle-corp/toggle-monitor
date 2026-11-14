@@ -135,6 +135,14 @@ func (s *outageSim) setTargetsDown(down bool) {
 	s.upstream.CloseClientConnections()
 }
 
+// setSlackDown takes Slack alone offline: its connections are torn down
+// while DNS and the monitored estate are untouched, so every Slack call
+// fails and nothing else does.
+func (s *outageSim) setSlackDown(down bool) {
+	s.netDown.Store(down)
+	s.slackSrv.CloseClientConnections()
+}
+
 // resolveToIPv4 turns a host name into an IPv4 literal, passing address
 // literals through untouched.
 func resolveToIPv4(t *testing.T, host string) string {
@@ -241,6 +249,30 @@ func flatten(v any) string {
 	return strings.TrimSpace(sb.String())
 }
 
+// parentBodies returns the full text of every top-level message, header
+// blocks and attachment blocks alike, untruncated — banners and digest
+// rows render inside the attachment.
+func (s *outageSim) parentBodies() []string {
+	s.slack.mu.Lock()
+	defer s.slack.mu.Unlock()
+	var out []string
+	for _, p := range s.slack.postMessages {
+		if _, threaded := p["thread_ts"]; threaded {
+			continue
+		}
+		text := flatten(p["blocks"])
+		if atts, ok := p["attachments"].([]any); ok {
+			for _, a := range atts {
+				if am, ok := a.(map[string]any); ok {
+					text += " " + flatten(am["blocks"])
+				}
+			}
+		}
+		out = append(out, text)
+	}
+	return out
+}
+
 func (s *outageSim) dump(t *testing.T, label string) {
 	t.Helper()
 	posts := s.posts()
@@ -311,9 +343,14 @@ type simConfig struct {
 	// interval, so the wider it is relative to pendingWait, the more
 	// thinly a cluster-wide outage trickles into the dispatcher.
 	interval string
-	// pendingWait / burstThreshold are the ADR-0004 dispatcher knobs.
+	// pendingWait / burstThreshold / burstWindow are the dispatcher
+	// knobs (ADR-0004, ADR-0015). An empty burstWindow takes the config
+	// default.
 	pendingWait    string
 	burstThreshold int
+	burstWindow    string
+	// reminderInterval is the per-monitor still-down reminder cadence.
+	reminderInterval string
 }
 
 func (sc simConfig) withDefaults() simConfig {
@@ -325,6 +362,9 @@ func (sc simConfig) withDefaults() simConfig {
 	}
 	if sc.burstThreshold == 0 {
 		sc.burstThreshold = 5
+	}
+	if sc.reminderInterval == "" {
+		sc.reminderInterval = "3s"
 	}
 	return sc
 }
@@ -346,15 +386,20 @@ func (s *outageSim) yaml(t *testing.T, sc simConfig) config.Config {
     retries: 0
     retryBackoff: 1s
     followRedirects: false
-    reminderInterval: 3s
+    reminderInterval: %s
     slack: ops-alerts
-`, slug, slug, host, port, sc.interval)
+`, slug, slug, host, port, sc.interval, sc.reminderInterval)
 	}
 	for i := 1; i <= sc.external; i++ {
 		monitor(fmt.Sprintf("ext-%d", i), fmt.Sprintf("svc%d.outage.test", i), s.upstreamPort)
 	}
 	for i := 1; i <= sc.internal; i++ {
 		monitor(fmt.Sprintf("int-%d", i), "127.0.0.1", s.internalPort)
+	}
+
+	burstWindow := ""
+	if sc.burstWindow != "" {
+		burstWindow = "\n    burstWindow: " + sc.burstWindow
 	}
 
 	selfHealth := ""
@@ -388,14 +433,14 @@ slack:
     - { slug: ops-alerts, channelId: C0123ABCD, tokenEnv: TOGGLE_SLACK_TOKEN }
   coalesce:
     pendingWait: %s
-    burstThreshold: %d
+    burstThreshold: %d%s
     groupInterval: 3s
     repeatInterval: 1h
 %s
 monitors:%s
 `,
 		s.dbCfg.Host, s.dbCfg.Port, s.dbCfg.User, s.dbCfg.Name, s.dbCfg.SSLMode,
-		sc.pendingWait, sc.burstThreshold, selfHealth, mons.String(),
+		sc.pendingWait, sc.burstThreshold, burstWindow, selfHealth, mons.String(),
 	)
 
 	cfg, err := config.Load([]byte(raw))
@@ -534,5 +579,73 @@ func TestOutageSimulation_trickleDefeatsTheBurstThreshold(t *testing.T) {
 		t.Errorf("STORM: channel got %d parent notifications for a %d-monitor outage; "+
 			"want at most %d (burstThreshold-1 individual pages + 1 digest)",
 			storm, monitors, burstThreshold)
+	}
+}
+
+// TestOutageSimulation_orphanResolvesGroupIntoOneMessage covers the tail
+// of an outage that also took Slack down: every Open failed to deliver,
+// so no monitor has a parent message to edit, and each recovery would
+// post its own standalone "is UP" with the late-notice banner. The
+// channel must instead get one grouped recovery message naming every
+// monitor.
+//
+// The estate stays under burstThreshold so each Open flushes
+// individually, and reminders are pushed out of the test's reach so
+// none synthesizes a fresh parent once Slack returns. burstWindow sits
+// above the probe interval so the jittered trickle of recoveries lands
+// in one orphan pool.
+func TestOutageSimulation_orphanResolvesGroupIntoOneMessage(t *testing.T) {
+	const monitors = 4
+	sim := newOutageSim(t)
+	cfg := sim.yaml(t, simConfig{
+		external:         monitors,
+		interval:         "8s",
+		pendingWait:      "2s",
+		burstThreshold:   5,
+		burstWindow:      "12s",
+		reminderInterval: "1h",
+	})
+	stop := sim.run(t, cfg)
+	defer stop()
+
+	time.Sleep(10 * time.Second)
+	if n := sim.parentPosts(); n != 0 {
+		sim.dump(t, "healthy")
+		t.Fatalf("healthy phase already posted %d parent message(s)", n)
+	}
+
+	// Long enough for every monitor to fail and every Open flush to
+	// exhaust the Slack client's retry budget.
+	t.Log("--- monitored estate + Slack DOWN ---")
+	sim.setSlackDown(true)
+	sim.setTargetsDown(true)
+	time.Sleep(55 * time.Second)
+	sim.dump(t, "during outage")
+	if n := sim.parentPosts(); n != 0 {
+		t.Fatalf("setup: %d parent message(s) reached Slack while it was down", n)
+	}
+
+	t.Log("--- monitored estate + Slack UP ---")
+	sim.setTargetsDown(false)
+	sim.setSlackDown(false)
+	time.Sleep(30 * time.Second)
+	sim.dump(t, "after recovery")
+
+	var late []string
+	for _, body := range sim.parentBodies() {
+		if strings.Contains(body, "Initial notification delivery failed") {
+			late = append(late, body)
+		}
+	}
+	if len(late) != 1 {
+		t.Fatalf("STORM: channel got %d late-notice recovery message(s); want exactly 1", len(late))
+	}
+	for i := 1; i <= monitors; i++ {
+		if name := fmt.Sprintf("ext-%d", i); !strings.Contains(late[0], name) {
+			t.Errorf("grouped recovery does not list %s: %s", name, late[0])
+		}
+	}
+	if n := sim.parentPosts(); n != 1 {
+		t.Errorf("channel got %d parent message(s) for the outage; want 1", n)
 	}
 }

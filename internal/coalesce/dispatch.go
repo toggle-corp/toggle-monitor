@@ -24,10 +24,22 @@
 // burstThreshold-1 individual messages, after which the channel
 // promotes and the rest of the outage lands in one digest.
 //
+// A recovery whose Open never reached Slack — no uptime thread ts on
+// file, because Slack was unreachable when the Open flushed — has no
+// parent message to edit. Each would otherwise post its own standalone
+// "is UP" message, so an outage that also took Slack down ends in one
+// message per monitor. These orphan resolves pool per channel for
+// burstWindow from the first of them, since recoveries trickle in
+// across a probe interval just as failures do (ADR-0017). At expiry a
+// lone orphan goes through the per-monitor sink unchanged; two or more
+// become one grouped recovery message.
+//
 // The dispatch state is in-memory only. A restart loses any pending
 // pools (they re-fill from the next probe) and reattaches open groups
 // from incident_groups; the channel mode is derivable on the fly
-// from "is there a live group?".
+// from "is there a live group?". A restart also loses any orphan pool:
+// those monitors are already up in the DB and their Open never reached
+// Slack, so the channel simply never hears of that incident.
 
 package coalesce
 
@@ -110,6 +122,54 @@ type channelState struct {
 	// group-mode, so a parent posted individually always gets its resolve
 	// edit instead of being swallowed by a group it was never a member of.
 	individual map[string]struct{}
+
+	// orphans holds the recoveries of monitors whose Open never reached
+	// Slack, keyed by slug, until orphansDue. See the package comment.
+	orphans    map[string]Entry
+	orphansDue time.Time // zero while orphans is empty
+}
+
+// poolOrphan adds a recovery to the channel's orphan pool. The first
+// entry arms the due time; later ones join that window without
+// extending it.
+func (cs *channelState) poolOrphan(e Entry, due time.Time) {
+	if len(cs.orphans) == 0 {
+		cs.orphans = map[string]Entry{}
+		cs.orphansDue = due
+	}
+	cs.orphans[e.Member.Slug] = e
+}
+
+// dropOrphan removes a monitor from the orphan pool: it failed again,
+// was paused, or left the estate, so its pooled recovery is stale.
+func (cs *channelState) dropOrphan(slug string) {
+	if _, ok := cs.orphans[slug]; !ok {
+		return
+	}
+	delete(cs.orphans, slug)
+	if len(cs.orphans) == 0 {
+		cs.orphans = nil
+		cs.orphansDue = time.Time{}
+	}
+}
+
+// takeOrphans empties the orphan pool and returns its entries sorted
+// by slug.
+func (cs *channelState) takeOrphans() []Entry {
+	out := make([]Entry, 0, len(cs.orphans))
+	for _, e := range cs.orphans {
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Member.Slug < out[j].Member.Slug })
+	cs.orphans = nil
+	cs.orphansDue = time.Time{}
+	return out
+}
+
+// hasUptimeThread reports whether the monitor's Open reached Slack:
+// the row snapshot carries the parent ts its resolve edits.
+func hasUptimeThread(row store.MonitorRow) bool {
+	return row.UptimeThreadTS != nil && *row.UptimeThreadTS != ""
 }
 
 // markDown records a monitor as currently down in this channel.
@@ -219,6 +279,7 @@ func (m *Manager) routeOpen(ctx context.Context, channel string, e Entry) {
 	m.mu.Lock()
 	cs := m.channelStateFor(channel)
 	cs.markDown(e.Member.Slug, e.Event.At)
+	cs.dropOrphan(e.Member.Slug)
 	switch cs.mode {
 	case modeGroup:
 		// Open group absorbs the failure directly.
@@ -251,22 +312,21 @@ func (m *Manager) routeOpen(ctx context.Context, channel string, e Entry) {
 // recovery and leave the DOWN message standing; in pending-mode, the
 // slug is dropped from the pool silently (no individual was ever
 // notified); in individual-mode, the recovery flushes through the
-// per-monitor sink.
+// per-monitor sink. Every recovery bound for the sink whose Open never
+// reached Slack joins the channel's orphan pool instead.
 func (m *Manager) routeResolve(ctx context.Context, channel string, e Entry) {
 	m.mu.Lock()
 	cs := m.channelStateFor(channel)
 	owned := cs.ownedByIndividual(e.Member.Slug)
 	cs.clearDown(e.Member.Slug)
 	if owned {
-		m.mu.Unlock()
-		m.flushSink(ctx, channel, e)
+		m.resolveIndividually(ctx, channel, cs, e)
 		return
 	}
 	switch cs.mode {
 	case modeGroup:
 		if !m.digestOwns(channel, e.Member.Slug) {
-			m.mu.Unlock()
-			m.flushSink(ctx, channel, e)
+			m.resolveIndividually(ctx, channel, cs, e)
 			return
 		}
 		m.groups[channel].g.MarkUp(e.Member.Slug, e.Event.At)
@@ -287,8 +347,39 @@ func (m *Manager) routeResolve(ctx context.Context, channel string, e Entry) {
 	case modeIndividual:
 		// Recovery of a previously individually-notified monitor —
 		// flush through the sink.
+		m.resolveIndividually(ctx, channel, cs, e)
+	}
+}
+
+// resolveIndividually sends a recovery to the per-monitor sink, or to
+// the channel's orphan pool when its Open never reached Slack. Caller
+// holds m.mu; this method releases it.
+func (m *Manager) resolveIndividually(ctx context.Context, channel string, cs *channelState, e Entry) {
+	if !hasUptimeThread(e.Row) {
+		cs.poolOrphan(e, e.Event.At.Add(m.burstWindow))
 		m.mu.Unlock()
-		m.flushSink(ctx, channel, e)
+		return
+	}
+	m.mu.Unlock()
+	m.flushSink(ctx, channel, e)
+}
+
+// flushOrphans delivers one channel's expired orphan pool. A lone
+// recovery goes through the per-monitor sink, which posts the
+// standalone resolve with its late-notice banner. Two or more post one
+// grouped recovery message instead: no mentions, no thread, and nothing
+// persisted, since no incident group ever existed for them. Caller must
+// NOT hold m.mu.
+func (m *Manager) flushOrphans(ctx context.Context, channel string, entries []Entry) {
+	switch len(entries) {
+	case 0:
+		return
+	case 1:
+		m.flushSink(ctx, channel, entries[0])
+		return
+	}
+	if _, _, err := m.poster.PostDigest(ctx, channel, buildOrphanParent(entries)); err != nil {
+		m.log.Warn("post orphan resolves", "channel", channel, "count", len(entries), "error", err)
 	}
 }
 

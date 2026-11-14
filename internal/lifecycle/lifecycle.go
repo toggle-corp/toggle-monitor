@@ -466,7 +466,7 @@ func RunServe(ctx context.Context, opts ServeOptions) error {
 		scheduler.WithLogger(log),
 		scheduler.WithEventSink(buildSink(notifier)),
 		scheduler.WithSSLSink(buildSSLSink(notifier)),
-		scheduler.WithGroupSink(groupSinkAdapter{m: groupMgr}),
+		scheduler.WithGroupSink(groupSinkAdapter{m: groupMgr, detailURL: notifier.DetailURL}),
 		scheduler.WithPushPropagation(pushPropagation),
 		scheduler.WithMetrics(metrics),
 	}

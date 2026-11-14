@@ -245,6 +245,8 @@ func (m *Manager) Up(ctx context.Context, channel, slug string, at time.Time) {
 //   - pending: drop from the pool — the child never got individually
 //     notified and won't (parent's failure is the page).
 //   - individual: silent (per ADR-0004 Q11b).
+//
+// In every mode the child also leaves the orphan-resolve pool.
 func (m *Manager) Pause(ctx context.Context, channel, slug string, at time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -254,6 +256,7 @@ func (m *Manager) Pause(ctx context.Context, channel, slug string, at time.Time)
 	// survives: a child already paged individually still has a message
 	// its eventual recovery has to edit.
 	cs.forgetDown(slug)
+	cs.dropOrphan(slug)
 	switch cs.mode {
 	case modeGroup:
 		if lg := m.groups[channel]; lg != nil {
@@ -281,6 +284,9 @@ func (m *Manager) Pause(ctx context.Context, channel, slug string, at time.Time)
 //     and no individual was ever posted.
 //   - individual: nothing left to do here.
 //
+// In every mode the monitor also leaves the orphan-resolve pool: the
+// removal notice is the last word on it.
+//
 // The group is persisted inline rather than at the evaluator's next
 // pass: removals arrive from the kube watcher and the config reconcile,
 // so a restart in between would reattach a digest that still counts the
@@ -290,6 +296,7 @@ func (m *Manager) Remove(ctx context.Context, channel, slug string, at time.Time
 	defer m.mu.Unlock()
 	cs := m.channelStateFor(channel)
 	cs.clearDown(slug)
+	cs.dropOrphan(slug)
 	switch cs.mode {
 	case modeGroup:
 		lg := m.groups[channel]
@@ -507,9 +514,9 @@ func (m *Manager) RunEvaluator(ctx context.Context, interval time.Duration) {
 }
 
 // evaluateAll runs one evaluation pass over every live group AND every
-// channel whose pending pool may have expired. The pending pass runs
-// first because expirePending can promote a pool to a brand-new group
-// that this same tick should then advance.
+// channel whose pending or orphan-resolve pool may have expired. The
+// pending pass runs first because expirePending can promote a pool to a
+// brand-new group that this same tick should then advance.
 func (m *Manager) evaluateAll(ctx context.Context) {
 	now := m.now()
 
@@ -531,7 +538,32 @@ func (m *Manager) evaluateAll(ctx context.Context) {
 	}
 	m.mu.Unlock()
 
-	// 2. Removed- and recovered-member sweeps, throttled. Run before the
+	// 2. Orphan-resolve pass. One channel at a time, each pool is taken
+	//    under the lock just before it posts and posted outside it. A
+	//    pool waiting behind another channel's post stays in place, so a
+	//    new Open, a pause or a removal can still drop its entries.
+	m.mu.Lock()
+	orphanChannels := []string{}
+	for ch, cs := range m.channels {
+		if len(cs.orphans) > 0 && !now.Before(cs.orphansDue) {
+			orphanChannels = append(orphanChannels, ch)
+		}
+	}
+	m.mu.Unlock()
+	sort.Strings(orphanChannels)
+	for _, ch := range orphanChannels {
+		m.mu.Lock()
+		cs := m.channels[ch]
+		if cs == nil || len(cs.orphans) == 0 || now.Before(cs.orphansDue) {
+			m.mu.Unlock()
+			continue
+		}
+		entries := cs.takeOrphans()
+		m.mu.Unlock()
+		m.flushOrphans(ctx, ch, entries)
+	}
+
+	// 3. Removed- and recovered-member sweeps, throttled. Run before the
 	//    evaluator pass so a member that left the estate or recovered is
 	//    rendered — and can close the incident — on this same tick.
 	m.mu.Lock()
@@ -545,7 +577,7 @@ func (m *Manager) evaluateAll(ctx context.Context) {
 		m.SweepRecovered(ctx, now)
 	}
 
-	// 3. Group evaluator pass.
+	// 4. Group evaluator pass.
 	m.mu.Lock()
 	channels := make([]string, 0, len(m.groups))
 	for ch := range m.groups {
@@ -678,6 +710,45 @@ func (m *Manager) buildParent(lg *liveGroup, closed, withMentions bool) slack.Pa
 		in.Mentions = m.unionMentionsWithBroadcast(lg, lg.g.DownSlugs())
 	}
 	return slack.BuildDigestParent(in)
+}
+
+// buildOrphanParent renders the grouped recovery message for an orphan
+// pool: the closed digest shape, one recovered row per monitor, the
+// late-notice banner, and a downtime spanning the earliest Open to the
+// latest recovery among the entries.
+func buildOrphanParent(entries []Entry) slack.ParentMessage {
+	var earliest, latest time.Time
+	rows := make([]slack.DigestRow, 0, len(entries))
+	for _, e := range entries {
+		opened := e.Event.At.Add(-e.Event.Downtime)
+		if e.Row.OpenedAt != nil {
+			opened = *e.Row.OpenedAt
+		}
+		if earliest.IsZero() || opened.Before(earliest) {
+			earliest = opened
+		}
+		if e.Event.At.After(latest) {
+			latest = e.Event.At
+		}
+		name := e.Member.FriendlyName
+		if name == "" {
+			name = e.Member.Slug
+		}
+		rows = append(rows, slack.DigestRow{
+			Name:      name,
+			Class:     slack.RowRecovered,
+			DetailURL: e.Member.DetailURL,
+		})
+	}
+	return slack.BuildDigestParent(slack.DigestInput{
+		Recovered: len(entries),
+		Total:     len(entries),
+		OpenedAt:  earliest,
+		Rows:      rows,
+		Banner:    slack.OrphanResolvesBanner,
+		Closed:    true,
+		Downtime:  latest.Sub(earliest),
+	})
 }
 
 // deltaInput maps a group.Delta (slugs) into the rendered DigestDelta

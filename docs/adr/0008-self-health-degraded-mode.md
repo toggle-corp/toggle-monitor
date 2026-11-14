@@ -216,6 +216,9 @@ commit immediately, as today). `minMonitors < 2` is rejected
   fresh-parents *per channel* — bounded below the operator's own burst
   line, and cross-channel coalescing was already deferred in ADR-0004.
   Documented in `operations.md`; not fixed here.
+  *Update:* [ADR-0017](0017-group-orphan-resolves.md) groups the
+  recoveries of monitors whose Open never reached Slack into one message
+  per channel.
 - **Egress-loss-without-DNS-loss detection** (`FailKind==dial` storm).
 - **Push-heartbeat dead-man's-switch.**
 - **Per-resolver / partial-isolation** nuance.

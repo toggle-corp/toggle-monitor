@@ -595,22 +595,28 @@ func TestDispatch_individualMode_resolveAfterFlush(t *testing.T) {
 
 	// Recovery — should fire EventResolve through the sink.
 	clock = base.Add(5 * time.Minute)
-	m.Route(ctx, "ops", Entry{
-		Member: MemberInfo{Slug: "a", FriendlyName: "a"},
-		Row:    store.MonitorRow{MonitorSpec: store.MonitorSpec{Slug: "a"}},
-		Event:  &alert.Event{Type: alert.EventResolve, At: clock},
-	})
+	m.Route(ctx, "ops", resolveEntry("a", clock))
 	if got := sink.countByType(alert.EventResolve); got != 1 {
 		t.Fatalf("want 1 EventResolve fired, got %d", got)
 	}
 }
 
-// resolveEntry builds the dispatcher Entry for a monitor recovering now.
+// resolveEntry builds the dispatcher Entry for a monitor recovering now
+// whose Open reached Slack: the row carries the parent's thread ts.
 func resolveEntry(slug string, at time.Time) Entry {
+	e := orphanResolveEntry(slug, at.Add(-time.Minute), at)
+	ch, ts := "C1", "ts-"+slug
+	e.Row.UptimeThreadChannel, e.Row.UptimeThreadTS = &ch, &ts
+	return e
+}
+
+// orphanResolveEntry builds the Entry for a monitor recovering at `at`
+// whose Open, at `opened`, never reached Slack: no thread ts on file.
+func orphanResolveEntry(slug string, opened, at time.Time) Entry {
 	return Entry{
-		Member: MemberInfo{Slug: slug, FriendlyName: slug},
-		Row:    store.MonitorRow{MonitorSpec: store.MonitorSpec{Slug: slug}},
-		Event:  &alert.Event{Type: alert.EventResolve, At: at},
+		Member: MemberInfo{Slug: slug, FriendlyName: slug, DetailURL: "https://monitor.example.test/monitor/" + slug},
+		Row:    store.MonitorRow{MonitorSpec: store.MonitorSpec{Slug: slug}, OpenedAt: &opened},
+		Event:  &alert.Event{Type: alert.EventResolve, At: at, Downtime: at.Sub(opened)},
 	}
 }
 
@@ -1108,5 +1114,295 @@ func TestSweep_leavesLiveMembersAlone(t *testing.T) {
 	}
 	if open, _ := fs.ListOpenIncidentGroups(ctx); len(open) != 1 {
 		t.Fatalf("live incident should stay open: %d", len(open))
+	}
+}
+
+// pageIndividually flushes one failure per slug through the per-monitor
+// sink, leaving the channel in individual-mode with each monitor owned
+// by the notifier. Returns the clock after the flush.
+func pageIndividually(t *testing.T, m *Manager, clock *time.Time, channel string, slugs ...string) {
+	t.Helper()
+	ctx := context.Background()
+	for _, slug := range slugs {
+		m.Route(ctx, channel, downEntry(slug, *clock))
+	}
+	*clock = clock.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+}
+
+// TestDispatch_orphanResolves_groupIntoOneMessage is the post-outage
+// flood: Slack was down when the Opens flushed, so no monitor has a
+// parent to edit, and each recovery would post its own standalone "is
+// UP". Recoveries arriving inside one window must land as ONE grouped
+// message instead.
+func TestDispatch_orphanResolves_groupIntoOneMessage(t *testing.T) {
+	clock := base
+	m, _, fp, sink := newDispatchManager(t, &clock, 5, 5*time.Minute)
+	ctx := context.Background()
+	opened := clock
+	pageIndividually(t, m, &clock, "ops", "a", "b", "c")
+	sink.calls = nil
+
+	resolvedAt := clock.Add(10 * time.Minute)
+	for i, slug := range []string{"a", "b", "c"} {
+		clock = resolvedAt.Add(time.Duration(i) * 40 * time.Second)
+		m.Route(ctx, "ops", orphanResolveEntry(slug, opened, clock))
+		m.evaluateAll(ctx)
+	}
+	if got := len(sink.calls); got != 0 {
+		t.Fatalf("orphan resolves reached the sink inside the window: %d calls", got)
+	}
+	if fp.posts != 0 {
+		t.Fatalf("orphan pool flushed inside the window: %d posts", fp.posts)
+	}
+
+	clock = resolvedAt.Add(5 * time.Minute)
+	m.evaluateAll(ctx)
+
+	if got := len(sink.calls); got != 0 {
+		t.Errorf("want zero per-monitor resolves, got %d", got)
+	}
+	if fp.posts != 1 {
+		t.Fatalf("want exactly 1 grouped recovery post, got %d", fp.posts)
+	}
+	msg := fp.lastPost
+	for _, needle := range []string{
+		"Initial notification delivery failed",
+		"3 recovered",
+		"https://monitor.example.test/monitor/a|a",
+		"https://monitor.example.test/monitor/c|c",
+	} {
+		if !parentContainsText(msg, needle) {
+			t.Errorf("grouped recovery missing %q", needle)
+		}
+	}
+	// Earliest Open to latest recovery: 31s + 10m + 80s.
+	if !parentContainsText(msg, "was down for 11m") {
+		t.Errorf("grouped recovery downtime should span earliest Open to latest recovery")
+	}
+
+	// The pool is spent: a later tick posts nothing more.
+	clock = clock.Add(10 * time.Minute)
+	m.evaluateAll(ctx)
+	if fp.posts != 1 || len(sink.calls) != 0 {
+		t.Errorf("spent pool re-flushed: %d posts, %d sink calls", fp.posts, len(sink.calls))
+	}
+}
+
+// TestDispatch_singleOrphanResolve_keepsStandaloneResolve: a lone
+// orphan has nothing to group with, so at expiry it goes through the
+// per-monitor sink, which posts the standalone resolve with its banner.
+func TestDispatch_singleOrphanResolve_keepsStandaloneResolve(t *testing.T) {
+	clock := base
+	m, _, fp, sink := newDispatchManager(t, &clock, 5, 5*time.Minute)
+	ctx := context.Background()
+	opened := clock
+	pageIndividually(t, m, &clock, "ops", "a")
+	sink.calls = nil
+
+	resolvedAt := clock.Add(10 * time.Minute)
+	m.Route(ctx, "ops", orphanResolveEntry("a", opened, resolvedAt))
+	clock = resolvedAt.Add(5 * time.Minute)
+	m.evaluateAll(ctx)
+
+	if got := sink.countByType(alert.EventResolve); got != 1 {
+		t.Errorf("want 1 standalone resolve through the sink, got %d", got)
+	}
+	if fp.posts != 0 {
+		t.Errorf("single orphan posted a grouped message: %d posts", fp.posts)
+	}
+}
+
+// TestDispatch_resolveWithThread_flushesImmediately: a recovery whose
+// Open reached Slack edits its own parent at once, even while an
+// orphan pool is open on the same channel.
+func TestDispatch_resolveWithThread_flushesImmediately(t *testing.T) {
+	clock := base
+	m, _, fp, sink := newDispatchManager(t, &clock, 5, 5*time.Minute)
+	ctx := context.Background()
+	opened := clock
+	pageIndividually(t, m, &clock, "ops", "a", "b")
+	sink.calls = nil
+
+	clock = clock.Add(10 * time.Minute)
+	m.Route(ctx, "ops", orphanResolveEntry("a", opened, clock))
+	m.Route(ctx, "ops", resolveEntry("b", clock))
+
+	if got := sink.countByType(alert.EventResolve); got != 1 {
+		t.Fatalf("want the threaded resolve flushed immediately, got %d sink resolves", got)
+	}
+	if sink.calls[0].slug != "b" {
+		t.Errorf("immediate flush went to %q, want b", sink.calls[0].slug)
+	}
+	if fp.posts != 0 {
+		t.Errorf("threaded resolve posted a grouped message: %d posts", fp.posts)
+	}
+}
+
+// TestDispatch_orphanDownAgain_leavesPool: a monitor that fails again
+// before the pool flushes has a stale recovery — it must not be
+// reported as back up.
+func TestDispatch_orphanDownAgain_leavesPool(t *testing.T) {
+	clock := base
+	m, _, fp, sink := newDispatchManager(t, &clock, 5, 5*time.Minute)
+	ctx := context.Background()
+	opened := clock
+	pageIndividually(t, m, &clock, "ops", "a", "b", "c")
+	sink.calls = nil
+
+	clock = clock.Add(10 * time.Minute)
+	for _, slug := range []string{"a", "b", "c"} {
+		m.Route(ctx, "ops", orphanResolveEntry(slug, opened, clock))
+	}
+	clock = clock.Add(time.Minute)
+	m.Route(ctx, "ops", downEntry("c", clock))
+
+	clock = clock.Add(5 * time.Minute)
+	m.evaluateAll(ctx)
+
+	if fp.posts != 1 {
+		t.Fatalf("want 1 grouped recovery post, got %d", fp.posts)
+	}
+	if !parentContainsText(fp.lastPost, "2 recovered") {
+		t.Errorf("grouped recovery should cover a and b only")
+	}
+	if parentContainsText(fp.lastPost, "monitor/c|c") {
+		t.Errorf("re-failed monitor reported as recovered")
+	}
+	if got := sink.countByType(alert.EventResolve); got != 0 {
+		t.Errorf("want zero per-monitor resolves, got %d", got)
+	}
+}
+
+// TestDispatch_orphanPools_areIndependentPerChannel: each channel
+// groups only its own recoveries, on its own window.
+func TestDispatch_orphanPools_areIndependentPerChannel(t *testing.T) {
+	clock := base
+	m, _, fp, sink := newDispatchManager(t, &clock, 5, 5*time.Minute)
+	ctx := context.Background()
+	opened := clock
+	pageIndividually(t, m, &clock, "ops", "a", "b")
+	pageIndividually(t, m, &clock, "web", "x", "y", "z")
+	sink.calls = nil
+
+	clock = clock.Add(10 * time.Minute)
+	m.Route(ctx, "ops", orphanResolveEntry("a", opened, clock))
+	m.Route(ctx, "ops", orphanResolveEntry("b", opened, clock))
+	clock = clock.Add(2 * time.Minute)
+	for _, slug := range []string{"x", "y", "z"} {
+		m.Route(ctx, "web", orphanResolveEntry(slug, opened, clock))
+	}
+
+	// ops is due, web is not.
+	clock = clock.Add(3 * time.Minute)
+	m.evaluateAll(ctx)
+	if fp.posts != 1 || !parentContainsText(fp.lastPost, "2 recovered") {
+		t.Fatalf("want ops' grouped post of 2, got %d posts", fp.posts)
+	}
+
+	clock = clock.Add(2 * time.Minute)
+	m.evaluateAll(ctx)
+	if fp.posts != 2 || !parentContainsText(fp.lastPost, "3 recovered") {
+		t.Fatalf("want web's grouped post of 3, got %d posts", fp.posts)
+	}
+	if len(sink.calls) != 0 {
+		t.Errorf("want zero per-monitor resolves, got %d", len(sink.calls))
+	}
+}
+
+// hookPoster is a fakePoster that records the channel of each
+// PostDigest and runs onPost before it returns, while the dispatcher
+// does not hold its lock.
+type hookPoster struct {
+	fakePoster
+	channels []string
+	onPost   func(channel string)
+}
+
+func (p *hookPoster) PostDigest(ctx context.Context, channel string, msg slack.ParentMessage) (string, string, error) {
+	p.channels = append(p.channels, channel)
+	if p.onPost != nil {
+		p.onPost(channel)
+	}
+	return p.fakePoster.PostDigest(ctx, channel, msg)
+}
+
+// TestDispatch_orphanPoolsDueTogether_laterChannelStaysCancellable: two
+// channels' orphan pools fall due on the same pass. While the first
+// channel's grouped post is out, the second channel's monitors fail
+// again or are paused. Those recoveries are stale by the time the
+// second channel posts, so nothing goes out for them.
+func TestDispatch_orphanPoolsDueTogether_laterChannelStaysCancellable(t *testing.T) {
+	clock := base
+	fp := &hookPoster{}
+	sink := &fakeSink{}
+	m := New(Options{
+		Store:          newFakeStore(),
+		Poster:         fp,
+		Sink:           sink.Notify,
+		Config:         group.Config{GroupWait: 0, GroupInterval: 5 * time.Minute, RepeatInterval: 30 * time.Minute},
+		PendingWait:    30 * time.Second,
+		BurstThreshold: 5,
+		BurstWindow:    5 * time.Minute,
+		Now:            func() time.Time { return clock },
+	})
+	ctx := context.Background()
+	opened := clock
+	pageIndividually(t, m, &clock, "ops", "a", "b")
+	pageIndividually(t, m, &clock, "web", "x", "y")
+	sink.calls = nil
+
+	clock = clock.Add(10 * time.Minute)
+	for _, slug := range []string{"a", "b"} {
+		m.Route(ctx, "ops", orphanResolveEntry(slug, opened, clock))
+	}
+	for _, slug := range []string{"x", "y"} {
+		m.Route(ctx, "web", orphanResolveEntry(slug, opened, clock))
+	}
+	fp.onPost = func(channel string) {
+		if channel != "ops" {
+			return
+		}
+		m.Route(ctx, "web", downEntry("x", clock))
+		m.Pause(ctx, "web", "y", clock)
+	}
+
+	clock = clock.Add(5 * time.Minute)
+	m.evaluateAll(ctx)
+
+	if strings.Join(fp.channels, ",") != "ops" {
+		t.Errorf("grouped recovery posts: got %v, want [ops]", fp.channels)
+	}
+	if got := sink.countByType(alert.EventResolve); got != 0 {
+		t.Errorf("want zero per-monitor resolves, got %+v", sink.calls)
+	}
+}
+
+// TestDispatch_orphanRemovedOrPaused_leavesPool: a removal or a
+// dependsOn pause is the last word on a pooled monitor, as it is for a
+// pending one.
+func TestDispatch_orphanRemovedOrPaused_leavesPool(t *testing.T) {
+	clock := base
+	m, _, fp, sink := newDispatchManager(t, &clock, 5, 5*time.Minute)
+	ctx := context.Background()
+	opened := clock
+	pageIndividually(t, m, &clock, "ops", "a", "b", "c")
+	sink.calls = nil
+
+	clock = clock.Add(10 * time.Minute)
+	for _, slug := range []string{"a", "b", "c"} {
+		m.Route(ctx, "ops", orphanResolveEntry(slug, opened, clock))
+	}
+	m.Remove(ctx, "ops", "a", clock)
+	m.Pause(ctx, "ops", "b", clock)
+
+	clock = clock.Add(5 * time.Minute)
+	m.evaluateAll(ctx)
+
+	if fp.posts != 0 {
+		t.Errorf("want no grouped post for one remaining orphan, got %d", fp.posts)
+	}
+	if got := sink.countByType(alert.EventResolve); got != 1 || sink.calls[0].slug != "c" {
+		t.Errorf("want c's standalone resolve only, got %+v", sink.calls)
 	}
 }

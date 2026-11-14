@@ -154,9 +154,19 @@ option.
 for the *network-blind* case. A pure Slack-only outage (probes fine,
 only Slack unreachable) is not blindness, so it does not trip degraded
 mode; the sub-threshold path can still emit up to `burstThreshold − 1`
-late fresh-parent messages *per channel* on recovery — bounded below
-your own burst line, and cross-channel coalescing was deferred in
-ADR-0004.
+late fresh-parent messages *per channel* when reminders fire after
+Slack returns — bounded below your own burst line, and cross-channel
+coalescing was deferred in ADR-0004.
+
+Monitors that recover before any reminder re-posts their parent have
+no Slack message to edit. Their recoveries pool per channel for
+`burstWindow` from the first of them, then land as **one** green
+message that lists every recovered monitor under the banner
+`⚠️ Initial notification delivery failed. These monitors are back up.`
+It has no mentions and no thread. A lone recovery in the pool still posts its own standalone
+resolve. A restart drops the pool: those monitors are up in the DB and
+the channel never heard of the incident. See
+[ADR-0017](adr/0017-group-orphan-resolves.md).
 
 **Sizing `burstWindow`.** The `burstThreshold − 1` bound above only
 holds if the dispatcher counts a whole outage. It counts monitors down
@@ -421,7 +431,9 @@ recovers later via the reminder cadence:
 - For a missed `Resolve` with no parent on file, the standalone
   resolve post is rendered with the same body as the parent edit
   (status, downtime, details) — so operators still get the full
-  story even when both Open and Resolve missed delivery.
+  story even when both Open and Resolve missed delivery. Non-critical
+  monitors wait `burstWindow` first; two or more such recoveries on one
+  channel post as a single grouped message instead (ADR-0017).
 
 This is intentional: the design favors "DB is the source of truth,
 Slack is best-effort" over blocking the worker on a Slack outage.

@@ -120,7 +120,7 @@ func (n *Notifier) NotifyRemoved(ctx context.Context, channelSlug string, in Mon
 			StatusText:   in.StatusText,
 			FailureAt:    in.OpenedAt,
 			LastError:    in.LastError,
-			DetailURL:    n.detailURL(in.Slug),
+			DetailURL:    n.DetailURL(in.Slug),
 		}
 		resolveMsg := BuildRemovedResolveEdit(downIn)
 		if err := n.client.UpdateMessage(ctx, ch.Token, UpdateMessageInput{
@@ -142,7 +142,7 @@ func (n *Notifier) NotifyRemoved(ctx context.Context, channelSlug string, in Mon
 		HTTPMethod:   "GET", // populated by the caller once we carry it on MonitorView; safe default for now
 		Source:       source,
 		Reason:       reason,
-		DetailURL:    n.detailURL(in.Slug),
+		DetailURL:    n.DetailURL(in.Slug),
 	})
 	if _, err := n.client.PostMessage(ctx, ch.Token, PostMessageInput{
 		ChannelID:   ch.ID,

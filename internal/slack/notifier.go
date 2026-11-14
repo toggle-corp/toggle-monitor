@@ -39,6 +39,11 @@ const DefaultDependentsNoteMax = 5
 // initial Open delivery failed.
 const freshParentBanner = "⚠️ Initial notification delivery failed. This alert is current."
 
+// OrphanResolvesBanner is the late-notice banner on the grouped
+// recovery message the dispatcher posts when several monitors recover
+// whose initial Open delivery failed.
+const OrphanResolvesBanner = "⚠️ Initial notification delivery failed. These monitors are back up."
+
 // NotifierObserver is the slim metrics seam used by the notifier. Each
 // Notify call increments SlackPost once (worst outcome wins). A
 // fresh-parent fallback additionally increments SlackFreshParent.
@@ -202,7 +207,7 @@ func (n *Notifier) notifyOpen(ctx context.Context, ch ChannelInfo, mentions []st
 		LastError:    ev.Error,
 		ResponseBody: m.ResponseBody,
 		BodyMaxChars: n.bodyMaxChars,
-		DetailURL:    n.detailURL(m.Slug),
+		DetailURL:    n.DetailURL(m.Slug),
 		Note:         n.dependentsNote(ctx, m.Slug, "⏸ Pauses dependents"),
 	}
 	msg := BuildDownParent(in)
@@ -258,7 +263,7 @@ func (n *Notifier) postFreshUptimeParent(ctx context.Context, ch ChannelInfo, me
 		LastError:    m.LastError,
 		ResponseBody: m.ResponseBody,
 		BodyMaxChars: n.bodyMaxChars,
-		DetailURL:    n.detailURL(m.Slug),
+		DetailURL:    n.DetailURL(m.Slug),
 		Note:         n.dependentsNote(ctx, m.Slug, "⏸ Pauses dependents"),
 		Banner:       freshParentBanner,
 	}
@@ -299,7 +304,7 @@ func (n *Notifier) notifyResolve(ctx context.Context, ch ChannelInfo, mentions [
 				LastError:    m.LastError,
 				ResponseBody: m.ResponseBody,
 				BodyMaxChars: n.bodyMaxChars,
-				DetailURL:    n.detailURL(m.Slug),
+				DetailURL:    n.DetailURL(m.Slug),
 				Banner:       freshParentBanner,
 			},
 			ResolveAt: ev.At,
@@ -326,7 +331,7 @@ func (n *Notifier) notifyResolve(ctx context.Context, ch ChannelInfo, mentions [
 			LastError:    m.LastError,
 			ResponseBody: m.ResponseBody,
 			BodyMaxChars: n.bodyMaxChars,
-			DetailURL:    n.detailURL(m.Slug),
+			DetailURL:    n.DetailURL(m.Slug),
 			Note:         n.dependentsNote(ctx, m.Slug, "▶ Resumes dependents"),
 		},
 		ResolveAt: ev.At,
@@ -352,7 +357,9 @@ func (n *Notifier) notifyResolve(ctx context.Context, ch ChannelInfo, mentions [
 	return nil
 }
 
-func (n *Notifier) detailURL(monitorSlug string) string {
+// DetailURL returns the web UI link for a monitor, or "" when no public
+// base URL is configured.
+func (n *Notifier) DetailURL(monitorSlug string) string {
 	if n.publicBase == "" {
 		return ""
 	}
@@ -458,7 +465,7 @@ func (n *Notifier) notifySSL(ctx context.Context, ch ChannelInfo, mentions []str
 		Issuer:        m.SSLIssuer,
 		Subject:       m.SSLSubject,
 		DaysRemaining: daysRem,
-		DetailURL:     n.detailURL(m.Slug),
+		DetailURL:     n.DetailURL(m.Slug),
 		DetectedAt:    ev.At,
 	}
 

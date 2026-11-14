@@ -66,16 +66,29 @@ func (p *digestPoster) Reply(ctx context.Context, channelSlug, ts string, blocks
 
 // groupSinkAdapter adapts *coalesce.Manager to scheduler.GroupSink,
 // translating the scheduler's GroupMember into coalesce.MemberInfo.
-type groupSinkAdapter struct{ m *coalesce.Manager }
+// detailURL fills MemberInfo.DetailURL, the per-monitor link the
+// dispatcher's grouped messages render; nil leaves it empty.
+type groupSinkAdapter struct {
+	m         *coalesce.Manager
+	detailURL func(slug string) string
+}
+
+func (a groupSinkAdapter) member(gm scheduler.GroupMember) coalesce.MemberInfo {
+	info := coalesce.MemberInfo{
+		Slug:         gm.Slug,
+		FriendlyName: gm.FriendlyName,
+		Mentions:     gm.Mentions,
+	}
+	if a.detailURL != nil {
+		info.DetailURL = a.detailURL(gm.Slug)
+	}
+	return info
+}
 
 func (a groupSinkAdapter) Down(ctx context.Context, channel string, gm scheduler.GroupMember, at time.Time) {
 	a.m.Route(ctx, channel, coalesce.Entry{
-		Member: coalesce.MemberInfo{
-			Slug:         gm.Slug,
-			FriendlyName: gm.FriendlyName,
-			Mentions:     gm.Mentions,
-		},
-		Event: &alert.Event{Type: alert.EventOpen, At: at},
+		Member: a.member(gm),
+		Event:  &alert.Event{Type: alert.EventOpen, At: at},
 	})
 }
 
@@ -94,11 +107,7 @@ func (a groupSinkAdapter) Pause(ctx context.Context, channel, slug string, at ti
 // notifier with the same payload the legacy EventSink path used.
 func (a groupSinkAdapter) Route(ctx context.Context, channel string, gm scheduler.GroupMember, row store.MonitorRow, mentions []string, event *alert.Event) {
 	a.m.Route(ctx, channel, coalesce.Entry{
-		Member: coalesce.MemberInfo{
-			Slug:         gm.Slug,
-			FriendlyName: gm.FriendlyName,
-			Mentions:     gm.Mentions,
-		},
+		Member:   a.member(gm),
 		Row:      row,
 		Event:    event,
 		Mentions: mentions,
