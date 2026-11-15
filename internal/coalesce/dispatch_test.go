@@ -1585,3 +1585,86 @@ func TestDispatch_resolveOfPostedParent_withoutStoredRef_editsIt(t *testing.T) {
 		t.Errorf("want c's standalone resolve after the window, got %+v", sink.calls)
 	}
 }
+
+// TestDispatch_openAfterItsRecovery_postsNothing: an Open committed by
+// another writer (the on-demand parent probe, the self-health commit)
+// reaches the dispatcher only after the monitor's own tick resolved the
+// incident and routed the recovery. Nobody was paged, so the recovery
+// posted nothing. The late Open must post nothing either: its DOWN
+// would stand with no recovery left to edit it. A later incident of the
+// same monitor still pages.
+func TestDispatch_openAfterItsRecovery_postsNothing(t *testing.T) {
+	clock := base
+	m, _, fp, sink := newDispatchManager(t, &clock, 5, 0)
+	ctx := context.Background()
+	opened := clock
+
+	m.Route(ctx, "ops", unannouncedResolveEntry("a", opened, clock.Add(time.Second)))
+	m.Route(ctx, "ops", downEntry("a", opened))
+	clock = clock.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+	if len(sink.calls) != 0 || fp.posts != 0 {
+		t.Fatalf("want nothing posted for the resolved incident, got sink %+v, %d digest posts", sink.calls, fp.posts)
+	}
+
+	m.Route(ctx, "ops", downEntry("a", clock))
+	clock = clock.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+	if got := sink.countByType(alert.EventOpen); got != 1 {
+		t.Errorf("want the next incident's Open flushed, got %+v", sink.calls)
+	}
+}
+
+// TestDispatch_openAfterItsRecovery_staysOutOfOpenDigest: the same late
+// Open on a channel with an open digest must not join it as down.
+func TestDispatch_openAfterItsRecovery_staysOutOfOpenDigest(t *testing.T) {
+	clock := base
+	m, _, _, _ := newDispatchManager(t, &clock, 2, 0)
+	ctx := context.Background()
+	m.Route(ctx, "ops", downEntry("b", clock))
+	m.Route(ctx, "ops", downEntry("c", clock))
+	clock = clock.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+
+	opened := clock
+	m.Route(ctx, "ops", unannouncedResolveEntry("a", opened, clock.Add(time.Second)))
+	m.Route(ctx, "ops", downEntry("a", opened))
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.groups["ops"].g.Members["a"]; ok {
+		t.Errorf("late Open of a resolved incident joined the digest")
+	}
+	if _, ok := m.channels["ops"].down["a"]; ok {
+		t.Errorf("late Open of a resolved incident counts toward the burst")
+	}
+}
+
+// TestDispatch_resolveOfOwnedMonitor_leavesPendingPool: a monitor the
+// notifier owns from an earlier flush is pooled again (a child resumed
+// still down before its first post finished). Its recovery goes to the
+// notifier and takes the pooled Open out of the pool, so the Open of an
+// incident that already ended is not flushed after it.
+func TestDispatch_resolveOfOwnedMonitor_leavesPendingPool(t *testing.T) {
+	clock := base
+	m, _, _, sink := newDispatchManager(t, &clock, 5, 0)
+	ctx := context.Background()
+	opened := clock
+	pageIndividually(t, m, &clock, "ops", "a")
+	m.Pause(ctx, "ops", "a", clock)
+	sink.calls = nil
+
+	resumed := downEntry("a", clock)
+	resumed.Row.OpenedAt = &opened
+	m.Route(ctx, "ops", resumed)
+	m.Route(ctx, "ops", unannouncedResolveEntry("a", opened, clock.Add(time.Second)))
+	clock = clock.Add(31 * time.Second)
+	m.evaluateAll(ctx)
+
+	if got := sink.countByType(alert.EventOpen); got != 0 {
+		t.Errorf("want the pooled Open dropped by its recovery, got %+v", sink.calls)
+	}
+	if got := sink.countByType(alert.EventResolve); got != 1 {
+		t.Errorf("want the recovery handed to the notifier, got %+v", sink.calls)
+	}
+}

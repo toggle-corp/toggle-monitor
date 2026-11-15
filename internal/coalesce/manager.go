@@ -104,6 +104,7 @@ type Manager struct {
 	mu          sync.Mutex
 	groups      map[string]*liveGroup    // open per-channel digests
 	channels    map[string]*channelState // dispatcher state per channel
+	resolved    map[string]time.Time     // slug → OpenedAt of the incident its latest recovery ended
 	lastSweptAt time.Time                // last removed-member sweep
 }
 
@@ -173,6 +174,7 @@ func New(opts Options) *Manager {
 		now:            now,
 		groups:         map[string]*liveGroup{},
 		channels:       map[string]*channelState{},
+		resolved:       map[string]time.Time{},
 	}
 }
 
@@ -304,6 +306,7 @@ func (m *Manager) Pause(ctx context.Context, channel, slug string, at time.Time)
 func (m *Manager) Remove(ctx context.Context, channel, slug string, at time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	delete(m.resolved, slug)
 	cs := m.channelStateFor(channel)
 	cs.clearDown(slug)
 	cs.dropOrphan(slug)

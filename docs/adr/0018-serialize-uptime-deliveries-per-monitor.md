@@ -54,6 +54,14 @@ incident's parent message.
 - The dispatcher hands the recovery of a monitor whose Open it flushed
   to the sink even when the row has no ts and no mark, instead of
   dropping it. The notifier decides with the outcome in hand.
+- The dispatcher remembers, per monitor, the incident its latest
+  recovery ended, whether or not that recovery reached the sink. An
+  Open for that incident routed afterwards posts nothing and joins no
+  pool or digest. The on-demand parent probe and the self-health commit
+  route a non-critical Open after their commit and push-propagation,
+  so the monitor's own tick can resolve it first. A recovery also takes
+  its monitor out of the pending pool, including one the notifier
+  already owns.
 - `SetUptimeThread` and `MarkUptimeOpenFailed` take the incident's
   `OpenedAt` and only write while the row's `opened_at` still matches
   it. A delivery that finishes after its incident resolved writes
@@ -70,6 +78,7 @@ that posts the parent changes no signature and covers all four paths.
 |---|---|---|
 | Recovery routed while its Open is still posting | DOWN posted, never edited | DOWN posted, then edited to UP with a reply |
 | Recovery delivered before its Open's delivery starts | DOWN posted, never edited | nothing posted |
+| Non-critical Open routed to the dispatcher after its recovery | DOWN posted, never edited | nothing posted |
 | Open's ref stored after its recovery cleared it | stale ts on an up monitor | not stored |
 | Open's ref or mark written after a later incident opened | lands on the later incident | not stored |
 | Reminder with a snapshot older than the stored ref | second DOWN parent | reply in the Open's thread |
@@ -84,6 +93,6 @@ that posts the parent changes no signature and covers all four paths.
 ## References
 
 - `internal/slack/notifier.go`: `Notify`, `monitorDelivery`
-- `internal/coalesce/dispatch.go`: `routeResolve`
+- `internal/coalesce/dispatch.go`: `routeResolve`, `routeOpen`
 - `internal/store/store.go`: `SetUptimeThread`
 - `internal/slack/notifier_inflight_test.go`

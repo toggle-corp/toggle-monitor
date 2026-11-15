@@ -104,12 +104,14 @@ var (
 type recordingSink struct {
 	mu     sync.Mutex
 	events []alert.EventType
+	slugs  []string // slugs[i] is the monitor of events[i]
 }
 
-func (r *recordingSink) sink(_ context.Context, _ store.MonitorRow, _ string, _ []string, ev *alert.Event) error {
+func (r *recordingSink) sink(_ context.Context, row store.MonitorRow, _ string, _ []string, ev *alert.Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, ev.Type)
+	r.slugs = append(r.slugs, row.Slug)
 	return nil
 }
 
@@ -117,6 +119,19 @@ func (r *recordingSink) got() []alert.EventType {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Clone(r.events)
+}
+
+// gotFor lists the event types delivered for one monitor.
+func (r *recordingSink) gotFor(slug string) []alert.EventType {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []alert.EventType
+	for i, s := range r.slugs {
+		if s == slug {
+			out = append(out, r.events[i])
+		}
+	}
+	return out
 }
 
 // apiPlan is the plan every writer in these tests uses for "api".
@@ -510,3 +525,52 @@ func TestCommitRace_parentDownBeforeExtraCommit_childStaysSilent(t *testing.T) {
 	}
 }
 
+// TestCommitRace_onDemandOpenResolvedDuringPush_postsNothing: the
+// on-demand probe commits a non-critical parent's Open, and the parent's
+// own tick resolves it while push-propagation runs, before the probe
+// routes the Open. Nobody was paged, so the recovery posts nothing, and
+// the Open the dispatcher receives after it must not post either: that
+// DOWN would have no recovery left to edit it.
+func TestCommitRace_onDemandOpenResolvedDuringPush_postsNothing(t *testing.T) {
+	repo, _ := newTrappedRepo(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sink := &recordingSink{}
+	mgr := coalesce.New(coalesce.Options{Store: repo, Sink: coalesce.Sink(sink.sink), PendingWait: 20 * time.Millisecond})
+	nonCritical := func(prober probe.Prober) scheduler.Plan {
+		p := apiPlan(prober)
+		p.Critical = false
+		return p
+	}
+	s := scheduler.New(repo, scheduler.WithGroupSink(groupSinkAdapter{m: mgr}))
+	push := func(ctx context.Context, _ string, _ time.Time) {
+		if err := s.Tick(ctx, nonCritical(raceProber{res: probeOK})); err != nil {
+			t.Errorf("tick: %v", err)
+		}
+	}
+	probeParent := makeOnDemandParentProbe(repo, mgr, staticPlans{nonCritical(raceProber{res: probeFail})},
+		push, sink.sink, 5*time.Second, time.Now, slog.Default())
+	probeParent(ctx, "api")
+	assertMonitor(t, repo, alert.StatusUp, alert.EventOpen, alert.EventResolve)
+
+	// A later failure on the same channel joins the pending pool the
+	// late Open would sit in, so once it flushes, the Open would have too.
+	mgr.Route(ctx, "ops", coalesce.Entry{
+		Member: coalesce.MemberInfo{Slug: "other", FriendlyName: "other"},
+		Row:    store.MonitorRow{MonitorSpec: store.MonitorSpec{Slug: "other"}},
+		Event:  &alert.Event{Type: alert.EventOpen, At: time.Now()},
+	})
+	go mgr.RunEvaluator(ctx, 5*time.Millisecond)
+	deadline := time.Now().Add(5 * time.Second)
+	for len(sink.gotFor("other")) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("pending pool never flushed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if got := sink.gotFor("api"); len(got) != 0 {
+		t.Errorf("api: got %v, want nothing posted for an incident that already resolved", got)
+	}
+}

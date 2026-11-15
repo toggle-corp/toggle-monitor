@@ -43,6 +43,15 @@
 // yet. That recovery goes to the sink, which waits for the Open's
 // delivery and acts on its outcome (ADR-0018).
 //
+// An Open can reach the dispatcher after its own recovery. The
+// on-demand parent probe and the self-health commit route the Open they
+// committed only after other work, and the monitor's own tick can
+// resolve the incident in between. The dispatcher remembers, per
+// monitor, the incident its latest recovery ended, and an Open for that
+// incident posts nothing: its DOWN would have no recovery left to edit
+// it. A recovery also takes its monitor out of the pending pool, so an
+// Open pooled before it never flushes.
+//
 // The dispatch state is in-memory only. A restart loses any pending
 // pools (they re-fill from the next probe) and reattaches open groups
 // from incident_groups; the channel mode is derivable on the fly
@@ -176,6 +185,54 @@ func (cs *channelState) takeOrphans() []Entry {
 	return out
 }
 
+// unpool removes a monitor from the pending pool, retiring the pending
+// state when the pool empties so the next failure starts fresh.
+func (cs *channelState) unpool(slug string) {
+	if _, ok := cs.pending[slug]; !ok {
+		return
+	}
+	delete(cs.pending, slug)
+	if len(cs.pending) == 0 {
+		cs.mode = modeIndividual
+		cs.pending = nil
+		cs.pendingDue = time.Time{}
+	}
+}
+
+// openIncident identifies the incident an Open belongs to: the row's
+// OpenedAt, or for an Open from an up monitor, whose row has none yet,
+// the Open's own time, which becomes OpenedAt when it commits.
+func openIncident(e Entry) time.Time {
+	if e.Row.OpenedAt != nil {
+		return *e.Row.OpenedAt
+	}
+	return e.Event.At
+}
+
+// sameIncident reports whether two incident start times are the same
+// incident. A row's opened_at round-trips through Postgres at
+// microsecond precision, hence the tolerance.
+func sameIncident(a, b time.Time) bool {
+	d := a.Sub(b)
+	return d < time.Millisecond && d > -time.Millisecond
+}
+
+// resolvedAlready reports whether e is the Open of an incident whose
+// recovery this dispatcher already received, and forgets a recorded
+// recovery that a newer incident supersedes. Caller holds m.mu.
+func (m *Manager) resolvedAlready(e Entry) bool {
+	slug := e.Member.Slug
+	ended, ok := m.resolved[slug]
+	if !ok {
+		return false
+	}
+	if sameIncident(ended, openIncident(e)) {
+		return true
+	}
+	delete(m.resolved, slug)
+	return false
+}
+
 // hasUptimeThread reports whether the monitor's Open reached Slack:
 // the row snapshot carries the parent ts its resolve edits.
 func hasUptimeThread(row store.MonitorRow) bool {
@@ -301,9 +358,16 @@ func (m *Manager) Route(ctx context.Context, channel string, e Entry) {
 }
 
 // routeOpen dispatches a new failure based on the channel's current
-// mode. Caller does not hold m.mu.
+// mode. An Open whose incident already recovered posts nothing. Caller
+// does not hold m.mu.
 func (m *Manager) routeOpen(ctx context.Context, channel string, e Entry) {
 	m.mu.Lock()
+	if m.resolvedAlready(e) {
+		m.mu.Unlock()
+		m.log.Info("open of an incident already resolved: posting nothing",
+			"channel", channel, "slug", e.Member.Slug)
+		return
+	}
 	cs := m.channelStateFor(channel)
 	cs.markDown(e.Member.Slug, e.Event.At)
 	cs.dropOrphan(e.Member.Slug)
@@ -344,15 +408,23 @@ func (m *Manager) routeOpen(ctx context.Context, channel string, e Entry) {
 // joins the channel's orphan pool instead, and one whose Open was never
 // attempted posts nothing. A recovery whose parent the sink posted but
 // could not store the thread ref of goes to the sink, which edits it.
+// Every recovery records the incident it ended, so a late Open for it
+// posts nothing.
 func (m *Manager) routeResolve(ctx context.Context, channel string, e Entry) {
 	// Asked before m.mu is taken: the sink's record waits for a
 	// delivery of this monitor still in flight.
 	posted := m.postedParent(e)
 	m.mu.Lock()
+	if e.Row.OpenedAt != nil {
+		m.resolved[e.Member.Slug] = *e.Row.OpenedAt
+	}
 	cs := m.channelStateFor(channel)
 	owned := cs.ownedByIndividual(e.Member.Slug)
 	cs.clearDown(e.Member.Slug)
 	if owned {
+		// An Open pooled again while the notifier owns the monitor
+		// belongs to the incident this recovery ends.
+		cs.unpool(e.Member.Slug)
 		if !hasUptimeThread(e.Row) && !openDeliveryFailed(e.Row) {
 			// The Open was flushed to the sink, so a row with neither a
 			// thread ts nor the mark only says its post had not finished
@@ -383,14 +455,7 @@ func (m *Manager) routeResolve(ctx context.Context, channel string, e Entry) {
 		// A failure that recovered before its pool ever flushed —
 		// silently retract. The pool size shrinks; the flush decision
 		// at expiry re-reads it.
-		delete(cs.pending, e.Member.Slug)
-		// If the pool emptied, retire the pending state entirely so
-		// the next failure starts fresh.
-		if len(cs.pending) == 0 {
-			cs.mode = modeIndividual
-			cs.pending = nil
-			cs.pendingDue = time.Time{}
-		}
+		cs.unpool(e.Member.Slug)
 		m.mu.Unlock()
 	case modeIndividual:
 		// Recovery of a previously individually-notified monitor —

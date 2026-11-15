@@ -100,6 +100,8 @@ was every child.
   critical monitors. A monitor whose Open the dispatcher already
   flushed is the exception: its row can predate the post, so the
   recovery goes to the notifier, which knows the outcome (ADR-0018).
+  A dropped recovery still records the incident it ended, so an Open of
+  that incident routed after it posts nothing (ADR-0018).
 - A child resumed still down after its parent recovered, with no ts and
   no mark, is announced on its first resumed tick: the scheduler routes
   it to the dispatcher as an Open, so it pools and counts toward the
