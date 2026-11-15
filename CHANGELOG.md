@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.11.0](https://github.com/toggle-corp/toggle-monitor/compare/0.10.0..0.11.0) - 2026-11-15
+### Changes:
+
+#### 🚀  Features
+
+- *(coalesce)* Group orphan resolves into one message per channel - ([af432bb](https://github.com/toggle-corp/toggle-monitor/commit/af432bb065b676822ffd73d250940628d6b065de))
+
+#### 🐛 Bug Fixes
+
+- *(coalesce)* Post nothing for an open routed after its recovery - ([0c797a6](https://github.com/toggle-corp/toggle-monitor/commit/0c797a6f28f728778e23b80ba33969cc99503967))
+- *(coalesce)* Skip recovery posts for monitors never announced - ([98389b7](https://github.com/toggle-corp/toggle-monitor/commit/98389b7cb8284f4b0f62bbdb46fb547d13a44f19))
+- *(lifecycle)* Announce critical parent found down by on-demand probe - ([825588c](https://github.com/toggle-corp/toggle-monitor/commit/825588c4dce7c177cee5c75f7c033556ff93036d))
+- *(scheduler)* Hold children behind a dependsOn-paused parent - ([1ca08f6](https://github.com/toggle-corp/toggle-monitor/commit/1ca08f62f0196537f8ef39b7585993a312c3d875))
+- *(scheduler)* Serialize alert state commits per monitor - ([3a0aead](https://github.com/toggle-corp/toggle-monitor/commit/3a0aead761320dc40c1ca0400fb14b853bff2bb7))
+- *(scheduler)* Announce children resumed still down through the dispatcher - ([aa37ccf](https://github.com/toggle-corp/toggle-monitor/commit/aa37ccf6609b2a2b8ca5ef6433a262ca0361c72e))
+- *(scheduler)* Pause children whose parent went down mid-probe - ([7c54a48](https://github.com/toggle-corp/toggle-monitor/commit/7c54a48e39ae724526d71c24dfc96144149d5742))
+- *(slack)* Drop delivery records of removed monitors - ([3fb1770](https://github.com/toggle-corp/toggle-monitor/commit/3fb17700cea29547753de5ae905225f42e4a78ac))
+- *(slack)* Retry thread ref writes and mark the open when they fail - ([5f8647d](https://github.com/toggle-corp/toggle-monitor/commit/5f8647d410fdf6e191946139106dce3ec8a81e73))
+- *(slack)* Make a recovery wait for its monitor's open delivery - ([baaf957](https://github.com/toggle-corp/toggle-monitor/commit/baaf9577fc239764466a35389a63d02378c7c732))
+- *(slack)* Disable link and media unfurls - ([2fd7f70](https://github.com/toggle-corp/toggle-monitor/commit/2fd7f7051cbd848f93d2e6962608d054f8991391))
+- *(store)* Scope uptime thread ref writes to their incident - ([ef72ba0](https://github.com/toggle-corp/toggle-monitor/commit/ef72ba009d1b165a73a84fe08682eb7c05dba587))
+
+
 ## [0.10.0](https://github.com/toggle-corp/toggle-monitor/compare/0.9.0..0.10.0) - 2026-09-28
 ### Changes:
 
