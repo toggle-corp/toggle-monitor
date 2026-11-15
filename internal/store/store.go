@@ -1135,39 +1135,40 @@ func (r *Repo) SetSSLThread(ctx context.Context, slug, channel, ts string) error
 	return nil
 }
 
-// SetUptimeThread persists the Slack thread ref for the currently-open
-// uptime incident on this monitor. Called by the notifier after
-// successfully posting the parent down message. A stored ref
-// supersedes any open-failed mark. Only a monitor in an open incident
-// stores one: a post that finishes after its incident resolved would
-// otherwise leave the ref for the next incident to read as its own.
-func (r *Repo) SetUptimeThread(ctx context.Context, slug, channel, ts string) error {
+// SetUptimeThread persists the Slack thread ref of the uptime incident
+// that opened at openedAt. Called by the notifier after successfully
+// posting the parent down message. A stored ref supersedes any
+// open-failed mark. Only that incident, while still open, stores it: a
+// post that finishes after its incident resolved would otherwise leave
+// the ref for a later incident to read as its own.
+func (r *Repo) SetUptimeThread(ctx context.Context, slug string, openedAt time.Time, channel, ts string) error {
 	_, err := r.pool.Exec(ctx, `
 		UPDATE monitors
 		SET uptime_thread_channel = $1,
 			uptime_thread_ts = $2,
 			uptime_open_failed_at = NULL,
 			updated_at = now()
-		WHERE slug = $3 AND opened_at IS NOT NULL
-	`, channel, ts, slug)
+		WHERE slug = $3 AND opened_at = $4
+	`, channel, ts, slug, openedAt)
 	if err != nil {
 		return fmt.Errorf("set uptime thread for %q: %w", slug, err)
 	}
 	return nil
 }
 
-// MarkUptimeOpenFailed records that the monitor's uptime parent message
-// was sent to Slack and the post failed, or that a delivered parent's
-// thread ref could not be stored. Only a monitor in an open
-// incident is marked: an Open whose post outlived the incident has no
-// recovery left to report. Called by the notifier.
-func (r *Repo) MarkUptimeOpenFailed(ctx context.Context, slug string) error {
+// MarkUptimeOpenFailed records that the uptime parent message of the
+// incident that opened at openedAt was sent to Slack and the post
+// failed, or that a delivered parent's thread ref could not be stored.
+// Only that incident, while still open, is marked: an Open whose post
+// outlived the incident has no recovery left to report. Called by the
+// notifier.
+func (r *Repo) MarkUptimeOpenFailed(ctx context.Context, slug string, openedAt time.Time) error {
 	_, err := r.pool.Exec(ctx, `
 		UPDATE monitors
 		SET uptime_open_failed_at = now(),
 			updated_at = now()
-		WHERE slug = $1 AND opened_at IS NOT NULL
-	`, slug)
+		WHERE slug = $1 AND opened_at = $2
+	`, slug, openedAt)
 	if err != nil {
 		return fmt.Errorf("mark uptime open failed for %q: %w", slug, err)
 	}

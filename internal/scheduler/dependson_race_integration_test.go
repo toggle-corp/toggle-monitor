@@ -190,14 +190,15 @@ func TestTick_dependsOn_resumedStillDown_announcesOnce(t *testing.T) {
 			repo := newRepo(t)
 			ctx := context.Background()
 			reconcileAll(t, repo, "parent", "child")
-			openIncident(t, repo, "child", time.Now().Add(-time.Hour))
+			opened := time.Now().Add(-time.Hour)
+			openIncident(t, repo, "child", opened)
 			if tc.threadTS {
-				if err := repo.SetUptimeThread(ctx, "child", "C1", "1700000000.000100"); err != nil {
+				if err := repo.SetUptimeThread(ctx, "child", opened, "C1", "1700000000.000100"); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if tc.openFailed {
-				if err := repo.MarkUptimeOpenFailed(ctx, "child"); err != nil {
+				if err := repo.MarkUptimeOpenFailed(ctx, "child", opened); err != nil {
 					t.Fatal(err)
 				}
 			}

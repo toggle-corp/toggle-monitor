@@ -197,28 +197,29 @@ func TestUptimeOpenFailed_markAndClear(t *testing.T) {
 		}
 	}
 
+	t0 := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+
 	// No open incident: nothing to mark.
-	if err := repo.MarkUptimeOpenFailed(ctx, "api"); err != nil {
+	if err := repo.MarkUptimeOpenFailed(ctx, "api", t0); err != nil {
 		t.Fatalf("mark while up: %v", err)
 	}
 	marked(false, "mark while up")
 
-	t0 := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
 	open := &alert.Event{Type: alert.EventOpen, At: t0, StatusCode: 503}
 	if err := repo.ApplyCheck(ctx, "api", alert.State{Status: alert.StatusDown, OpenedAt: t0}, t0, 503, "", open); err != nil {
 		t.Fatalf("ApplyCheck (open): %v", err)
 	}
-	if err := repo.MarkUptimeOpenFailed(ctx, "api"); err != nil {
+	if err := repo.MarkUptimeOpenFailed(ctx, "api", t0); err != nil {
 		t.Fatalf("mark: %v", err)
 	}
 	marked(true, "mark during incident")
 
-	if err := repo.SetUptimeThread(ctx, "api", "C1", "1700000000.000100"); err != nil {
+	if err := repo.SetUptimeThread(ctx, "api", t0, "C1", "1700000000.000100"); err != nil {
 		t.Fatalf("SetUptimeThread: %v", err)
 	}
 	marked(false, "thread ref stored")
 
-	if err := repo.MarkUptimeOpenFailed(ctx, "api"); err != nil {
+	if err := repo.MarkUptimeOpenFailed(ctx, "api", t0); err != nil {
 		t.Fatalf("re-mark: %v", err)
 	}
 	marked(true, "re-mark")
@@ -241,7 +242,7 @@ func TestSetUptimeThread_outsideAnIncident_storesNothing(t *testing.T) {
 	if err := repo.ReconcileMonitor(ctx, spec); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if err := repo.SetUptimeThread(ctx, "api", "C1", "1700000000.000100"); err != nil {
+	if err := repo.SetUptimeThread(ctx, "api", time.Now(), "C1", "1700000000.000100"); err != nil {
 		t.Fatalf("SetUptimeThread: %v", err)
 	}
 	row, err := repo.GetMonitor(ctx, "api")
@@ -250,6 +251,63 @@ func TestSetUptimeThread_outsideAnIncident_storesNothing(t *testing.T) {
 	}
 	if row.UptimeThreadTS != nil {
 		t.Errorf("UptimeThreadTS: got %q on an up monitor, want none", *row.UptimeThreadTS)
+	}
+}
+
+// TestThreadRefWrites_forAnEarlierIncident_leaveTheNextOneAlone: incident
+// A's parent post finishes after A resolved and incident B opened. A's
+// thread ref and failed-delivery mark belong to A; written onto B, B's
+// recovery would edit A's message or report a failure B never had.
+func TestThreadRefWrites_forAnEarlierIncident_leaveTheNextOneAlone(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+	spec := store.MonitorSpec{Slug: "api", FriendlyName: "API", URL: "https://api.example.test/health", Source: store.SourceStatic}
+	if err := repo.ReconcileMonitor(ctx, spec); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	openAt := func(at time.Time) {
+		t.Helper()
+		ev := &alert.Event{Type: alert.EventOpen, At: at, StatusCode: 503}
+		if err := repo.ApplyCheck(ctx, "api", alert.State{Status: alert.StatusDown, OpenedAt: at, LastReminderAt: at}, at, 503, "", ev); err != nil {
+			t.Fatalf("open: %v", err)
+		}
+	}
+	incidentA := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+	openAt(incidentA)
+	resolvedAt := incidentA.Add(time.Minute)
+	if err := repo.ApplyCheck(ctx, "api", alert.State{Status: alert.StatusUp}, resolvedAt, 200, "",
+		&alert.Event{Type: alert.EventResolve, At: resolvedAt, Downtime: time.Minute}); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	incidentB := resolvedAt.Add(time.Minute)
+	openAt(incidentB)
+
+	if err := repo.SetUptimeThread(ctx, "api", incidentA, "C1", "1700000000.000100"); err != nil {
+		t.Fatalf("SetUptimeThread: %v", err)
+	}
+	if err := repo.MarkUptimeOpenFailed(ctx, "api", incidentA); err != nil {
+		t.Fatalf("MarkUptimeOpenFailed: %v", err)
+	}
+	row, err := repo.GetMonitor(ctx, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.UptimeThreadTS != nil {
+		t.Errorf("UptimeThreadTS: got %q on incident B, want none", *row.UptimeThreadTS)
+	}
+	if row.UptimeOpenFailedAt != nil {
+		t.Errorf("UptimeOpenFailedAt: set on incident B, want none")
+	}
+
+	// B's own writes land.
+	if err := repo.SetUptimeThread(ctx, "api", incidentB, "C1", "1700000000.000200"); err != nil {
+		t.Fatalf("SetUptimeThread (B): %v", err)
+	}
+	if row, err = repo.GetMonitor(ctx, "api"); err != nil {
+		t.Fatal(err)
+	}
+	if row.UptimeThreadTS == nil || *row.UptimeThreadTS != "1700000000.000200" {
+		t.Errorf("UptimeThreadTS: got %v, want B's ref", row.UptimeThreadTS)
 	}
 }
 

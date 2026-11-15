@@ -26,8 +26,8 @@ type ChannelInfo struct {
 // alert will pause X, Y"). Production wires this to *store.Repo; tests
 // inject a fake.
 type ThreadStore interface {
-	SetUptimeThread(ctx context.Context, monitorSlug, channelID, ts string) error
-	MarkUptimeOpenFailed(ctx context.Context, monitorSlug string) error
+	SetUptimeThread(ctx context.Context, monitorSlug string, openedAt time.Time, channelID, ts string) error
+	MarkUptimeOpenFailed(ctx context.Context, monitorSlug string, openedAt time.Time) error
 	SetSSLThread(ctx context.Context, monitorSlug, channelID, ts string) error
 	ListChildrenOf(ctx context.Context, parentSlug string) ([]string, error)
 }
@@ -340,13 +340,14 @@ func (n *Notifier) notifyOpen(ctx context.Context, ch ChannelInfo, mentions []st
 		Blocks:      msg.Blocks,
 		Attachments: msg.Attachments,
 	})
+	incident := incidentStart(m, ev)
 	if err != nil {
-		*rec = uptimeParent{incident: incidentStart(m, ev), failed: true}
-		n.markOpenFailed(ctx, m.Slug)
+		*rec = uptimeParent{incident: incident, failed: true}
+		n.markOpenFailed(ctx, m.Slug, incident)
 		return err
 	}
-	*rec = uptimeParent{incident: incidentStart(m, ev), channel: res.Channel, ts: res.TS}
-	n.storeUptimeThread(ctx, m.Slug, res.Channel, res.TS)
+	*rec = uptimeParent{incident: incident, channel: res.Channel, ts: res.TS}
+	n.storeUptimeThread(ctx, m.Slug, incident, res.Channel, res.TS)
 	return nil
 }
 
@@ -378,20 +379,21 @@ func persistThreadRef(ctx context.Context, write func(context.Context) error) er
 	}
 }
 
-// storeUptimeThread persists a delivered uptime parent's thread ref.
-// When the write keeps failing, the row is marked the way a failed post
-// marks it: the recovery then posts the late-notice resolve rather than
-// staying silent while the DOWN stands. This process still edits the
-// parent, from the monitor's delivery record.
-func (n *Notifier) storeUptimeThread(ctx context.Context, slug, channel, ts string) {
+// storeUptimeThread persists the thread ref of a delivered uptime
+// parent for the incident that opened at incident. When the write keeps
+// failing, the row is marked the way a failed post marks it: the
+// recovery then posts the late-notice resolve rather than staying
+// silent while the DOWN stands. This process still edits the parent,
+// from the monitor's delivery record.
+func (n *Notifier) storeUptimeThread(ctx context.Context, slug string, incident time.Time, channel, ts string) {
 	err := persistThreadRef(ctx, func(ctx context.Context) error {
-		return n.store.SetUptimeThread(ctx, slug, channel, ts)
+		return n.store.SetUptimeThread(ctx, slug, incident, channel, ts)
 	})
 	if err == nil {
 		return
 	}
 	n.log.Warn("persist uptime thread ref", "monitor", slug, "error", err)
-	n.markOpenFailed(ctx, slug)
+	n.markOpenFailed(ctx, slug, incident)
 }
 
 func (n *Notifier) notifyReminder(ctx context.Context, ch ChannelInfo, mentions []string, m MonitorView, ev *alert.Event, rec *uptimeParent) error {
@@ -450,27 +452,28 @@ func (n *Notifier) postFreshUptimeParent(ctx context.Context, ch ChannelInfo, me
 	})
 	if err != nil {
 		*rec = uptimeParent{incident: m.OpenedAt, failed: true}
-		n.markOpenFailed(ctx, m.Slug)
+		n.markOpenFailed(ctx, m.Slug, m.OpenedAt)
 		return err
 	}
 	*rec = uptimeParent{incident: m.OpenedAt, channel: res.Channel, ts: res.TS}
 	if m.UptimeOpenFailed {
 		n.observeFreshParent("uptime")
 	}
-	n.storeUptimeThread(ctx, m.Slug, res.Channel, res.TS)
+	n.storeUptimeThread(ctx, m.Slug, m.OpenedAt, res.Channel, res.TS)
 	return nil
 }
 
-// markOpenFailed records that the monitor's uptime parent post failed,
-// or that the thread ref of a delivered one could not be stored, so its
-// eventual recovery reports the incident instead of posting nothing.
-// Best-effort: an unrecorded failure leaves that recovery silent. A
-// cancelled context (shutdown mid-post) records nothing.
-func (n *Notifier) markOpenFailed(ctx context.Context, slug string) {
+// markOpenFailed records that the uptime parent post for the incident
+// that opened at incident failed, or that the thread ref of a delivered
+// one could not be stored, so its eventual recovery reports the
+// incident instead of posting nothing. Best-effort: an unrecorded
+// failure leaves that recovery silent. A cancelled context (shutdown
+// mid-post) records nothing.
+func (n *Notifier) markOpenFailed(ctx context.Context, slug string, incident time.Time) {
 	if ctx.Err() != nil {
 		return
 	}
-	if err := n.store.MarkUptimeOpenFailed(ctx, slug); err != nil {
+	if err := n.store.MarkUptimeOpenFailed(ctx, slug, incident); err != nil {
 		n.log.Warn("persist uptime open failure", "monitor", slug, "error", err)
 	}
 }

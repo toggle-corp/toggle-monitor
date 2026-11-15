@@ -28,6 +28,10 @@ type fakeStore struct {
 	setUptimeCalls  int
 	setSSLCalls     int
 	openFailedMarks []string
+
+	// incidents lists the openedAt of every SetUptimeThread and
+	// MarkUptimeOpenFailed call, in order.
+	incidents []time.Time
 }
 
 var errStoreDown = errors.New("store unavailable")
@@ -43,15 +47,17 @@ func failing(left *int) bool {
 	return true
 }
 
-func (f *fakeStore) SetUptimeThread(_ context.Context, _, _, _ string) error {
+func (f *fakeStore) SetUptimeThread(_ context.Context, _ string, openedAt time.Time, _, _ string) error {
 	f.setUptimeCalls++
+	f.incidents = append(f.incidents, openedAt)
 	if failing(&f.setUptimeFails) {
 		return errStoreDown
 	}
 	return nil
 }
-func (f *fakeStore) MarkUptimeOpenFailed(_ context.Context, slug string) error {
+func (f *fakeStore) MarkUptimeOpenFailed(_ context.Context, slug string, openedAt time.Time) error {
 	f.openFailedMarks = append(f.openFailedMarks, slug)
+	f.incidents = append(f.incidents, openedAt)
 	return nil
 }
 func (f *fakeStore) SetSSLThread(_ context.Context, _, _, _ string) error {

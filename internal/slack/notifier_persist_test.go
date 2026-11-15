@@ -158,3 +158,41 @@ func TestNotifier_Open_ofResumedIncident_datesFromOpenedAt(t *testing.T) {
 		t.Errorf("want the DOWN dated %s; got:\n%s", want, flat)
 	}
 }
+
+// TestNotifier_threadRefWrites_nameTheirIncident: every thread ref write
+// and failed-delivery mark carries the OpenedAt of the incident whose
+// parent was posted, so the store can refuse it once a later incident
+// has taken the row. An Open from an up monitor names its own time,
+// which becomes the incident's OpenedAt; a reminder's fresh parent
+// names the row's.
+func TestNotifier_threadRefWrites_nameTheirIncident(t *testing.T) {
+	_, store, _, n := newRecoveryNotifier(t, "")
+	store.setUptimeFails = -1
+	ctx := context.Background()
+	opened := time.Now().UTC().Add(-time.Hour)
+	if err := n.Notify(ctx, "ops", nil, apiView, openEvent(opened)); err != nil {
+		t.Fatalf("Notify(open): %v", err)
+	}
+
+	web := apiView
+	web.Slug, web.OpenedAt = "web", opened.Add(time.Minute)
+	if err := n.Notify(ctx, "ops", nil, web,
+		&alert.Event{Type: alert.EventReminder, At: opened.Add(time.Hour)},
+	); err != nil {
+		t.Fatalf("Notify(reminder): %v", err)
+	}
+
+	// Per parent: three ref write attempts, then the mark.
+	if len(store.incidents) != 8 {
+		t.Fatalf("writes: got %d, want 8", len(store.incidents))
+	}
+	for i, at := range store.incidents {
+		want := opened
+		if i >= 4 {
+			want = web.OpenedAt
+		}
+		if !at.Equal(want) {
+			t.Errorf("write %d: incident %v, want %v", i, at, want)
+		}
+	}
+}
