@@ -83,9 +83,15 @@ type Notifier struct {
 // a DOWN is about to land. Holding the lock across a delivery makes a
 // recovery wait for an Open in flight, and parent records what that Open
 // produced.
+//
+// A record lives in Notifier.monitors until its monitor is removed. It
+// leaves the map only while its lock is held, and is marked retired at
+// the same time, so a record that is locked and not retired is the
+// map's entry for its slug.
 type monitorDelivery struct {
 	sync.Mutex
-	parent uptimeParent
+	parent  uptimeParent
+	retired bool // dropped from Notifier.monitors; lockDelivery skips it
 }
 
 // uptimeParent is what this process knows about one incident's parent
@@ -134,6 +140,32 @@ func (n *Notifier) delivery(slug string) *monitorDelivery {
 	return d
 }
 
+// lockDelivery returns the monitor's delivery state, locked. A record
+// retired while the caller waited for its lock is passed over for the
+// one that replaced it, so one monitor's deliveries never run on two
+// records at once.
+func (n *Notifier) lockDelivery(slug string) *monitorDelivery {
+	for {
+		d := n.delivery(slug)
+		d.Lock()
+		if !d.retired {
+			return d
+		}
+		d.Unlock()
+	}
+}
+
+// retireDelivery drops the monitor's delivery record d, which the
+// caller locked through lockDelivery, and unlocks it. A delivery for
+// the slug that comes after starts from a fresh record.
+func (n *Notifier) retireDelivery(slug string, d *monitorDelivery) {
+	n.mu.Lock()
+	delete(n.monitors, slug)
+	n.mu.Unlock()
+	d.retired = true
+	d.Unlock()
+}
+
 // UptimeParentPosted reports whether this process posted an uptime
 // parent for the monitor's incident that opened at openedAt and holds
 // its thread ref. The failed-delivery mark covers both a failed post
@@ -142,8 +174,7 @@ func (n *Notifier) delivery(slug string) *monitorDelivery {
 // here, where the parent gets its edit. It waits for a delivery of the
 // monitor still in flight.
 func (n *Notifier) UptimeParentPosted(slug string, openedAt time.Time) bool {
-	d := n.delivery(slug)
-	d.Lock()
+	d := n.lockDelivery(slug)
 	defer d.Unlock()
 	return d.parent.sameIncident(openedAt) && d.parent.ts != ""
 }
@@ -271,8 +302,7 @@ func (n *Notifier) Notify(ctx context.Context, channelSlug string, mentions []st
 		return fmt.Errorf("slack channel slug %q is not registered", channelSlug)
 	}
 
-	d := n.delivery(m.Slug)
-	d.Lock()
+	d := n.lockDelivery(m.Slug)
 	defer d.Unlock()
 	incident := incidentStart(m, ev)
 	known := d.parent.sameIncident(incident)

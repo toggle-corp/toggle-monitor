@@ -87,6 +87,8 @@ that posts the parent changes no signature and covers all four paths.
   That delays only this monitor's next check.
 - The record is in memory. After a restart, recoveries rely on the row
   again, as before.
+- A removed monitor's record is dropped once any delivery in flight for
+  it finishes (`NotifyRemoved`). A slug added back starts a fresh one.
 - A recovery that waited behind a failed Open posts its standalone
   late-notice resolve directly instead of joining the orphan pool.
 

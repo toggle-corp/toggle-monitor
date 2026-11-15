@@ -94,7 +94,17 @@ func BuildRemovedResolveEdit(in DownInput) ParentMessage {
 //
 // All three sub-calls are best-effort: a Slack outage here logs and
 // continues — the DB soft-delete has already committed.
+//
+// The removal waits for a delivery of the monitor still in flight,
+// takes the thread ref of a parent that delivery posted when the row
+// snapshot predates it, and then drops the monitor's delivery record.
 func (n *Notifier) NotifyRemoved(ctx context.Context, channelSlug string, in MonitorView, reason, source string) {
+	d := n.lockDelivery(in.Slug)
+	defer n.retireDelivery(in.Slug, d)
+	if in.UptimeThreadTS == "" && d.parent.sameIncident(in.OpenedAt) && d.parent.ts != "" {
+		in.UptimeThreadChannel, in.UptimeThreadTS = d.parent.channel, d.parent.ts
+	}
+
 	ch, ok := n.channels(channelSlug)
 	if !ok {
 		n.log.Warn("removal: channel slug not registered", "monitor", in.Slug, "slug", channelSlug)
